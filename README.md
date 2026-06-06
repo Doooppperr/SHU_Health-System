@@ -193,6 +193,8 @@ Set-Location .\backend
 .\.venv\Scripts\python.exe .\scripts\apply_gaussdb_rules.py
 ```
 
+当前云端 GaussDB 已完成数据库级规则落库：`22` 个 `CHECK` 约束、`3` 个触发器。日常运行仍使用 `health_app` 应用账号；管理员账号只用于偶发 DDL 维护。
+
 ## 11. 补充文档
 
 - 项目需求与技术方案：`coding/项目需求与技术方案.md`

@@ -50,6 +50,8 @@ python -m waitress --listen=0.0.0.0:5050 wsgi:app
 python .\scripts\apply_gaussdb_rules.py
 ```
 
+当前云端 GaussDB 已执行该脚本并验证通过，包含 `22` 个 `CHECK` 约束和 `3` 个触发器。后端运行账号仍为 `health_app`。
+
 ## OCR 配置
 
 复制 `.env.example` 为 `.env` 后填写华为云配置：
