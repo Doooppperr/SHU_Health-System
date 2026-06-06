@@ -20,6 +20,9 @@ class IndicatorCategory(db.Model):
 
 class IndicatorDict(db.Model):
     __tablename__ = "indicator_dicts"
+    __table_args__ = (
+        db.UniqueConstraint("category_id", "name", name="uq_indicator_category_name"),
+    )
 
     id = db.Column(db.Integer, primary_key=True)
     category_id = db.Column(db.Integer, db.ForeignKey("indicator_categories.id"), nullable=False, index=True)

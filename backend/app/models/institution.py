@@ -5,6 +5,9 @@ from app.extensions import db
 
 class Institution(db.Model):
     __tablename__ = "institutions"
+    __table_args__ = (
+        db.UniqueConstraint("name", "branch_name", name="uq_institution_branch"),
+    )
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(120), nullable=False)
@@ -39,6 +42,9 @@ class Institution(db.Model):
 
 class Package(db.Model):
     __tablename__ = "packages"
+    __table_args__ = (
+        db.UniqueConstraint("institution_id", "name", name="uq_package_institution_name"),
+    )
 
     id = db.Column(db.Integer, primary_key=True)
     institution_id = db.Column(db.Integer, db.ForeignKey("institutions.id"), nullable=False, index=True)

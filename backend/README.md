@@ -10,6 +10,18 @@ pip install -r requirements.txt
 
 ## 启动服务
 
+当前后端数据库为华为云 GaussDB。启动后端前，先保持 SSH 隧道窗口打开：
+
+```powershell
+ssh -N -L 15432:192.168.0.31:8000 root@<ECS公网IP>
+```
+
+`.env` 中使用应用账号连接本机隧道端口：
+
+```env
+DATABASE_URL=opengauss+psycopg2://health_app:<HEALTH_APP_PASSWORD>@127.0.0.1:15432/health_system?client_encoding=utf8
+```
+
 ```bash
 python run.py
 ```

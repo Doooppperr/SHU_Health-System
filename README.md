@@ -18,7 +18,7 @@
 |---|---|
 | 前端 | Vue 3、Vite、Vue Router、Pinia、Element Plus、Axios、ECharts |
 | 后端 | Flask、Flask-SQLAlchemy、Flask-JWT-Extended、Flask-Migrate、Flask-Cors |
-| 数据库 | SQLite（默认文件库） |
+| 数据库 | 华为云 GaussDB（openGauss 生态，当前运行库）；SQLite（本地测试/历史迁移源） |
 | OCR | 华为云 OCR（支持 Mock 与真实模式切换） |
 | 生产服务 | Waitress（后端）、Vite Preview（前端演示） |
 | 自动化测试 | Pytest（后端） |
@@ -57,6 +57,7 @@ health system/
 
 - `health_records.owner_id`：档案归属人；`uploader_id`：上传人（支持代传）。
 - `health_indicators` 通过 `(record_id, indicator_dict_id)` 唯一约束避免重复指标。
+- `institutions(name, branch_name)`、`packages(institution_id, name)`、`indicator_dicts(category_id, name)` 作为候选键约束，强化 3NF/BCNF 规范化。
 - `friend_relations.auth_status=true` 才允许亲友代传与查看趋势。
 - 评论提交依赖“用户已上传该机构档案”门槛，`comments.is_visible` 由管理员审核控制。
 
@@ -84,7 +85,8 @@ Copy-Item .\backend\.env.example .\backend\.env
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `DATABASE_URL` | `sqlite:///health_system.db` | 数据库连接串（默认 SQLite） |
+| `DATABASE_URL` | `sqlite:///health_system.db` | 数据库连接串；当前云库示例为 `opengauss+psycopg2://health_app:<password>@127.0.0.1:15432/health_system?client_encoding=utf8` |
+| `TARGET_DATABASE_URL` | 同 `DATABASE_URL` | 数据迁移脚本目标库连接串 |
 | `JWT_SECRET_KEY` | 开发默认值 | JWT 签名密钥，生产必须替换 |
 | `OCR_PROVIDER` | `huawei` | OCR 供应商标识 |
 | `OCR_USE_MOCK` | `1` | `1` 用 Mock，`0` 用真实华为云 OCR |
@@ -127,6 +129,14 @@ Set-Location ..
 
 ### 8.2 开发模式（推荐）
 
+当前数据库部署在华为云 GaussDB 内网，前后端仍在本机运行。启动项目前，先单独打开一个 PowerShell 窗口并保持 SSH 隧道：
+
+```powershell
+ssh -N -L 15432:192.168.0.31:8000 root@<ECS公网IP>
+```
+
+`backend/.env` 中的 `DATABASE_URL` 指向 `127.0.0.1:15432`，由隧道转发到 GaussDB 内网地址。
+
 ```powershell
 .\scripts\start-full-dev.ps1
 ```
@@ -135,6 +145,8 @@ Set-Location ..
 - 前端：`http://127.0.0.1:5173`
 
 ### 8.3 生产演示模式
+
+同样需要先保持 SSH 隧道窗口打开。
 
 ```powershell
 .\scripts\start-full-prod.ps1
@@ -166,8 +178,13 @@ Set-Location ..\frontend
 npm run build
 ```
 
+说明：后端单元测试使用内存 SQLite 测试配置，不依赖云数据库；真实演示运行依赖 SSH 隧道和 GaussDB。
+
 ## 11. 补充文档
 
-- 演示与答辩流程：`coding/deploy-and-demo.md`
-- 全量测试报告：`coding/test-report.md`
-- 开发过程记录：`coding/development-log.md`
+- 项目需求与技术方案：`coding/项目需求与技术方案.md`
+- 部署演示与云数据库指南：`coding/部署演示与云数据库指南.md`
+- 数据库规范化说明：`coding/数据库规范化说明.md`
+- 全量测试报告：`coding/测试报告.md`
+- 开发记录与上下文归档：`coding/开发记录与上下文归档.md`
+
