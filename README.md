@@ -18,7 +18,7 @@
 |---|---|
 | 前端 | Vue 3、Vite、Vue Router、Pinia、Element Plus、Axios、ECharts |
 | 后端 | Flask、Flask-SQLAlchemy、Flask-JWT-Extended、Flask-Migrate、Flask-Cors |
-| 数据库 | 华为云 GaussDB（openGauss 生态，当前运行库）；SQLite（本地测试/历史迁移源） |
+| 数据库 | 华为云 GaussDB（openGauss 生态，当前运行库）；SQLite 仅用于自动化测试和历史迁移源 |
 | OCR | 华为云 OCR（支持 Mock 与真实模式切换） |
 | 生产服务 | Waitress（后端）、Vite Preview（前端演示） |
 | 自动化测试 | Pytest（后端） |
@@ -71,7 +71,7 @@ health system/
 | `backend/requirements.txt` | 后端 Python 依赖 |
 | `frontend/package.json` | 前端 npm 依赖与脚本 |
 | `scripts/*.ps1` | 开发/生产一键启动脚本 |
-| `.gitignore` | 忽略虚拟环境、node_modules、上传目录与本地 `.env` |
+| `.gitignore` | 忽略虚拟环境、node_modules、上传目录、本地 `.env` 与本地数据库备份文件 |
 
 ## 6. 环境变量（`backend/.env`）
 
@@ -85,7 +85,7 @@ Copy-Item .\backend\.env.example .\backend\.env
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `DATABASE_URL` | `sqlite:///health_system.db` | 数据库连接串；当前云库示例为 `opengauss+psycopg2://health_app:<password>@127.0.0.1:15432/health_system?client_encoding=utf8` |
+| `DATABASE_URL` | 无，必须配置 | 数据库连接串；当前云库示例为 `opengauss+psycopg2://health_app:<password>@127.0.0.1:15432/health_system?client_encoding=utf8` |
 | `TARGET_DATABASE_URL` | 同 `DATABASE_URL` | 数据迁移脚本目标库连接串 |
 | `JWT_SECRET_KEY` | 开发默认值 | JWT 签名密钥，生产必须替换 |
 | `OCR_PROVIDER` | `huawei` | OCR 供应商标识 |
@@ -180,6 +180,8 @@ npm run build
 
 说明：后端单元测试使用内存 SQLite 测试配置，不依赖云数据库；真实演示运行依赖 SSH 隧道和 GaussDB。
 
+本地历史 SQLite 文件不再作为运行数据库使用，已从仓库移除；如需重新迁移旧数据，请使用仓库外备份文件配合迁移脚本。
+
 ## 11. 补充文档
 
 - 项目需求与技术方案：`coding/项目需求与技术方案.md`
@@ -187,4 +189,3 @@ npm run build
 - 数据库规范化说明：`coding/数据库规范化说明.md`
 - 全量测试报告：`coding/测试报告.md`
 - 开发记录与上下文归档：`coding/开发记录与上下文归档.md`
-

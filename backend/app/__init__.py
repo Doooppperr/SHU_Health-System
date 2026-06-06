@@ -18,6 +18,8 @@ from .users import users_bp
 def create_app(config_name="development"):
     app = Flask(__name__)
     app.config.from_object(config_by_name.get(config_name, config_by_name["development"]))
+    if not app.config.get("SQLALCHEMY_DATABASE_URI"):
+        raise RuntimeError("DATABASE_URL is required outside the testing configuration.")
 
     init_extensions(app)
 

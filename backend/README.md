@@ -22,6 +22,8 @@ ssh -N -L 15432:192.168.0.31:8000 root@<ECS公网IP>
 DATABASE_URL=opengauss+psycopg2://health_app:<HEALTH_APP_PASSWORD>@127.0.0.1:15432/health_system?client_encoding=utf8
 ```
 
+后端不再默认回退到本地 SQLite；未配置 `DATABASE_URL` 时会直接报错，避免误生成新的本地数据库。
+
 ```bash
 python run.py
 ```

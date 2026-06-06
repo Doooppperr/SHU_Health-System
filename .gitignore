@@ -10,3 +10,6 @@ frontend/dist/
 # Local runtime files
 backend/uploads/
 backend/.env
+backend/instance/*.db
+backend/instance/*.sqlite
+backend/instance/*.sqlite3
