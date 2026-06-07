@@ -5,11 +5,11 @@ from app.models import User
 def _auth_headers(client, username):
     client.post(
         "/api/auth/register",
-        json={"username": username, "password": "secret123", "email": f"{username}@example.com"},
+        json=client.register_payload(username, email=f"{username}@example.com"),
     )
     login_response = client.post(
         "/api/auth/login",
-        json={"username": username, "password": "secret123"},
+        json=client.login_payload(username),
     )
     access_token = login_response.get_json()["access_token"]
     return {"Authorization": f"Bearer {access_token}"}
@@ -129,7 +129,7 @@ def test_friend_proxy_record_authorization_chain(client):
 
     owner_login = client.post(
         "/api/auth/login",
-        json={"username": "proxy_owner", "password": "secret123"},
+        json=client.login_payload("proxy_owner"),
     )
     owner_user_id = owner_login.get_json()["user"]["id"]
 
@@ -217,7 +217,7 @@ def test_admin_can_crud_other_users_records(client, app):
 
     owner_login = client.post(
         "/api/auth/login",
-        json={"username": "record_owner_admin_scope", "password": "secret123"},
+        json=client.login_payload("record_owner_admin_scope"),
     )
     owner_user_id = owner_login.get_json()["user"]["id"]
 

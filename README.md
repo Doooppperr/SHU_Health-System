@@ -4,7 +4,7 @@
 
 ## 1. 核心能力
 
-- 用户注册、登录、JWT 鉴权与刷新。
+- 用户注册、登录、图片验证码、JWT 鉴权与刷新。
 - 体检机构与套餐浏览。
 - 健康档案管理：手动录入指标 + OCR 上传解析 + 确认入档。
 - 亲友关系管理：添加关系、授权开关、代传档案。
@@ -88,6 +88,7 @@ Copy-Item .\backend\.env.example .\backend\.env
 | `DATABASE_URL` | 无，必须配置 | 数据库连接串；当前云库示例为 `opengauss+psycopg2://health_app:<password>@127.0.0.1:15432/health_system?client_encoding=utf8` |
 | `TARGET_DATABASE_URL` | 同 `DATABASE_URL` | 数据迁移脚本目标库连接串 |
 | `JWT_SECRET_KEY` | 开发默认值 | JWT 签名密钥，生产必须替换 |
+| `CAPTCHA_TTL_SECONDS` | `300` | 登录/注册图片验证码有效期秒数 |
 | `OCR_PROVIDER` | `huawei` | OCR 供应商标识 |
 | `OCR_USE_MOCK` | `1` | `1` 用 Mock，`0` 用真实华为云 OCR |
 | `HUAWEI_OCR_ENDPOINT` | 空 | 华为云 OCR Endpoint |

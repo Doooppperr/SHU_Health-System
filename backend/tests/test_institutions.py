@@ -1,11 +1,11 @@
 def _auth_headers(client):
     client.post(
         "/api/auth/register",
-        json={"username": "inst_user", "password": "secret123", "email": "inst_user@example.com"},
+        json=client.register_payload("inst_user", email="inst_user@example.com"),
     )
     login_response = client.post(
         "/api/auth/login",
-        json={"username": "inst_user", "password": "secret123"},
+        json=client.login_payload("inst_user"),
     )
     access_token = login_response.get_json()["access_token"]
     return {"Authorization": f"Bearer {access_token}"}

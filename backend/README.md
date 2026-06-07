@@ -67,6 +67,7 @@ OCR_API_PATH=/v2/{project_id}/ocr/general-table
 DEFAULT_ADMIN_USERNAME=admin
 DEFAULT_ADMIN_PASSWORD=admin123
 DEFAULT_ADMIN_EMAIL=admin@example.com
+CAPTCHA_TTL_SECONDS=300
 ```
 
 - `OCR_USE_MOCK=1`：使用本地 Mock OCR（开发联调用）

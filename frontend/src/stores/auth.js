@@ -44,7 +44,14 @@ export const useAuthStore = defineStore("auth", {
     },
 
     async registerUser(payload) {
-      return register(payload);
+      const { data } = await register(payload);
+      if (data.access_token && data.refresh_token) {
+        this.accessToken = data.access_token;
+        this.refreshToken = data.refresh_token;
+        this.user = data.user;
+        this.persist();
+      }
+      return data;
     },
 
     async loginUser(payload) {

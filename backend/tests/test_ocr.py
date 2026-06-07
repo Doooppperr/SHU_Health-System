@@ -8,11 +8,11 @@ from app.services.ocr import HuaweiOCRProvider, OCRMappingService
 def _auth_headers(client, username):
     client.post(
         "/api/auth/register",
-        json={"username": username, "password": "secret123", "email": f"{username}@example.com"},
+        json=client.register_payload(username, email=f"{username}@example.com"),
     )
     login_response = client.post(
         "/api/auth/login",
-        json={"username": username, "password": "secret123"},
+        json=client.login_payload(username),
     )
     access_token = login_response.get_json()["access_token"]
     return {"Authorization": f"Bearer {access_token}"}

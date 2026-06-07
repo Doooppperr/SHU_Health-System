@@ -20,6 +20,7 @@ class Config:
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-jwt-secret-change-me-please-32chars")
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(minutes=30)
     JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=7)
+    CAPTCHA_TTL_SECONDS = int(os.getenv("CAPTCHA_TTL_SECONDS", "300"))
 
     OCR_PROVIDER = os.getenv("OCR_PROVIDER", "huawei")
     OCR_USE_MOCK = os.getenv("OCR_USE_MOCK", "1").strip().lower() in {"1", "true", "yes", "on"}
