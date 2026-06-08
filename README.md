@@ -165,6 +165,40 @@ ssh -N -L 15432:192.168.0.31:8000 root@<ECS公网IP>
 - `.\scripts\start-backend-prod.ps1`
 - `.\scripts\start-frontend-prod.ps1`
 
+### 8.4 Linux ECS 公网演示部署
+
+如果需要让合作伙伴直接通过浏览器访问，把前后端部署到能访问 GaussDB 内网地址的 Linux ECS 上：
+
+```bash
+sudo git clone https://github.com/Doooppperr/SHU_DB_1-health-system.git /opt/health-system
+cd /opt/health-system
+sudo bash scripts/linux/setup-public-demo.sh
+```
+
+脚本会：
+
+- 校验 `git`、`python3`、`Node.js 18+`、`npm`、`curl` 等运行环境。
+- 创建 `health` 系统用户。
+- 安装后端虚拟环境依赖与前端 npm 依赖。
+- 首次运行时生成 `backend/.env`，默认连接 `192.168.0.31:8000`，并提示输入 `health_app` 数据库密码。
+- 构建前端并安装 `health-backend.service`、`health-frontend.service` 两个 `systemd` 服务。
+
+默认访问地址：
+
+- 合作伙伴访问：`http://<ECS公网IP>:4173`
+- 后端健康检查（仅服务器本机）：`curl http://127.0.0.1:5050/api/health`
+
+云安全组只需要放行公网入站 TCP `4173`；不要把 `5050` 或 GaussDB 端口暴露到公网。
+
+后续更新代码时，在服务器上重新执行：
+
+```bash
+cd /opt/health-system
+sudo bash scripts/linux/setup-public-demo.sh
+```
+
+脚本会 `git pull`、重新安装依赖、重新构建前端并重启两个服务，已有 `backend/.env` 不会被覆盖。如需强制重写环境文件，可设置 `FORCE_ENV=1`。
+
 ## 9. 默认账号
 
 - 管理员（启动后自动种子）：`admin / admin123`
