@@ -199,6 +199,33 @@ sudo bash scripts/linux/setup-public-demo.sh
 
 脚本会 `git pull`、重新安装依赖、重新构建前端并重启两个服务，已有 `backend/.env` 不会被覆盖。如需强制重写环境文件，可设置 `FORCE_ENV=1`。
 
+日常开发同步流程：
+
+```powershell
+# 1) 本地完成修改和测试后提交
+git add .
+git commit -m "描述本次修改"
+git push origin main
+
+# 2) 登录服务器，让公网演示环境同步到最新 main
+ssh root@190.92.227.58
+cd /opt/health-system
+sudo bash scripts/linux/setup-public-demo.sh
+```
+
+服务器重启后的访问说明：
+
+- ECS 和 GaussDB 都处于运行中时，等待系统服务自动启动后即可访问 `http://190.92.227.58:4173`。
+- 不需要手动启动前端或后端；`health-backend.service` 与 `health-frontend.service` 已设置开机自启。
+- 如无法访问，先在服务器检查：
+
+```bash
+systemctl status health-backend.service
+systemctl status health-frontend.service
+curl http://127.0.0.1:5050/api/health
+curl -I http://127.0.0.1:4173
+```
+
 ## 9. 默认账号
 
 - 管理员（启动后自动种子）：`admin / admin123`

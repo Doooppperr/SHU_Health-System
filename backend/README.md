@@ -52,6 +52,18 @@ python .\scripts\apply_gaussdb_rules.py
 
 当前云端 GaussDB 已执行该脚本并验证通过，包含 `22` 个 `CHECK` 约束和 `3` 个触发器。后端运行账号仍为 `health_app`。
 
+## Linux ECS 公网演示说明
+
+公网演示环境中，后端由 `health-backend.service` 在服务器本机运行，监听 `127.0.0.1:5050`，不直接暴露公网端口。前端 `health-frontend.service` 监听 `0.0.0.0:4173`，并把 `/api` 与 `/uploads` 代理到本机后端。
+
+服务器与 GaussDB 位于同一 VPC 时，`backend/.env` 应使用内网数据库地址：
+
+```env
+DATABASE_URL=opengauss+psycopg2://health_app:<HEALTH_APP_PASSWORD>@192.168.0.31:8000/health_system?client_encoding=utf8
+```
+
+这种部署模式不需要每个访问者 clone 项目或建立 SSH 隧道；合作伙伴只需访问 `http://190.92.227.58:4173`。
+
 ## OCR 配置
 
 复制 `.env.example` 为 `.env` 后填写华为云配置：
