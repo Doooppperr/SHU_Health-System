@@ -8,14 +8,12 @@ load_dotenv()
 
 
 class Config:
-    SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
-    SQLALCHEMY_ENGINE_OPTIONS = {
-        "pool_pre_ping": True,
-        "pool_recycle": int(os.getenv("DB_POOL_RECYCLE", "1800")),
-        "pool_size": int(os.getenv("DB_POOL_SIZE", "10")),
-        "max_overflow": int(os.getenv("DB_MAX_OVERFLOW", "20")),
-        "pool_timeout": int(os.getenv("DB_POOL_TIMEOUT", "30")),
-    }
+    # The application runs entirely on the local SQLite database.
+    # Flask-SQLAlchemy resolves this relative path under backend/instance.
+    SQLALCHEMY_DATABASE_URI = (
+        os.getenv("LOCAL_DATABASE_URL") or "sqlite:///health_system.db"
+    )
+    SQLALCHEMY_ENGINE_OPTIONS = {}
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-jwt-secret-change-me-please-32chars")
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(minutes=30)

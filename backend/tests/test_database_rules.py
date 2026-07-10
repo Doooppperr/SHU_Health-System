@@ -1,3 +1,8 @@
+import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
+
+from app.extensions import db
 from app.models import (
     Comment,
     FriendRelation,
@@ -45,3 +50,99 @@ def test_database_check_constraints_are_registered():
 
     for model, constraint_names in expected.items():
         assert constraint_names <= _constraint_names(model)
+
+
+def test_sqlite_foreign_keys_are_enabled(app):
+    with app.app_context():
+        assert db.session.execute(text("PRAGMA foreign_keys")).scalar() == 1
+
+
+def test_named_constraints_exist_in_sqlite_schema(app):
+    expected_names = {
+        constraint.name
+        for model in (
+            User,
+            FriendRelation,
+            Comment,
+            IndicatorCategory,
+            IndicatorDict,
+            Institution,
+            Package,
+            HealthRecord,
+            HealthIndicator,
+        )
+        for constraint in model.__table__.constraints
+        if constraint.name
+    }
+
+    with app.app_context():
+        table_sql = db.session.execute(
+            text(
+                """
+                SELECT sql
+                FROM sqlite_master
+                WHERE type = 'table'
+                  AND name NOT LIKE 'sqlite_%'
+                """
+            )
+        ).scalars()
+        schema = "\n".join(sql for sql in table_sql if sql)
+
+    missing_names = expected_names - {
+        name for name in expected_names if name in schema
+    }
+    assert missing_names == set()
+
+
+def test_sqlite_check_constraint_is_enforced(app):
+    with app.app_context():
+        with pytest.raises(IntegrityError):
+            db.session.execute(
+                text(
+                    """
+                    INSERT INTO users
+                        (username, password_hash, role, created_at)
+                    VALUES
+                        ('invalid-role-user', 'not-used', 'invalid', CURRENT_TIMESTAMP)
+                    """
+                )
+            )
+            db.session.commit()
+        db.session.rollback()
+
+
+def test_sqlite_foreign_key_is_enforced(app):
+    with app.app_context():
+        with pytest.raises(IntegrityError):
+            db.session.execute(
+                text(
+                    """
+                    INSERT INTO comments
+                        (user_id, institution_id, content, rating, is_visible, created_at)
+                    VALUES
+                        (999999, 999999, 'invalid foreign keys', 5, 0, CURRENT_TIMESTAMP)
+                    """
+                )
+            )
+            db.session.commit()
+        db.session.rollback()
+
+
+def test_sqlite_candidate_key_is_enforced(app):
+    with app.app_context():
+        with pytest.raises(IntegrityError):
+            db.session.execute(
+                text(
+                    """
+                    INSERT INTO institutions
+                        (name, branch_name, address, district)
+                    SELECT
+                        name, branch_name, address, district
+                    FROM institutions
+                    ORDER BY id
+                    LIMIT 1
+                    """
+                )
+            )
+            db.session.commit()
+        db.session.rollback()
