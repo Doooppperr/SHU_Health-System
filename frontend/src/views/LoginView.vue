@@ -2,7 +2,7 @@
   <div class="auth-page">
     <header class="auth-header">
       <router-link class="auth-brand" to="/">
-        <span>H</span><strong>康迹 HealthHub</strong>
+        <span>H</span><strong>康康健健 HealthDoc</strong>
       </router-link>
       <AppearanceQuickControls />
     </header>

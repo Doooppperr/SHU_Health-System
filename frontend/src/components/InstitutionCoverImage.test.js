@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import InstitutionCoverImage from "./InstitutionCoverImage.vue";
 
 const institution = {
-  name: "康迹体检",
+  name: "康康健健体检",
   branch_name: "徐汇分院",
   cover_image_url: "/uploads/institutions/cover.webp",
   logo_url: "/uploads/logos/legacy.png",
@@ -17,7 +17,7 @@ describe("InstitutionCoverImage", () => {
     const image = wrapper.get("img");
 
     expect(image.attributes("src")).toBe(institution.cover_image_url);
-    expect(image.attributes("alt")).toBe("康迹体检·徐汇分院封面");
+    expect(image.attributes("alt")).toBe("康康健健体检·徐汇分院封面");
     expect(image.attributes("loading")).toBe("lazy");
   });
 
@@ -44,7 +44,7 @@ describe("InstitutionCoverImage", () => {
     await wrapper.get("img").trigger("error");
 
     expect(wrapper.find("img").exists()).toBe(false);
-    expect(wrapper.get('[role="img"]').attributes("aria-label")).toBe("康迹体检·徐汇分院暂无封面");
+    expect(wrapper.get('[role="img"]').attributes("aria-label")).toBe("康康健健体检·徐汇分院暂无封面");
     expect(wrapper.text()).toContain("封面暂时无法加载");
 
     await wrapper.setProps({ institution: { name: "无图机构" } });

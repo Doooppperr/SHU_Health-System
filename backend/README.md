@@ -1,4 +1,4 @@
-# Health System Backend
+# 康康健健 HealthDoc 后端
 
 Flask 后端负责三角色认证与授权、健康档案、OCR、指标标准化、机构运营、系统管理、机构图片处理和本地 SQLite schema v2。
 

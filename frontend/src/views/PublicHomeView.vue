@@ -3,7 +3,7 @@
     <header class="portal-header">
       <router-link class="portal-brand" to="/">
         <span>H</span>
-        <strong>康迹 HealthHub</strong>
+        <strong>康康健健 HealthDoc</strong>
       </router-link>
       <nav class="portal-nav" aria-label="公开页面导航">
         <a href="#features">核心能力</a>
@@ -117,18 +117,18 @@
 
       <section id="about" class="portal-section portal-about">
         <div>
-          <p class="portal-kicker">ABOUT HEALTHHUB</p>
+          <p class="portal-kicker">ABOUT HEALTHDOC</p>
           <h2>用可靠的数据连接每一段健康旅程</h2>
         </div>
         <p>
-          康迹是面向个人健康档案管理的课程实践项目。我们重视易用性，也坚持权限边界、
+          康康健健是面向个人健康档案管理的课程实践项目。我们重视易用性，也坚持权限边界、
           数据可追溯和健康建议的谨慎表达，让技术真正服务于长期健康管理。
         </p>
       </section>
     </main>
 
     <footer class="portal-footer">
-      <span>© 2026 康迹 HealthHub</span>
+      <span>© 2026 康康健健 HealthDoc</span>
       <span>健康数据管理 · 隐私优先</span>
     </footer>
   </div>

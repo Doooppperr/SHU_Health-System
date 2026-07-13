@@ -1,13 +1,13 @@
 <template>
   <div class="auth-page auth-page--register">
     <header class="auth-header">
-      <router-link class="auth-brand" to="/"><span>H</span><strong>康迹 HealthHub</strong></router-link>
+      <router-link class="auth-brand" to="/"><span>H</span><strong>康康健健 HealthDoc</strong></router-link>
       <AppearanceQuickControls />
     </header>
 
     <main id="main-content" class="auth-main" tabindex="-1">
       <div class="auth-panel auth-panel--wide">
-        <div class="auth-heading"><p>创建账号</p><h1>加入康迹</h1><span>从一份档案开始，建立连续的健康视图。</span></div>
+        <div class="auth-heading"><p>创建账号</p><h1>加入康康健健</h1><span>从一份档案开始，建立连续的健康视图。</span></div>
 
         <div class="register-mode" role="radiogroup" aria-label="注册身份">
           <label :class="{ active: mode === 'user' }">

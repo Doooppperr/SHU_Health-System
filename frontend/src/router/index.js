@@ -40,7 +40,7 @@ const orgMeta = { requiresAuth: true, roles: ["institution_admin"], workspace: "
 const adminMeta = { requiresAuth: true, roles: ["admin"], workspace: "admin" };
 
 const routes = [
-  { path: "/", name: "public-home", component: PublicHomeView, meta: { title: "康迹 HealthHub" } },
+  { path: "/", name: "public-home", component: PublicHomeView, meta: { title: "康康健健 HealthDoc" } },
   { path: "/login", name: "login", component: LoginView, meta: { guestOnly: true, title: "登录" } },
   { path: "/register", name: "register", component: RegisterView, meta: { guestOnly: true, title: "注册" } },
   {
@@ -140,7 +140,7 @@ router.beforeEach(async (to) => {
 });
 
 router.afterEach((to) => {
-  document.title = `${to.meta.title || "健康档案"} · 康迹 HealthHub`;
+  document.title = `${to.meta.title || "健康档案"} · 康康健健 HealthDoc`;
 });
 
 export default router;

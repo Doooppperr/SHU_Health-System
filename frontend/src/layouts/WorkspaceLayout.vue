@@ -14,7 +14,7 @@
       <router-link class="workspace-brand" :to="homeRoute" @click="closeMenu">
         <span class="workspace-brand-mark">H</span>
         <span>
-          <strong>康迹 HealthHub</strong>
+          <strong>康康健健 HealthDoc</strong>
           <small>{{ workspaceName }}</small>
         </span>
       </router-link>
