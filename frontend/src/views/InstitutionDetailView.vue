@@ -23,6 +23,8 @@
       <el-skeleton :rows="5" animated v-if="loading" />
 
       <template v-else>
+        <InstitutionCoverImage v-if="institution" :institution="institution" variant="detail" />
+
         <el-descriptions :column="1" border style="margin-bottom: 16px">
           <el-descriptions-item label="机构名称">
             {{ institution?.name || '-' }} · {{ institution?.branch_name || '-' }}
@@ -89,6 +91,7 @@ import { ElMessage } from "element-plus";
 import { useRoute, useRouter } from "vue-router";
 
 import MainNavActions from "../components/MainNavActions.vue";
+import InstitutionCoverImage from "../components/InstitutionCoverImage.vue";
 import { createInstitutionComment, fetchInstitutionComments } from "../api/comments";
 import { fetchInstitutionDetail, fetchInstitutionPackages } from "../api/institutions";
 import { useAuthStore } from "../stores/auth";

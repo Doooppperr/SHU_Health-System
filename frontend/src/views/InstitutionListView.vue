@@ -23,6 +23,7 @@
       <el-row v-else :gutter="16">
         <el-col v-for="institution in institutions" :key="institution.id" :xs="24" :sm="12" :lg="8" style="margin-bottom: 16px">
           <el-card shadow="hover" class="institution-card">
+            <InstitutionCoverImage :institution="institution" />
             <h3 class="institution-name">{{ institution.name }} · {{ institution.branch_name }}</h3>
             <p class="institution-meta">区域：{{ institution.district }}</p>
             <p class="institution-meta">地址：{{ institution.address }}</p>
@@ -42,6 +43,7 @@ import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 
 import MainNavActions from "../components/MainNavActions.vue";
+import InstitutionCoverImage from "../components/InstitutionCoverImage.vue";
 import { fetchInstitutions } from "../api/institutions";
 import { useAuthStore } from "../stores/auth";
 
