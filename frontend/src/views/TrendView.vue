@@ -92,7 +92,6 @@
 import { storeToRefs } from "pinia";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-import * as echarts from "echarts";
 
 import MainNavActions from "../components/MainNavActions.vue";
 import { fetchFriends } from "../api/friends";
@@ -101,6 +100,7 @@ import { fetchIndicatorTrend } from "../api/trends";
 import { useAppearanceStore } from "../stores/appearance";
 import { useAuthStore } from "../stores/auth";
 import { buildTrendChartOption } from "../utils/chartAppearance";
+import { initTrendChart } from "../utils/echartsRuntime";
 import { formatRecordDisplayId } from "../utils/recordDisplayId";
 
 const router = useRouter();
@@ -232,7 +232,7 @@ const renderChart = async () => {
     disposeChart();
   }
   if (!chartInstance) {
-    chartInstance = echarts.init(chartRef.value);
+    chartInstance = initTrendChart(chartRef.value);
   }
   bindChartResize(chartRef.value);
 

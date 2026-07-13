@@ -40,11 +40,11 @@
 <script setup>
 import { storeToRefs } from "pinia";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import * as echarts from "echarts";
 import { fetchIndicatorDicts } from "../../api/indicators";
 import { fetchOrgHealthRecords, fetchOrgHealthTrends } from "../../api/org";
 import { useAppearanceStore } from "../../stores/appearance";
 import { buildTrendChartOption } from "../../utils/chartAppearance";
+import { initTrendChart } from "../../utils/echartsRuntime";
 import { formatRecordDisplayId } from "../../utils/recordDisplayId";
 
 const appearanceStore = useAppearanceStore();
@@ -113,7 +113,7 @@ async function renderChart() {
   await nextTick();
   if (!chartRef.value || result.value?.indicator?.value_type !== "numeric") { disposeChart(); return; }
   if (chart && chartElement !== chartRef.value) disposeChart();
-  chart ||= echarts.init(chartRef.value);
+  chart ||= initTrendChart(chartRef.value);
   bindChartResize(chartRef.value);
   const series = result.value.series || [];
   const marks = []; const summary = result.value.summary || {};
