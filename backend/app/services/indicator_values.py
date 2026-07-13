@@ -7,6 +7,12 @@ from decimal import Decimal, InvalidOperation
 
 _NUMBER_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)")
 _DECORATION_RE = re.compile(r"[\s,，↑↓↗↘→←▲▼△▽!！*＊()（）\[\]【】]+")
+_OCR_REFERENCE_SUFFIX_RE = re.compile(
+    r"\s*(?:[\(\[（【]\s*)?"
+    r"(?:reference|ref(?:erence)?\.?|参考(?:值|范围)?|正常(?:值|范围))"
+    r"\s*[:：]?\s*.*$",
+    flags=re.IGNORECASE,
+)
 
 
 class IndicatorValueError(ValueError):
@@ -67,6 +73,29 @@ def normalize_indicator_value(indicator_dict, raw_value) -> str:
             "indicator unit does not match the standard dictionary"
         )
     return _canonical_decimal(numeric)
+
+
+def normalize_ocr_indicator_value(indicator_dict, raw_value) -> str:
+    """Normalize OCR output while ignoring an explicit reference-range suffix.
+
+    Table OCR sometimes merges the result and the adjacent reference column into
+    one cell (for example ``5.6 mmol/L(reference 3.9-6.1)``). Only a suffix with
+    an explicit reference marker is removed; otherwise the normal strict
+    multi-number and unit checks remain unchanged.
+    """
+    try:
+        return normalize_indicator_value(indicator_dict, raw_value)
+    except IndicatorValueError as original_error:
+        if indicator_dict.value_type != "numeric":
+            raise
+
+        text = unicodedata.normalize(
+            "NFKC", str("" if raw_value is None else raw_value)
+        ).strip()
+        primary_result = _OCR_REFERENCE_SUFFIX_RE.sub("", text).strip()
+        if not primary_result or primary_result == text:
+            raise original_error
+        return normalize_indicator_value(indicator_dict, primary_result)
 
 
 def evaluate_is_abnormal(indicator_dict, normalized_value: str) -> bool:

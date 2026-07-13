@@ -220,6 +220,10 @@ import { fetchInstitutions, fetchInstitutionPackages } from "../api/institutions
 import { confirmRecord, uploadRecordByOcr } from "../api/records";
 import { fetchUsers } from "../api/users";
 import { useAuthStore } from "../stores/auth";
+import {
+  buildOcrConfirmedMappings,
+  createOcrMappingRows,
+} from "../utils/ocrConfirmation";
 
 const router = useRouter();
 const authStore = useAuthStore();
@@ -364,17 +368,14 @@ const submitUpload = async () => {
 
     const { data } = await uploadRecordByOcr(payload);
     uploadResult.value = data;
-    mappingDraftRows.value = (data?.ocr?.candidate_mappings || []).map((item, index) => ({
-      row_id: `${item.field_index ?? index}-${item.indicator_dict_id}`,
-      label: item.label,
-      value: item.value,
-      suggested_code: item.indicator_code,
-      suggested_name: item.indicator_name,
-      indicator_dict_id: item.indicator_dict_id,
-      score: item.score,
-      reason: item.reason,
-      ignored: false,
-    }));
+    try {
+      await loadIndicatorDicts();
+    } catch {
+      ElMessage.warning("OCR 解析成功，但指标字典刷新失败；已保留当前选项，请刷新页面后再确认入档");
+    }
+    mappingDraftRows.value = createOcrMappingRows(
+      data?.ocr?.candidate_mappings || []
+    );
     ElMessage.success("OCR解析完成");
   } catch (error) {
     errorMessage.value = error?.response?.data?.message || "上传解析失败";
@@ -388,17 +389,20 @@ const confirmParsedRecord = async () => {
     return;
   }
 
+  const { mappings: confirmedMappings, invalidRows } = buildOcrConfirmedMappings(
+    mappingDraftRows.value,
+    indicatorDicts.value
+  );
+  if (invalidRows.length) {
+    const first = invalidRows[0];
+    ElMessage.error(
+      `${first.label}：${first.reason}${invalidRows.length > 1 ? `；另有 ${invalidRows.length - 1} 项待修正` : ""}`
+    );
+    return;
+  }
+
   confirmLoading.value = true;
-
   try {
-    const confirmedMappings = mappingDraftRows.value
-      .filter((row) => !row.ignored && row.indicator_dict_id && row.value)
-      .map((row) => ({
-        indicator_dict_id: Number(row.indicator_dict_id),
-        value: String(row.value).trim(),
-        score: Number(row.score || 1),
-      }));
-
     const requestPayload = mappingDraftRows.value.length
       ? { confirmed_mappings: confirmedMappings }
       : null;

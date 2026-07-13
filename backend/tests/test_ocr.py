@@ -1,7 +1,9 @@
 import io
+import json
+from datetime import date
 
 from app.extensions import db
-from app.models import HealthIndicator, HealthRecord
+from app.models import HealthIndicator, HealthRecord, IndicatorDict, User
 from app.services.ocr import HuaweiOCRProvider, OCRMappingService
 
 
@@ -24,6 +26,29 @@ def _first_institution_and_package(client, headers):
     packages = client.get(f"/api/institutions/{institution_id}/packages", headers=headers).get_json()["items"]
     package_id = packages[0]["id"]
     return institution_id, package_id
+
+
+def _create_parsed_record(app, username):
+    with app.app_context():
+        user = User.query.filter_by(username=username).one()
+        record = HealthRecord(
+            owner_id=user.id,
+            uploader_id=user.id,
+            exam_date=date(2026, 4, 11),
+            status="parsed",
+        )
+        db.session.add(record)
+        db.session.commit()
+        return record.id
+
+
+def _set_auto_candidates(app, record_id, candidates):
+    with app.app_context():
+        record = db.session.get(HealthRecord, record_id)
+        record.ocr_raw_text = json.dumps(
+            {"mapping": {"candidate_mappings": candidates}}
+        )
+        db.session.commit()
 
 
 def test_ocr_mapping_alias():
@@ -211,4 +236,160 @@ def test_upload_ocr_requires_file(client):
     )
 
     assert response.status_code == 400
+
+
+def test_manual_confirm_accepts_ocr_value_with_explicit_reference_suffix(client, app):
+    username = "ocr_reference_suffix_user"
+    headers = _auth_headers(client, username)
+    record_id = _create_parsed_record(app, username)
+    raw_values = {
+        "FBG": "5.6 mmol/L(reference 3.9-6.1)",
+        "TC": "4.9 mmol/L(reference <=5.2)",
+        "TG": "1.4 mmol/L(reference<=1.7)",
+        "HDL": "1.15 mmol/L (reference 1.0-2.3)",
+        "LDL": "3.2 mmol/L(reference <=3.4)",
+        "ALT": "32 U/L",
+        "UA": "365 μmol/L(reference 155 - 428)",
+        "CREA": "88 μmol/L",
+    }
+    with app.app_context():
+        dictionaries = {
+            item.code: item.id
+            for item in IndicatorDict.query.filter(
+                IndicatorDict.code.in_(raw_values)
+            ).all()
+        }
+
+    response = client.put(
+        f"/api/records/{record_id}/confirm",
+        headers=headers,
+        json={
+            "confirmed_mappings": [
+                {"indicator_dict_id": dictionaries[code], "value": value}
+                for code, value in raw_values.items()
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ocr"]["confirmed_count"] == 8
+    assert payload["item"]["status"] == "confirmed"
+    with app.app_context():
+        stored = {
+            item.indicator_dict.code: item.value
+            for item in HealthIndicator.query.filter_by(record_id=record_id).all()
+        }
+    assert stored == {
+        "FBG": "5.6",
+        "TC": "4.9",
+        "TG": "1.4",
+        "HDL": "1.15",
+        "LDL": "3.2",
+        "ALT": "32",
+        "UA": "365",
+        "CREA": "88",
+    }
+
+
+def test_manual_confirm_reports_invalid_ocr_value_separately_from_dictionary_id(
+    client, app
+):
+    username = "ocr_invalid_value_user"
+    headers = _auth_headers(client, username)
+    record_id = _create_parsed_record(app, username)
+    with app.app_context():
+        fbg_id = IndicatorDict.query.filter_by(code="FBG").one().id
+
+    response = client.put(
+        f"/api/records/{record_id}/confirm",
+        headers=headers,
+        json={
+            "confirmed_mappings": [
+                {"indicator_dict_id": fbg_id, "value": "5.6 / 6.1"}
+            ]
+        },
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["message"] == "some indicator values are invalid"
+    assert payload["invalid_indicator_values"][0]["indicator_dict_id"] == fbg_id
+    assert "invalid_indicator_dict_ids" not in payload
+    with app.app_context():
+        assert db.session.get(HealthRecord, record_id).status == "parsed"
+        assert HealthIndicator.query.filter_by(record_id=record_id).count() == 0
+
+
+def test_auto_confirm_rolls_back_when_indicator_dictionary_id_is_invalid(client, app):
+    username = "ocr_auto_invalid_id_user"
+    headers = _auth_headers(client, username)
+    record_id = _create_parsed_record(app, username)
+    with app.app_context():
+        alt_id = IndicatorDict.query.filter_by(code="ALT").one().id
+        invalid_id = (db.session.query(db.func.max(IndicatorDict.id)).scalar() or 0) + 1000
+    _set_auto_candidates(
+        app,
+        record_id,
+        [
+            {"indicator_dict_id": alt_id, "value": "32 U/L", "score": 0.99},
+            {"indicator_dict_id": invalid_id, "value": "5.6", "score": 0.99},
+        ],
+    )
+
+    response = client.put(f"/api/records/{record_id}/confirm", headers=headers)
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload == {
+        "message": "some indicator_dict_id are invalid",
+        "invalid_indicator_dict_ids": [invalid_id],
+    }
+    with app.app_context():
+        assert db.session.get(HealthRecord, record_id).status == "parsed"
+        assert HealthIndicator.query.filter_by(record_id=record_id).count() == 0
+
+
+def test_auto_confirm_rolls_back_when_indicator_value_is_invalid(client, app):
+    username = "ocr_auto_invalid_value_user"
+    headers = _auth_headers(client, username)
+    record_id = _create_parsed_record(app, username)
+    with app.app_context():
+        dictionaries = {
+            item.code: item.id
+            for item in IndicatorDict.query.filter(
+                IndicatorDict.code.in_(["ALT", "FBG"])
+            ).all()
+        }
+    _set_auto_candidates(
+        app,
+        record_id,
+        [
+            {
+                "indicator_dict_id": dictionaries["ALT"],
+                "value": "32 U/L",
+                "score": 0.99,
+            },
+            {
+                "indicator_dict_id": dictionaries["FBG"],
+                "value": "5.6 / 6.1",
+                "score": 0.99,
+            },
+        ],
+    )
+
+    response = client.put(f"/api/records/{record_id}/confirm", headers=headers)
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["message"] == "some indicator values are invalid"
+    assert payload["invalid_indicator_values"] == [
+        {
+            "indicator_dict_id": dictionaries["FBG"],
+            "message": "numeric indicator value must contain one number",
+        }
+    ]
+    with app.app_context():
+        assert db.session.get(HealthRecord, record_id).status == "parsed"
+        assert HealthIndicator.query.filter_by(record_id=record_id).count() == 0
 

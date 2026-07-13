@@ -22,6 +22,7 @@ from app.services.indicator_values import (
     IndicatorValueError,
     evaluate_is_abnormal,
     normalize_indicator_value,
+    normalize_ocr_indicator_value,
 )
 from app.services.ocr import mapping_service
 from app.services.permissions import ROLE_USER, role_error
@@ -243,13 +244,14 @@ def _resolve_auto_confirmed_mappings(record: HealthRecord):
 
 def _upsert_ocr_indicators(record: HealthRecord, confirmed_mappings):
     if not confirmed_mappings:
-        return 0, []
+        return 0, [], []
 
     indicator_ids = list({item["indicator_dict_id"] for item in confirmed_mappings})
     dict_rows = IndicatorDict.query.filter(IndicatorDict.id.in_(indicator_ids)).all()
     dict_map = {item.id: item for item in dict_rows}
 
     invalid_ids = [item_id for item_id in indicator_ids if item_id not in dict_map]
+    invalid_values = []
 
     existing_rows = HealthIndicator.query.filter(
         HealthIndicator.record_id == record.id,
@@ -266,9 +268,14 @@ def _upsert_ocr_indicators(record: HealthRecord, confirmed_mappings):
             continue
 
         try:
-            value = normalize_indicator_value(indicator_dict, mapping["value"])
-        except IndicatorValueError:
-            invalid_ids.append(indicator_dict_id)
+            value = normalize_ocr_indicator_value(indicator_dict, mapping["value"])
+        except IndicatorValueError as exc:
+            invalid_values.append(
+                {
+                    "indicator_dict_id": indicator_dict_id,
+                    "message": str(exc),
+                }
+            )
             continue
         is_abnormal = evaluate_is_abnormal(indicator_dict, value)
 
@@ -291,7 +298,7 @@ def _upsert_ocr_indicators(record: HealthRecord, confirmed_mappings):
         )
         changed_count += 1
 
-    return changed_count, invalid_ids
+    return changed_count, invalid_ids, invalid_values
 
 
 @records_bp.get("/summary")
@@ -553,10 +560,19 @@ def confirm_record(record_id: int):
         auto_threshold = None
         confirm_source = "manual_selection"
 
-    changed_count, invalid_ids = _upsert_ocr_indicators(record, confirmed_mappings)
-    if invalid_ids and raw_confirmed_mappings is not None:
+    changed_count, invalid_ids, invalid_values = _upsert_ocr_indicators(
+        record,
+        confirmed_mappings,
+    )
+    if invalid_ids:
         db.session.rollback()
         return {"message": "some indicator_dict_id are invalid", "invalid_indicator_dict_ids": invalid_ids}, 400
+    if invalid_values:
+        db.session.rollback()
+        return {
+            "message": "some indicator values are invalid",
+            "invalid_indicator_values": invalid_values,
+        }, 400
 
     record.status = "confirmed"
     db.session.commit()
