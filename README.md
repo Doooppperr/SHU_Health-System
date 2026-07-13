@@ -9,6 +9,10 @@
 - 机构管理员：进入 /org/dashboard，只管理所属机构资料、相册和套餐，并只读查看来源于本机构且已确认的脱敏健康数据。
 - 系统管理员：进入 /admin/dashboard，管理机构、套餐、邀请码、用户角色、机构管理员、全局档案和评论审核。
 - 档案来源可选：手工录入和 OCR 入档均可选择“暂不选取”机构与套餐；未关联机构不影响指标、趋势和健康 AI。
+- 档案采用内部数字主键与用户展示编号分离：界面统一显示 `health+数字`（例如 `health12`）；删除不会重排其余现存档案，编号应视为不保证连续的标识。
+- 已创建档案可继续通过 OCR 录入报告；解析结果先暂存，确认前不会覆盖原报告、状态或指标，也可以安全放弃。
+- 健康 AI 使用 SSE 流式响应；档案列表不会在打开侧栏时加载，只有问题确实需要档案、用户点击“引用档案”或从档案列表发起“智能分析”时才按需加载。
+- 单档智能分析覆盖全部指标，多档分析不限制用户可见数量，但必须属于同一人；趋势数值由服务端先确定性计算，再交给模型解释。
 - SQLite schema v2：继续使用现有 SQLite，不依赖 MySQL、PostgreSQL 或云数据库。
 
 ## 技术栈
@@ -20,7 +24,7 @@
 | 数据库 | SQLite，PRAGMA user_version=2 |
 | 图片处理 | Pillow，服务端解码、重编码并清除 EXIF |
 | OCR | 本地 Mock；可选华为云 OCR API |
-| AI | DeepSeek V4 Flash；本地 FAQ 与测试 Mock |
+| AI | DeepSeek V4 Flash、SSE 流式输出、本地 FAQ/安全分流与测试 Mock |
 | 本机演示服务 | Waitress、Vite Preview |
 | 测试 | Pytest、Vitest、Vue Test Utils、jsdom |
 
@@ -28,6 +32,7 @@
 
 ~~~text
 health system/
+├─ .github/workflows/ci.yml          # main/PR 自动化回归
 ├─ backend/
 │  ├─ app/
 │  │  ├─ admin/                    # 系统管理员接口
@@ -65,7 +70,7 @@ python -m venv .venv
 pip install -r requirements.txt
 
 Set-Location ..\frontend
-npm install
+npm ci
 
 Set-Location ..
 ~~~
@@ -73,7 +78,9 @@ Set-Location ..
 如需配置真实 OCR、AI 或修改默认管理员，复制环境变量模板：
 
 ~~~powershell
-Copy-Item .\backend\.env.example .\backend\.env
+if (-not (Test-Path .\backend\.env)) {
+    Copy-Item .\backend\.env.example .\backend\.env
+}
 ~~~
 
 真实密钥只允许写入被 Git 忽略的 backend/.env。
@@ -86,15 +93,17 @@ Copy-Item .\backend\.env.example .\backend\.env
 backend/instance/health_system.db
 ~~~
 
-当前已完成 v2 迁移并验证：
+2026-07-11 的 schema v2 迁移验收基线为：
 
-| 项目 | 当前值 |
+| 项目 | 迁移验收值 |
 |---|---:|
 | PRAGMA user_version | 2 |
 | users | 2 |
 | institutions | 3 |
 | packages | 15 |
 | health_records | 12 |
+
+`backend/instance/*.db` 已从 Git 跟踪中排除，实际业务行数会随本机演示数据变化；上表只用于说明历史迁移保留结果，不是新克隆仓库的固定数据。
 
 v2 增加三角色约束、机构管理员绑定、机构与套餐停用状态、邀请码和机构相册。新安装会直接创建 v2 空库并执行种子初始化；旧版非空数据库不会被 create_all 半升级，而会提示先执行迁移脚本。
 
@@ -167,7 +176,10 @@ LOCAL_DATABASE_URL=sqlite:///another-local.db
 - 机构和套餐采用软停用，保留历史档案来源。
 - 每家机构最多上传 8 张 JPEG、PNG 或 WebP 图片；单张不超过 5 MB，排序第一张为封面。
 - 只有普通用户可以向健康 AI 提交档案 ID；两类管理员工作台不显示健康 AI。
-- AI 对话不写入 SQLite；浏览器只在当前标签页 sessionStorage 中保存会话上下文。
+- AI 初始界面不加载档案；每次引用档案都要重新选择并单独同意，选择、同意和健康数据不会自动附加到后续无关消息。
+- AI 只接受本人或已授权亲友、状态为 `confirmed` 且至少有一项指标的档案；一次请求中的档案必须属于同一所有者，不设置用户可见数量上限。
+- AI 对话和分析结果不写入 SQLite；浏览器只在当前标签页 `sessionStorage` 中保存最多 40 条界面消息，发送给模型的历史最多 20 条并在本地确定性裁剪。
+- AI 面板在桌面端打开时按比例缩放主页面，最低缩放比例为 0.7；空间不足或移动端切换为遮罩对话框，不再挤压导航文字。
 
 ## OCR 与 AI
 
@@ -180,11 +192,16 @@ AI_USE_MOCK=1
 
 真实 OCR 需配置华为云 Endpoint、AK、SK 和 Project ID。真实 AI 需在 backend/.env 中配置 DEEPSEEK_API_KEY；系统只提供指标科普和一般生活建议，不做诊断、处方或急症替代处理。
 
+OCR 有两种入口：直接上传会创建 `parsed` 档案；从档案列表或详情页进入时携带 `record_id`，只为现有档案创建待确认附件。待确认版本使用随机 `attachment_id`，上传、确认、取消和删除都通过乐观并发控制避免旧页面覆盖新结果或遗留报告文件。
+
+AI 主要接口为 `GET /api/ai/records`、`POST /api/ai/chat/stream` 和 `POST /api/ai/analyze/stream`。SSE 事件固定为 `meta`、`status`、`delta`、`action`、`done`、`error`；Waitress 响应不发送 WSGI 禁止的 `Connection` hop-by-hop 头。完整契约见[AI 与 OCR 开发说明](项目文档/AI与OCR开发说明.md)。
+
 ## 验证
 
 ~~~powershell
 Set-Location .\backend
 .\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m pip check
 
 Set-Location ..\frontend
 npm test
@@ -194,11 +211,14 @@ npm audit --omit=dev
 
 当前验证结果：
 
-- 后端：81 passed。
-- 前端：3 个测试文件、12 个测试通过。
+- 后端：117 passed。
+- 前端：18 个测试文件、97 个测试通过。
 - 前端生产构建：通过。
 - 生产依赖审计：0 vulnerabilities。
 - SQLite：user_version=2，外键检查无违规，integrity_check=ok。
+- GitHub Actions：Python 3.12 后端任务与 Node.js 20 前端任务均通过；本轮功能实现基线提交为 `77d3443b1680a611655bd4c968ec3315b31bc869`。
+
+持续集成定义在 `.github/workflows/ci.yml`，push 到 `main` 或面向 `main` 的 pull request 会触发。CI 使用 Mock，不读取本机 `.env` 或真实外部服务密钥；SQLite 正式库完整性、真实服务 smoke、密钥扫描和 `git diff --check` 仍属于本地发布检查。
 
 ## 备份
 
@@ -216,5 +236,6 @@ npm audit --omit=dev
 - [数据库设计说明](项目文档/数据库设计说明.md)
 - [数据库规范化说明](项目文档/数据库规范化说明.md)
 - [测试报告](项目文档/测试报告.md)
+- [AI 与 OCR 开发说明](项目文档/AI与OCR开发说明.md)
 - [开发记录与上下文归档](项目文档/开发记录与上下文归档.md)
 - [PDF 交付物待更新清单](项目文档/PDF交付物待更新清单.md)

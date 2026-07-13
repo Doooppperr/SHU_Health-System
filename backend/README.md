@@ -15,7 +15,9 @@ pip install -r requirements.txt
 可选配置：
 
 ~~~powershell
-Copy-Item .env.example .env
+if (-not (Test-Path .env)) {
+    Copy-Item .env.example .env
+}
 ~~~
 
 后端默认监听 http://127.0.0.1:5050，健康检查为 GET /api/health。
@@ -28,15 +30,17 @@ Copy-Item .env.example .env
 instance/health_system.db
 ~~~
 
-开发入口和 Waitress 入口读取同一个文件。当前正式库已经迁移到 schema v2：
+开发入口和 Waitress 入口读取同一个文件。2026-07-11 的 schema v2 迁移验收基线为：
 
-| 检查项 | 当前值 |
+| 检查项 | 迁移验收值 |
 |---|---:|
 | PRAGMA user_version | 2 |
 | users | 2 |
 | institutions | 3 |
 | packages | 15 |
 | health_records | 12 |
+
+本地数据库已被 Git 忽略，后续业务行数会随测试和演示变化；这些数量只记录迁移时的数据保留结果。
 
 每个 SQLite 连接自动启用：
 
@@ -87,6 +91,8 @@ LOCAL_DATABASE_URL=sqlite:///another-local.db
 - institution_invites：只保存邀请码 SHA-256 哈希、状态、签发人、使用人和撤销信息。
 - institution_images：每机构 0–7 排序位，第一张为封面。
 - health_records.institution_id 与 package_id 可为空，未选择机构也可正常保存档案和指标。
+- health_records 的用户展示编号由内部主键派生为 `health{id}`，通过 `display_id` 返回；数据库仍使用整数主键，API 路径继续传数字 ID。
+- `ocr_raw_text` 保存 OCR 解析快照；既有档案重新 OCR 时还会暂存带随机 `attachment_id` 的待确认附件，但不会新增分析结果或聊天记录表。
 
 ## 接口分区
 
@@ -144,9 +150,12 @@ AI 接口支持：
 - `POST /api/ai/analyze/stream`：同一归属人的档案可多选；服务端先确定性计算指标变化，再交给 AI 解释。
 - `POST /api/ai/chat`：保留的非流式兼容接口。
 - 发送任何档案前必须为本次请求提交 `consent: true`；档案 ID、状态、指标和亲友授权会在每次请求中重新校验。
+- 可分析档案必须为本人或已授权亲友的 `confirmed` 档案且至少有一项指标；一次请求必须属于同一所有者，不设置数量上限，数据库查询会分批执行。
 - 两类管理员：后台不提供健康 AI，也不能把健康档案 ID 作为 AI 上下文。
 
-后端不保存聊天或分析结果。流事件依次使用 `meta`、`status`、`delta`、`action`、`done`、`error`；真实模式从 .env 读取：
+后端不保存聊天或分析结果。历史满 20 条时使用本地确定性裁剪与摘要合并，不会额外调用一次模型。流事件使用 `meta`、`status`、`delta`、`action`、`done`、`error`；所有流请求带 `request_id`，错误事件包含稳定 `code` 和 `retryable`。响应只发送 `Cache-Control` 与 `X-Accel-Buffering` 等端到端头，不设置 Waitress/WSGI 禁止的 `Connection` 头。
+
+真实模式从 .env 读取：
 
 ~~~env
 AI_PROVIDER=deepseek
@@ -157,10 +166,15 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 AI_CONNECT_TIMEOUT_SECONDS=5
 AI_READ_TIMEOUT_SECONDS=30
 AI_REQUEST_TIMEOUT_SECONDS=60
+AI_MAX_HISTORY_MESSAGES=20
 AI_SUPPORT_PHONE=
+AI_GUEST_RATE_LIMIT_PER_MINUTE=10
+AI_AUTH_RATE_LIMIT_PER_MINUTE=30
 ~~~
 
-离线测试可设置 AI_USE_MOCK=1。真实密钥不得写入源码、.env.example、测试输出或提交记录。
+连接超时、读取超时和总截止默认分别为 5/30/60 秒。上游在首个模型内容到达前发生连接中断或 502/503/504 时最多自动重试一次；客户端取消或断开会关闭上游流。结构化日志只记录模式、档案数量、提示长度、首次正文 `delta`/总耗时、状态和 token 用量，不记录消息正文、指标值或密钥。
+
+离线测试可设置 AI_USE_MOCK=1。真实密钥不得写入源码、.env.example、测试输出或提交记录。请求与事件完整示例见 [`../项目文档/AI与OCR开发说明.md`](../项目文档/AI与OCR开发说明.md)。
 
 ## OCR
 
@@ -171,6 +185,13 @@ OCR_USE_MOCK=1
 ~~~
 
 真实 OCR 需在 .env 配置 HUAWEI_OCR_ENDPOINT、HUAWEI_OCR_AK、HUAWEI_OCR_SK 和 HUAWEI_PROJECT_ID。OCR 生成候选映射，用户确认后才形成 confirmed 档案。
+
+OCR 支持两种流程：
+
+- 新档案：`POST /api/records/upload` 发送文件、体检日期和归属信息，创建 `parsed` 档案；`PUT /api/records/{id}/confirm` 确认候选映射。
+- 既有档案：同一上传接口额外发送 `record_id`，服务端只写入待确认快照并保持原 `status`、正式报告和指标不变；`GET /api/records/{id}/ocr-pending` 可恢复页面，确认时必须带匹配的 `attachment_id`，也可用 `DELETE /api/records/{id}/ocr-pending` 放弃。
+
+既有档案补传上传、补传确认、补传取消和档案删除共享基于 `ocr_raw_text` 快照的乐观并发控制。旧页面或并发操作分别返回 `OCR_ATTACHMENT_CONFLICT`、`OCR_ATTACHMENT_STALE` 或 `RECORD_DELETE_CONFLICT`（HTTP 409），并清理未被数据库采用的新文件。直接新建的 OCR 档案仍按普通 `parsed → confirmed` 流程处理。
 
 ## 启动
 
@@ -204,6 +225,8 @@ Waitress 本机演示（推荐从项目根目录使用启动脚本）：
 .\.venv\Scripts\python.exe -m pytest -q
 ~~~
 
-当前完整结果：81 passed。
+当前完整结果：117 passed。
 
-测试使用独立内存 SQLite，不修改 instance/health_system.db；覆盖三角色路由与接口隔离、邀请码生命周期和并发消费、一机构一管理员、机构软停用、相册限制与清理、可选机构、指标规范化、报告文件保护、机构数据脱敏只读、AI/OCR、schema v2 模型约束及迁移幂等性。
+测试使用独立内存 SQLite，不修改 instance/health_system.db；覆盖三角色路由与接口隔离、邀请码生命周期和并发消费、一机构一管理员、机构软停用、相册限制与清理、可选机构、指标规范化、报告文件保护、机构数据脱敏只读、AI SSE/分析/超时/取消、OCR 新建与既有档案暂存/恢复/并发、展示编号、schema v2 模型约束及迁移幂等性。
+
+GitHub Actions 使用 Python 3.12 执行 `pip check` 和完整 Pytest；前端任务使用 Node.js 20 执行依赖审计、Vitest 与生产构建，且不注入真实 DeepSeek 或华为云密钥。
