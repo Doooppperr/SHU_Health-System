@@ -1,10 +1,11 @@
 import json
 import os
 from datetime import date
+from uuid import uuid4
 
 from flask import current_app, request, send_file
 from flask_jwt_extended import get_jwt_identity, jwt_required, verify_jwt_in_request
-from sqlalchemy import func
+from sqlalchemy import func, update
 
 from app.extensions import db
 from app.models import (
@@ -30,6 +31,7 @@ from app.services.record_files import delete_report_urls, report_file_path
 
 
 ALLOWED_UPLOAD_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp"}
+PENDING_ATTACHMENT_KEY = "_pending_attachment"
 
 
 @records_bp.before_request
@@ -163,15 +165,29 @@ def _build_ocr_snapshot(ocr_result: dict, mapping: dict):
     }
 
 
-def _load_ocr_snapshot(record: HealthRecord):
-    if not record.ocr_raw_text:
+def _parse_ocr_snapshot(raw_text):
+    if not raw_text:
         return {}
 
     try:
-        payload = json.loads(record.ocr_raw_text)
+        payload = json.loads(raw_text)
         return payload if isinstance(payload, dict) else {}
     except (TypeError, ValueError):
         return {}
+
+
+def _load_ocr_snapshot(record: HealthRecord):
+    return _parse_ocr_snapshot(record.ocr_raw_text)
+
+
+def _pending_attachment(snapshot: dict):
+    pending = snapshot.get(PENDING_ATTACHMENT_KEY) if isinstance(snapshot, dict) else None
+    if not isinstance(pending, dict):
+        return None
+    report_file_url = pending.get("report_file_url")
+    if not isinstance(report_file_url, str) or not report_file_url.strip():
+        return None
+    return pending
 
 
 def _normalize_confirmed_mappings(raw_confirmed_mappings):
@@ -426,6 +442,18 @@ def upload_record_and_parse():
     if user is None:
         return {"message": "user not found"}, 404
 
+    raw_record_id = request.form.get("record_id")
+    target_record = None
+    target_snapshot_text = None
+    if raw_record_id not in {None, ""}:
+        record_id = _parse_optional_int(raw_record_id)
+        if record_id is None or record_id <= 0:
+            return {"message": "record_id must be a positive integer"}, 400
+        target_record = _get_accessible_record(record_id, user)
+        if target_record is None:
+            return {"message": "record not found"}, 404
+        target_snapshot_text = target_record.ocr_raw_text
+
     uploaded_file = request.files.get("file")
 
     if uploaded_file is None or not uploaded_file.filename:
@@ -435,30 +463,34 @@ def upload_record_and_parse():
     if extension not in ALLOWED_UPLOAD_EXTENSIONS:
         return {"message": "unsupported file type"}, 400
 
-    exam_date = _parse_exam_date(request.form.get("exam_date"))
-    if exam_date is None:
-        return {"message": "exam_date is required and must be ISO date (YYYY-MM-DD)"}, 400
+    if target_record is None:
+        exam_date = _parse_exam_date(request.form.get("exam_date"))
+        if exam_date is None:
+            return {"message": "exam_date is required and must be ISO date (YYYY-MM-DD)"}, 400
 
-    owner_id, owner_parse_error = _parse_owner_id(request.form.get("owner_id"), user.id)
-    if owner_parse_error:
-        return owner_parse_error, 400
+        owner_id, owner_parse_error = _parse_owner_id(request.form.get("owner_id"), user.id)
+        if owner_parse_error:
+            return owner_parse_error, 400
 
-    owner_error_payload, owner_error_status = _validate_owner_manage_permission(user, owner_id)
-    if owner_error_payload:
-        return owner_error_payload, owner_error_status
+        owner_error_payload, owner_error_status = _validate_owner_manage_permission(user, owner_id)
+        if owner_error_payload:
+            return owner_error_payload, owner_error_status
 
-    raw_institution_id = request.form.get("institution_id")
-    raw_package_id = request.form.get("package_id")
-    institution_id = _parse_optional_int(raw_institution_id)
-    package_id = _parse_optional_int(raw_package_id)
-    if raw_institution_id not in {None, ""} and institution_id is None:
-        return {"message": "institution_id must be integer"}, 400
-    if raw_package_id not in {None, ""} and package_id is None:
-        return {"message": "package_id must be integer"}, 400
+        raw_institution_id = request.form.get("institution_id")
+        raw_package_id = request.form.get("package_id")
+        institution_id = _parse_optional_int(raw_institution_id)
+        package_id = _parse_optional_int(raw_package_id)
+        if raw_institution_id not in {None, ""} and institution_id is None:
+            return {"message": "institution_id must be integer"}, 400
+        if raw_package_id not in {None, ""} and package_id is None:
+            return {"message": "package_id must be integer"}, 400
 
-    institution, package, error_payload, error_status = _validate_institution_package(institution_id, package_id)
-    if error_payload:
-        return error_payload, error_status
+        institution, package, error_payload, error_status = _validate_institution_package(
+            institution_id,
+            package_id,
+        )
+        if error_payload:
+            return error_payload, error_status
 
     storage = get_storage_backend(current_app.config)
     saved_file = storage.save(uploaded_file, subdir="reports")
@@ -495,23 +527,80 @@ def upload_record_and_parse():
         storage.delete(saved_file["key"])
         raise
 
-    record = HealthRecord(
-        owner_id=owner_id,
-        uploader_id=user.id,
-        institution_id=institution.id if institution else None,
-        package_id=package.id if package else None,
-        exam_date=exam_date,
-        report_file_url=saved_file["url"],
-        ocr_raw_text=json.dumps(ocr_snapshot, ensure_ascii=False),
-        status="parsed",
-    )
-    db.session.add(record)
-    try:
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        storage.delete(saved_file["key"])
-        raise
+    attachment_id = None
+    if target_record is None:
+        record = HealthRecord(
+            owner_id=owner_id,
+            uploader_id=user.id,
+            institution_id=institution.id if institution else None,
+            package_id=package.id if package else None,
+            exam_date=exam_date,
+        )
+        db.session.add(record)
+        record.uploader_id = user.id
+        record.report_file_url = saved_file["url"]
+        record.ocr_raw_text = json.dumps(ocr_snapshot, ensure_ascii=False)
+        record.status = "parsed"
+        previous_pending_report_url = None
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            storage.delete(saved_file["key"])
+            raise
+    else:
+        db.session.expire_all()
+        record = _get_accessible_record(record_id, user)
+        if record is None:
+            storage.delete(saved_file["key"])
+            return {"message": "record not found"}, 404
+
+        existing_snapshot = _parse_ocr_snapshot(target_snapshot_text)
+        existing_pending = _pending_attachment(existing_snapshot)
+        previous_pending_report_url = (
+            existing_pending.get("report_file_url") if existing_pending else None
+        )
+        previous_ocr_raw_text = (
+            existing_pending.get("previous_ocr_raw_text")
+            if existing_pending
+            else target_snapshot_text
+        )
+        attachment_id = uuid4().hex
+        ocr_snapshot[PENDING_ATTACHMENT_KEY] = {
+            "attachment_id": attachment_id,
+            "report_file_url": saved_file["url"],
+            "uploader_id": user.id,
+            "previous_ocr_raw_text": previous_ocr_raw_text,
+        }
+        snapshot_condition = (
+            HealthRecord.ocr_raw_text.is_(None)
+            if target_snapshot_text is None
+            else HealthRecord.ocr_raw_text == target_snapshot_text
+        )
+        result = db.session.execute(
+            update(HealthRecord)
+            .where(HealthRecord.id == record.id, snapshot_condition)
+            .values(ocr_raw_text=json.dumps(ocr_snapshot, ensure_ascii=False))
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            db.session.rollback()
+            storage.delete(saved_file["key"])
+            return {
+                "message": "record changed while OCR was processing; upload again",
+                "code": "OCR_ATTACHMENT_CONFLICT",
+            }, 409
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            storage.delete(saved_file["key"])
+            raise
+        db.session.expire_all()
+        record = db.session.get(HealthRecord, record_id)
+
+    if previous_pending_report_url and previous_pending_report_url != saved_file["url"]:
+        delete_report_urls([previous_pending_report_url])
 
     return {
         "item": record.to_dict(include_indicators=True),
@@ -524,8 +613,10 @@ def upload_record_and_parse():
             "filtered_fields": mapping.get("filtered", []),
             "candidate_mappings": mapping.get("candidate_mappings", []),
             "diagnostics": mapping.get("diagnostics", {}),
+            "pending_confirmation": target_record is not None,
+            "attachment_id": attachment_id,
         },
-    }, 201
+    }, 200 if target_record is not None else 201
 
 
 @records_bp.put("/<int:record_id>/confirm")
@@ -539,13 +630,27 @@ def confirm_record(record_id: int):
     if record is None:
         return {"message": "record not found"}, 404
 
-    if record.status == "confirmed":
+    snapshot_text = record.ocr_raw_text
+    snapshot = _parse_ocr_snapshot(snapshot_text)
+    pending_attachment = _pending_attachment(snapshot)
+
+    if record.status == "confirmed" and pending_attachment is None:
         return {"item": record.to_dict(include_indicators=True), "message": "already confirmed"}, 200
 
-    if record.status not in {"draft", "parsed"}:
+    if pending_attachment is None and record.status not in {"draft", "parsed"}:
         return {"message": "record status cannot be confirmed"}, 400
 
     payload = request.get_json(silent=True) or {}
+    if pending_attachment is not None:
+        requested_attachment_id = payload.get("attachment_id") if isinstance(payload, dict) else None
+        if (
+            not isinstance(requested_attachment_id, str)
+            or requested_attachment_id != pending_attachment.get("attachment_id")
+        ):
+            return {
+                "message": "OCR attachment is stale; reload the pending OCR result",
+                "code": "OCR_ATTACHMENT_STALE",
+            }, 409
     raw_confirmed_mappings = payload.get("confirmed_mappings") if isinstance(payload, dict) else None
 
     try:
@@ -574,8 +679,43 @@ def confirm_record(record_id: int):
             "invalid_indicator_values": invalid_values,
         }, 400
 
-    record.status = "confirmed"
+    previous_report_url = None
+    if pending_attachment is not None:
+        previous_report_url = record.report_file_url
+        pending_uploader_id = _parse_optional_int(pending_attachment.get("uploader_id"))
+        if pending_uploader_id is None:
+            db.session.rollback()
+            return {"message": "pending OCR attachment is invalid"}, 409
+        snapshot.pop(PENDING_ATTACHMENT_KEY, None)
+        result = db.session.execute(
+            update(HealthRecord)
+            .where(
+                HealthRecord.id == record.id,
+                HealthRecord.ocr_raw_text == snapshot_text,
+            )
+            .values(
+                report_file_url=pending_attachment["report_file_url"],
+                uploader_id=pending_uploader_id,
+                ocr_raw_text=json.dumps(snapshot, ensure_ascii=False),
+                status="confirmed",
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            db.session.rollback()
+            return {
+                "message": "OCR attachment changed; reload before confirming",
+                "code": "OCR_ATTACHMENT_STALE",
+            }, 409
+    else:
+        record.status = "confirmed"
+
     db.session.commit()
+    db.session.expire_all()
+    record = db.session.get(HealthRecord, record_id)
+
+    if previous_report_url and previous_report_url != record.report_file_url:
+        delete_report_urls([previous_report_url])
 
     response_payload = {
         "item": record.to_dict(include_indicators=True),
@@ -589,6 +729,99 @@ def confirm_record(record_id: int):
         response_payload["ocr"]["auto_threshold"] = auto_threshold
 
     return response_payload, 200
+
+
+@records_bp.get("/<int:record_id>/ocr-pending")
+@jwt_required()
+def get_pending_ocr_attachment(record_id: int):
+    user = _current_user()
+    if user is None:
+        return {"message": "user not found"}, 404
+
+    record = _get_accessible_record(record_id, user)
+    if record is None:
+        return {"message": "record not found"}, 404
+
+    snapshot = _load_ocr_snapshot(record)
+    pending = _pending_attachment(snapshot)
+    attachment_id = pending.get("attachment_id") if pending else None
+    if not isinstance(attachment_id, str) or not attachment_id:
+        return {"message": "pending OCR attachment not found"}, 404
+
+    mapping = snapshot.get("mapping") or {}
+    candidates = mapping.get("candidate_mappings") or []
+    unmatched = mapping.get("unmatched") or []
+    filtered = mapping.get("filtered") or []
+    return {
+        "item": record.to_dict(include_indicators=True),
+        "ocr": {
+            "provider": snapshot.get("engine", "unknown"),
+            "mapped_count": len(candidates),
+            "unmatched_count": len(unmatched),
+            "unmatched_fields": unmatched,
+            "filtered_count": len(filtered),
+            "filtered_fields": filtered,
+            "candidate_mappings": candidates,
+            "diagnostics": mapping.get("diagnostics", {}),
+            "pending_confirmation": True,
+            "attachment_id": attachment_id,
+        },
+    }, 200
+
+
+@records_bp.delete("/<int:record_id>/ocr-pending")
+@jwt_required()
+def cancel_pending_ocr_attachment(record_id: int):
+    user = _current_user()
+    if user is None:
+        return {"message": "user not found"}, 404
+
+    record = _get_accessible_record(record_id, user)
+    if record is None:
+        return {"message": "record not found"}, 404
+
+    snapshot_text = record.ocr_raw_text
+    snapshot = _parse_ocr_snapshot(snapshot_text)
+    pending = _pending_attachment(snapshot)
+    if pending is None:
+        return {"message": "pending OCR attachment not found"}, 404
+
+    payload = request.get_json(silent=True) or {}
+    attachment_id = payload.get("attachment_id") if isinstance(payload, dict) else None
+    if not isinstance(attachment_id, str) or attachment_id != pending.get("attachment_id"):
+        return {
+            "message": "OCR attachment is stale; reload before cancelling",
+            "code": "OCR_ATTACHMENT_STALE",
+        }, 409
+
+    previous_ocr_raw_text = pending.get("previous_ocr_raw_text")
+    if previous_ocr_raw_text is not None and not isinstance(previous_ocr_raw_text, str):
+        previous_ocr_raw_text = None
+    result = db.session.execute(
+        update(HealthRecord)
+        .where(
+            HealthRecord.id == record.id,
+            HealthRecord.ocr_raw_text == snapshot_text,
+        )
+        .values(ocr_raw_text=previous_ocr_raw_text)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        db.session.rollback()
+        return {
+            "message": "OCR attachment changed; reload before cancelling",
+            "code": "OCR_ATTACHMENT_STALE",
+        }, 409
+
+    pending_report_file_url = pending["report_file_url"]
+    db.session.commit()
+    delete_report_urls([pending_report_file_url])
+    db.session.expire_all()
+    record = db.session.get(HealthRecord, record_id)
+    return {
+        "item": record.to_dict(include_indicators=True),
+        "message": "pending OCR attachment cancelled",
+    }, 200
 
 
 @records_bp.get("/<int:record_id>")
@@ -703,10 +936,42 @@ def delete_record(record_id: int):
     if record is None:
         return {"message": "record not found"}, 404
 
+    snapshot_text = record.ocr_raw_text
     report_file_url = record.report_file_url
+    pending = _pending_attachment(_load_ocr_snapshot(record))
+    pending_report_file_url = pending.get("report_file_url") if pending else None
+
+    # Join the same optimistic-concurrency protocol used by OCR attachment
+    # uploads.  The no-op UPDATE both verifies that the snapshot we inspected is
+    # still current and acquires the database write/row lock for the remainder
+    # of this transaction.  Therefore either deletion wins (and a concurrent
+    # uploader later removes its newly saved file after its CAS fails), or the
+    # upload wins and deletion asks the client to reload before retrying.
+    snapshot_condition = (
+        HealthRecord.ocr_raw_text.is_(None)
+        if snapshot_text is None
+        else HealthRecord.ocr_raw_text == snapshot_text
+    )
+    lock_result = db.session.execute(
+        update(HealthRecord)
+        .where(HealthRecord.id == record.id, snapshot_condition)
+        .values(ocr_raw_text=HealthRecord.ocr_raw_text)
+        .execution_options(synchronize_session=False)
+    )
+    if lock_result.rowcount != 1:
+        db.session.rollback()
+        return {
+            "message": "record changed while it was being deleted; reload and retry",
+            "code": "RECORD_DELETE_CONFLICT",
+        }, 409
+
     db.session.delete(record)
-    db.session.commit()
-    delete_report_urls([report_file_url])
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
+    delete_report_urls([report_file_url, pending_report_file_url])
     return {"message": "record deleted"}, 200
 
 

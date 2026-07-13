@@ -7,6 +7,7 @@ import RecordListView from "./RecordListView.vue";
 import { useAuthStore } from "../stores/auth";
 
 const mocks = vi.hoisted(() => ({
+  routerPush: vi.fn(),
   aiStore: {
     isSending: false,
     prepareRecordAnalysis: vi.fn(),
@@ -19,7 +20,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("vue-router", () => ({
-  useRouter: () => ({ push: vi.fn() }),
+  useRouter: () => ({ push: mocks.routerPush }),
 }));
 
 vi.mock("../stores/aiChat", () => ({
@@ -145,6 +146,7 @@ async function mountView({ role = "user" } = {}) {
 }
 
 beforeEach(() => {
+  mocks.routerPush.mockReset();
   mocks.aiStore.isSending = false;
   mocks.aiStore.prepareRecordAnalysis.mockReset();
   mocks.fetchRecords.mockResolvedValue({ data: { items: records } });
@@ -155,6 +157,20 @@ beforeEach(() => {
 });
 
 describe("RecordListView intelligent analysis selection", () => {
+  it("offers both a new OCR flow and an attach-to-record OCR flow", async () => {
+    const wrapper = await mountView();
+
+    expect(wrapper.get('[data-testid="new-record-ocr-button"]').text()).toContain("OCR 上传报告");
+    wrapper.vm.goUpload(records[0]);
+    expect(mocks.routerPush).toHaveBeenLastCalledWith({
+      name: "record-upload",
+      query: { record_id: "1" },
+    });
+
+    wrapper.vm.goUpload();
+    expect(mocks.routerPush).toHaveBeenLastCalledWith({ name: "record-upload" });
+  });
+
   it("only allows confirmed records that contain indicators", async () => {
     const wrapper = await mountView();
     const selectionColumn = wrapper.findAllComponents(ElTableColumnStub)[0];

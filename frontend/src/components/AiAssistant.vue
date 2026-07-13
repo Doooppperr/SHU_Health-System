@@ -22,13 +22,14 @@
       ref="chatPanel"
       class="ai-chat-panel"
       tabindex="-1"
-      :role="compactViewport ? 'dialog' : 'complementary'"
-      :aria-modal="compactViewport ? 'true' : undefined"
+      :role="panelOverlayMode ? 'dialog' : 'complementary'"
+      :aria-modal="panelOverlayMode ? 'true' : undefined"
       aria-labelledby="ai-chat-title"
       @keydown.tab="trapPanelFocus"
       @keydown.esc="handlePanelEscape"
     >
       <div
+        v-if="!panelOverlayMode"
         class="ai-resize-handle"
         role="separator"
         tabindex="0"
@@ -417,13 +418,23 @@ import { ElMessage, ElMessageBox } from "element-plus";
 
 import { useAiChatStore } from "../stores/aiChat";
 import { useAuthStore } from "../stores/auth";
+import {
+  AI_PANEL_COMPACT_BREAKPOINT as PANEL_COMPACT_BREAKPOINT,
+  AI_PANEL_MIN_WIDTH as PANEL_MIN_WIDTH,
+  getAiPanelMaxWidth,
+  normalizeAiPanelWidth,
+} from "../utils/aiStageLayout";
+
+const props = defineProps({
+  overlayMode: {
+    type: Boolean,
+    default: false,
+  },
+});
 
 const BALL_SIZE = 60;
 const BALL_MARGIN = 14;
 const BALL_TOP_SAFE_AREA = 80;
-const PANEL_MIN_WIDTH = 360;
-const PANEL_MAX_WIDTH = 760;
-const PANEL_COMPACT_BREAKPOINT = 860;
 const PANEL_KEYBOARD_STEP = 24;
 const PANEL_FOCUSABLE_SELECTOR = [
   "a[href]",
@@ -448,20 +459,18 @@ const messageArea = ref(null);
 const analysisCard = ref(null);
 const recordPickerCard = ref(null);
 const ballPosition = ref({ x: 0, y: 0 });
-const viewportWidth = ref(window.innerWidth);
+function getViewportWidth() {
+  return document.documentElement?.clientWidth || window.innerWidth;
+}
+
+const viewportWidth = ref(getViewportWidth());
 
 const authenticated = computed(() => Boolean(authStore.accessToken && authStore.user));
 const compactViewport = computed(() => viewportWidth.value <= PANEL_COMPACT_BREAKPOINT);
-const panelMaxWidth = computed(() =>
-  Math.max(
-    PANEL_MIN_WIDTH,
-    Math.round(Math.min(PANEL_MAX_WIDTH, viewportWidth.value * 0.55))
-  )
-);
+const panelOverlayMode = computed(() => compactViewport.value || props.overlayMode);
+const panelMaxWidth = computed(() => getAiPanelMaxWidth(viewportWidth.value));
 const panelWidthNow = computed(() =>
-  Math.round(
-    Math.min(Math.max(PANEL_MIN_WIDTH, aiStore.panelWidth), panelMaxWidth.value)
-  )
+  normalizeAiPanelWidth(aiStore.panelWidth, viewportWidth.value)
 );
 const sendingAnnouncement = computed(() =>
   aiStore.isSending ? aiStore.statusText || "消息正在发送，正在等待 AI 回复。" : ""
@@ -548,7 +557,7 @@ function handleBallClick(event) {
 }
 
 function trapPanelFocus(event) {
-  if (!compactViewport.value || !chatPanel.value) {
+  if (!panelOverlayMode.value || !chatPanel.value) {
     return;
   }
 
@@ -657,14 +666,14 @@ function startBallDrag(event) {
 }
 
 function startResize(event) {
-  if (event.button !== 0 || compactViewport.value) {
+  if (event.button !== 0 || panelOverlayMode.value) {
     return;
   }
   event.preventDefault();
   event.currentTarget?.focus({ preventScroll: true });
   const move = (moveEvent) => {
     const width = Math.min(
-      Math.max(PANEL_MIN_WIDTH, window.innerWidth - moveEvent.clientX),
+      Math.max(PANEL_MIN_WIDTH, viewportWidth.value - moveEvent.clientX),
       panelMaxWidth.value
     );
     aiStore.setPanelWidth(width);
@@ -680,7 +689,7 @@ function startResize(event) {
 }
 
 function resizeWithKeyboard(event) {
-  if (compactViewport.value) {
+  if (panelOverlayMode.value) {
     return;
   }
 
@@ -857,10 +866,10 @@ async function confirmEndConversation() {
 }
 
 function handleViewportResize() {
-  viewportWidth.value = window.innerWidth;
+  viewportWidth.value = getViewportWidth();
   ballPosition.value = clampBall(ballPosition.value);
   aiStore.setBallPosition(ballPosition.value);
-  if (!compactViewport.value) {
+  if (!panelOverlayMode.value) {
     aiStore.setPanelWidth(
       Math.min(Math.max(PANEL_MIN_WIDTH, aiStore.panelWidth), panelMaxWidth.value)
     );
@@ -879,6 +888,18 @@ watch(
     }
   }
 );
+
+watch(panelOverlayMode, async (isOverlay) => {
+  if (!isOverlay || !aiStore.isOpen) return;
+
+  await nextTick();
+  if (!chatPanel.value || chatPanel.value.contains(document.activeElement)) return;
+
+  await focusComposer();
+  if (!chatPanel.value.contains(document.activeElement)) {
+    chatPanel.value.focus({ preventScroll: true });
+  }
+});
 
 watch(
   () => authStore.user?.id || null,
@@ -914,7 +935,7 @@ watch(
 );
 
 onMounted(() => {
-  if (!compactViewport.value) {
+  if (!panelOverlayMode.value) {
     aiStore.setPanelWidth(panelWidthNow.value);
   }
   initializeBallPosition();

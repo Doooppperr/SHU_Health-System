@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 
 from app.extensions import db
@@ -31,9 +32,28 @@ class HealthRecord(db.Model):
         order_by="HealthIndicator.id.asc()",
     )
 
+    @property
+    def display_id(self):
+        """User-facing identifier derived from the internal numeric key."""
+        return f"health{self.id}" if self.id is not None else None
+
+    @property
+    def ocr_pending_confirmation(self):
+        try:
+            snapshot = json.loads(self.ocr_raw_text) if self.ocr_raw_text else {}
+        except (TypeError, ValueError):
+            return False
+        pending = snapshot.get("_pending_attachment") if isinstance(snapshot, dict) else None
+        return bool(
+            isinstance(pending, dict)
+            and pending.get("attachment_id")
+            and pending.get("report_file_url")
+        )
+
     def to_dict(self, include_indicators=False):
         payload = {
             "id": self.id,
+            "display_id": self.display_id,
             "owner_id": self.owner_id,
             "uploader_id": self.uploader_id,
             "owner": {
@@ -53,6 +73,7 @@ class HealthRecord(db.Model):
             "exam_date": self.exam_date.isoformat(),
             "report_file_url": self.report_file_url,
             "status": self.status,
+            "ocr_pending_confirmation": self.ocr_pending_confirmation,
             "created_at": self.created_at.isoformat(),
             "institution": {
                 "id": self.institution.id,
@@ -98,6 +119,11 @@ class HealthIndicator(db.Model):
         return {
             "id": self.id,
             "record_id": self.record_id,
+            "record_display_id": (
+                self.record.display_id
+                if self.record
+                else f"health{self.record_id}"
+            ),
             "indicator_dict_id": self.indicator_dict_id,
             "value": self.value,
             "is_abnormal": self.is_abnormal,

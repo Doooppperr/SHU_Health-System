@@ -6,7 +6,9 @@
           <span>OCR上传解析</span>
           <MainNavActions>
             <template #prefix>
-              <el-button plain @click="goRecords">返回档案列表</el-button>
+              <el-button plain @click="goBack">
+                {{ isAttachMode ? "返回档案详情" : "返回档案列表" }}
+              </el-button>
             </template>
           </MainNavActions>
         </div>
@@ -20,8 +22,31 @@
         style="margin-bottom: 16px"
       />
 
+      <el-alert
+        v-if="isAttachMode && targetRecord"
+        :title="`报告将录入现有档案 ${formatRecordDisplayId(targetRecord)}`"
+        description="不会创建重复档案。确认前原档案状态、原报告和已有指标保持不变；确认入档时，OCR 会更新同名指标并保留报告中未涉及的已有指标。"
+        type="info"
+        show-icon
+        :closable="false"
+        style="margin-bottom: 16px"
+      />
+
+      <el-descriptions
+        v-if="isAttachMode && targetRecord"
+        :column="1"
+        border
+        style="margin-bottom: 16px"
+        data-testid="ocr-target-record"
+      >
+        <el-descriptions-item label="目标档案">{{ formatRecordDisplayId(targetRecord) }}</el-descriptions-item>
+        <el-descriptions-item label="档案归属人">{{ targetRecord.owner?.username || "-" }}</el-descriptions-item>
+        <el-descriptions-item label="体检日期">{{ targetRecord.exam_date || "-" }}</el-descriptions-item>
+        <el-descriptions-item label="已有指标">{{ targetRecord.indicator_count || 0 }} 项</el-descriptions-item>
+      </el-descriptions>
+
       <el-form label-width="100px" :model="form" class="ocr-form">
-        <el-form-item label="档案归属人" required>
+        <el-form-item v-if="!isAttachMode" label="档案归属人" required>
           <el-select v-model="form.owner_id" placeholder="请选择档案归属人" style="width: 100%">
             <el-option
               v-for="owner in ownerOptions"
@@ -32,7 +57,7 @@
           </el-select>
         </el-form-item>
 
-        <el-form-item label="体检日期" required>
+        <el-form-item v-if="!isAttachMode" label="体检日期" required>
           <el-date-picker
             v-model="form.exam_date"
             type="date"
@@ -42,7 +67,7 @@
           />
         </el-form-item>
 
-        <el-form-item label="体检机构（可选）">
+        <el-form-item v-if="!isAttachMode" label="体检机构（可选）">
           <el-select v-model="form.institution_id" clearable placeholder="暂不选取" style="width: 100%" @change="onInstitutionChange">
             <el-option
               v-for="institution in institutions"
@@ -53,13 +78,13 @@
           </el-select>
         </el-form-item>
 
-        <el-form-item label="体检套餐（可选）">
+        <el-form-item v-if="!isAttachMode" label="体检套餐（可选）">
           <el-select v-model="form.package_id" clearable placeholder="暂不选取" style="width: 100%" @change="onPackageChange">
             <el-option v-for="pkg in currentPackages" :key="pkg.id" :label="packageLabel(pkg)" :value="pkg.id" />
           </el-select>
         </el-form-item>
 
-        <el-form-item v-if="form.institution_id">
+        <el-form-item v-if="!isAttachMode && form.institution_id">
           <el-alert
             title="确认入档后，标准化档案信息和指标会自动向对应机构管理员只读开放。联系方式和原始报告不会开放。"
             type="warning"
@@ -68,7 +93,7 @@
           />
         </el-form-item>
 
-        <el-form-item v-else>
+        <el-form-item v-else-if="!isAttachMode">
           <el-alert
             title="未关联机构的档案只用于你的个人健康管理，不会向任何机构管理员展示。"
             type="info"
@@ -94,7 +119,14 @@
         </el-form-item>
 
         <el-form-item>
-          <el-button type="primary" :loading="uploadLoading" @click="submitUpload">上传并解析</el-button>
+          <el-button
+            type="primary"
+            :loading="uploadLoading"
+            :disabled="(isAttachMode && !targetRecord) || confirmLoading || cancelLoading"
+            @click="submitUpload"
+          >
+            上传并解析
+          </el-button>
         </el-form-item>
       </el-form>
 
@@ -103,16 +135,27 @@
           <div class="top-bar">
             <span>OCR解析结果</span>
             <div class="top-actions wrap-actions">
-              <el-tag :type="uploadResult.item.status === 'confirmed' ? 'success' : 'warning'">
-                {{ uploadResult.item.status }}
+              <el-tag :type="uploadNeedsConfirmation ? 'warning' : 'success'">
+                {{ uploadNeedsConfirmation ? "待确认" : uploadResult.item.status }}
               </el-tag>
               <el-button
-                v-if="uploadResult.item.status !== 'confirmed'"
+                v-if="uploadNeedsConfirmation"
                 type="success"
                 :loading="confirmLoading"
+                :disabled="uploadLoading || cancelLoading"
                 @click="confirmParsedRecord"
               >
                 确认入档
+              </el-button>
+              <el-button
+                v-if="uploadResult.ocr?.pending_confirmation"
+                type="danger"
+                plain
+                :loading="cancelLoading"
+                :disabled="uploadLoading || confirmLoading"
+                @click="cancelPendingOcr"
+              >
+                放弃暂存报告
               </el-button>
               <el-button type="primary" plain @click="goRecordDetail(uploadResult.item.id)">去修正指标</el-button>
             </div>
@@ -120,7 +163,7 @@
         </template>
 
         <el-descriptions :column="1" border style="margin-bottom: 12px">
-          <el-descriptions-item label="档案ID">{{ uploadResult.item.id }}</el-descriptions-item>
+          <el-descriptions-item label="档案ID">{{ formatRecordDisplayId(uploadResult.item) }}</el-descriptions-item>
           <el-descriptions-item label="档案归属人">{{ uploadResult.item.owner?.username || "-" }}</el-descriptions-item>
           <el-descriptions-item label="上传人">{{ uploadResult.item.uploader?.username || "-" }}</el-descriptions-item>
           <el-descriptions-item label="OCR引擎">{{ uploadResult.ocr.provider }}</el-descriptions-item>
@@ -209,22 +252,30 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from "vue";
-import { ElMessage } from "element-plus";
-import { useRouter } from "vue-router";
+import { computed, onMounted, reactive, ref, watch } from "vue";
+import { ElMessage, ElMessageBox } from "element-plus";
+import { useRoute, useRouter } from "vue-router";
 
 import MainNavActions from "../components/MainNavActions.vue";
 import { fetchFriends } from "../api/friends";
 import { fetchIndicatorDicts } from "../api/indicators";
 import { fetchInstitutions, fetchInstitutionPackages } from "../api/institutions";
-import { confirmRecord, uploadRecordByOcr } from "../api/records";
+import {
+  cancelPendingRecordOcr,
+  confirmRecord,
+  fetchPendingRecordOcr,
+  fetchRecordDetail,
+  uploadRecordByOcr,
+} from "../api/records";
 import { fetchUsers } from "../api/users";
 import { useAuthStore } from "../stores/auth";
+import { formatRecordDisplayId } from "../utils/recordDisplayId";
 import {
   buildOcrConfirmedMappings,
   createOcrMappingRows,
 } from "../utils/ocrConfirmation";
 
+const route = useRoute();
 const router = useRouter();
 const authStore = useAuthStore();
 
@@ -239,8 +290,10 @@ const fileList = ref([]);
 
 const uploadLoading = ref(false);
 const confirmLoading = ref(false);
+const cancelLoading = ref(false);
 const errorMessage = ref("");
 const uploadResult = ref(null);
+const targetRecord = ref(null);
 
 const form = reactive({
   owner_id: null,
@@ -248,6 +301,32 @@ const form = reactive({
   institution_id: null,
   package_id: null,
 });
+
+const rawTargetRecordId = computed(() => (
+  Array.isArray(route.query.record_id)
+    ? route.query.record_id[0]
+    : route.query.record_id
+));
+
+const isAttachMode = computed(() => (
+  rawTargetRecordId.value !== undefined
+  && rawTargetRecordId.value !== null
+  && rawTargetRecordId.value !== ""
+));
+
+const targetRecordId = computed(() => {
+  const rawValue = rawTargetRecordId.value;
+  const parsedValue = Number(rawValue);
+  return Number.isInteger(parsedValue) && parsedValue > 0 ? parsedValue : null;
+});
+
+const uploadNeedsConfirmation = computed(() => Boolean(
+  uploadResult.value
+  && (
+    uploadResult.value.item?.status !== "confirmed"
+    || uploadResult.value.ocr?.pending_confirmation
+  )
+));
 
 const currentPackages = computed(() => {
   if (form.institution_id) return packageMap.value[form.institution_id] || [];
@@ -300,6 +379,67 @@ const loadIndicatorDicts = async () => {
   indicatorDicts.value = data.items || [];
 };
 
+let targetLoadSequence = 0;
+let uploadSequence = 0;
+let pendingActionSequence = 0;
+let targetContextVersion = 0;
+
+const applyOcrResult = (data) => {
+  uploadResult.value = data;
+  mappingDraftRows.value = createOcrMappingRows(
+    data?.ocr?.candidate_mappings || []
+  );
+};
+
+const resetTargetUploadState = () => {
+  targetLoadSequence += 1;
+  uploadSequence += 1;
+  pendingActionSequence += 1;
+  targetContextVersion += 1;
+  targetRecord.value = null;
+  selectedFile.value = null;
+  fileList.value = [];
+  uploadResult.value = null;
+  mappingDraftRows.value = [];
+  errorMessage.value = "";
+  uploadLoading.value = false;
+  confirmLoading.value = false;
+  cancelLoading.value = false;
+};
+
+const loadTargetRecord = async () => {
+  const loadSequence = ++targetLoadSequence;
+  if (!isAttachMode.value) {
+    return;
+  }
+  const requestedRecordId = targetRecordId.value;
+  if (!requestedRecordId) {
+    errorMessage.value = "目标档案编号无效，请返回档案列表后重新选择";
+    return;
+  }
+  const { data } = await fetchRecordDetail(requestedRecordId);
+  if (loadSequence !== targetLoadSequence || targetRecordId.value !== requestedRecordId) {
+    return;
+  }
+  targetRecord.value = data.item;
+  form.owner_id = data.item.owner_id;
+  form.exam_date = data.item.exam_date || "";
+  form.institution_id = data.item.institution_id;
+  form.package_id = data.item.package_id;
+  if (data.item.ocr_pending_confirmation) {
+    try {
+      const pendingResponse = await fetchPendingRecordOcr(requestedRecordId);
+      if (loadSequence !== targetLoadSequence || targetRecordId.value !== requestedRecordId) {
+        return;
+      }
+      applyOcrResult(pendingResponse.data);
+    } catch (error) {
+      if (error?.response?.status !== 404) throw error;
+      targetRecord.value = { ...data.item, ocr_pending_confirmation: false };
+    }
+  }
+};
+
 const loadPackages = async (institutionId) => {
   if (!institutionId) {
     return;
@@ -345,7 +485,19 @@ const onFileRemove = () => {
 };
 
 const submitUpload = async () => {
-  if (!form.owner_id || !form.exam_date) {
+  if (
+    isAttachMode.value
+    && (
+      !targetRecordId.value
+      || !targetRecord.value
+      || Number(targetRecord.value.id) !== targetRecordId.value
+    )
+  ) {
+    ElMessage.error("目标档案加载失败，请返回档案列表后重新选择");
+    return;
+  }
+
+  if (!isAttachMode.value && (!form.owner_id || !form.exam_date)) {
     ElMessage.error("请先填写档案归属人和体检日期");
     return;
   }
@@ -355,37 +507,78 @@ const submitUpload = async () => {
     return;
   }
 
+  const operationSequence = ++uploadSequence;
+  targetLoadSequence += 1;
+  pendingActionSequence += 1;
+  const contextVersion = targetContextVersion;
+  const attaching = isAttachMode.value;
+  const submittedTargetId = attaching ? targetRecordId.value : null;
   uploadLoading.value = true;
+  confirmLoading.value = false;
+  cancelLoading.value = false;
   errorMessage.value = "";
 
   try {
     const payload = new FormData();
-    payload.append("owner_id", String(form.owner_id));
-    payload.append("exam_date", form.exam_date);
-    if (form.institution_id) payload.append("institution_id", String(form.institution_id));
-    if (form.package_id) payload.append("package_id", String(form.package_id));
+    if (attaching) {
+      payload.append("record_id", String(submittedTargetId));
+    } else {
+      payload.append("owner_id", String(form.owner_id));
+      payload.append("exam_date", form.exam_date);
+      if (form.institution_id) payload.append("institution_id", String(form.institution_id));
+      if (form.package_id) payload.append("package_id", String(form.package_id));
+    }
     payload.append("file", selectedFile.value);
 
     const { data } = await uploadRecordByOcr(payload);
-    uploadResult.value = data;
+    let dictionaryRefreshFailed = false;
     try {
       await loadIndicatorDicts();
     } catch {
+      dictionaryRefreshFailed = true;
+    }
+
+    if (
+      operationSequence !== uploadSequence
+      || contextVersion !== targetContextVersion
+      || (attaching && targetRecordId.value !== submittedTargetId)
+    ) {
+      return;
+    }
+
+    applyOcrResult(data);
+    if (attaching) {
+      targetRecord.value = data.item;
+    }
+    if (dictionaryRefreshFailed) {
       ElMessage.warning("OCR 解析成功，但指标字典刷新失败；已保留当前选项，请刷新页面后再确认入档");
     }
-    mappingDraftRows.value = createOcrMappingRows(
-      data?.ocr?.candidate_mappings || []
+    ElMessage.success(
+      attaching
+        ? "报告已解析，确认入档前原档案保持不变"
+        : "OCR解析完成"
     );
-    ElMessage.success("OCR解析完成");
   } catch (error) {
-    errorMessage.value = error?.response?.data?.message || "上传解析失败";
+    if (
+      operationSequence === uploadSequence
+      && contextVersion === targetContextVersion
+      && (!attaching || targetRecordId.value === submittedTargetId)
+    ) {
+      errorMessage.value = error?.response?.data?.message || "上传解析失败";
+    }
   } finally {
-    uploadLoading.value = false;
+    if (
+      operationSequence === uploadSequence
+      && contextVersion === targetContextVersion
+    ) {
+      uploadLoading.value = false;
+    }
   }
 };
 
 const confirmParsedRecord = async () => {
-  if (!uploadResult.value?.item?.id) {
+  const resultToConfirm = uploadResult.value;
+  if (!resultToConfirm?.item?.id) {
     return;
   }
 
@@ -401,14 +594,52 @@ const confirmParsedRecord = async () => {
     return;
   }
 
+  const attachmentId = resultToConfirm.ocr?.pending_confirmation
+    ? resultToConfirm.ocr?.attachment_id
+    : null;
+  if (resultToConfirm.ocr?.pending_confirmation && !attachmentId) {
+    ElMessage.error("暂存 OCR 版本无效，请刷新页面后重试");
+    return;
+  }
+
+  const actionSequence = ++pendingActionSequence;
+  const contextVersion = targetContextVersion;
+  const submittedTargetId = isAttachMode.value ? targetRecordId.value : null;
+  const recordId = resultToConfirm.item.id;
   confirmLoading.value = true;
   try {
-    const requestPayload = mappingDraftRows.value.length
-      ? { confirmed_mappings: confirmedMappings }
-      : null;
+    const requestPayload = {};
+    if (mappingDraftRows.value.length) {
+      requestPayload.confirmed_mappings = confirmedMappings;
+    }
+    if (attachmentId) {
+      requestPayload.attachment_id = attachmentId;
+    }
 
-    const { data } = await confirmRecord(uploadResult.value.item.id, requestPayload);
-    uploadResult.value.item = data.item;
+    const { data } = await confirmRecord(
+      recordId,
+      Object.keys(requestPayload).length ? requestPayload : null
+    );
+    if (
+      actionSequence !== pendingActionSequence
+      || contextVersion !== targetContextVersion
+      || (submittedTargetId && targetRecordId.value !== submittedTargetId)
+      || (attachmentId && uploadResult.value?.ocr?.attachment_id !== attachmentId)
+    ) {
+      return;
+    }
+    uploadResult.value = {
+      ...uploadResult.value,
+      item: data.item,
+      ocr: {
+        ...uploadResult.value.ocr,
+        ...data.ocr,
+        pending_confirmation: false,
+      },
+    };
+    if (isAttachMode.value) {
+      targetRecord.value = data.item;
+    }
     const confirmedCount = data?.ocr?.confirmed_count;
     if (typeof confirmedCount === "number") {
       ElMessage.success(`档案已确认，入档 ${confirmedCount} 项指标`);
@@ -416,9 +647,100 @@ const confirmParsedRecord = async () => {
       ElMessage.success("档案已确认");
     }
   } catch (error) {
-    ElMessage.error(error?.response?.data?.message || "确认失败");
+    if (
+      actionSequence === pendingActionSequence
+      && contextVersion === targetContextVersion
+      && (!submittedTargetId || targetRecordId.value === submittedTargetId)
+    ) {
+      ElMessage.error(error?.response?.data?.message || "确认失败");
+      if (error?.response?.status === 409 && submittedTargetId) {
+        await loadTargetRecord();
+      }
+    }
   } finally {
-    confirmLoading.value = false;
+    if (
+      actionSequence === pendingActionSequence
+      && contextVersion === targetContextVersion
+    ) {
+      confirmLoading.value = false;
+    }
+  }
+};
+
+const cancelPendingOcr = async () => {
+  const pendingResult = uploadResult.value;
+  const recordId = pendingResult?.item?.id;
+  const attachmentId = pendingResult?.ocr?.attachment_id;
+  if (!recordId || !attachmentId || !pendingResult?.ocr?.pending_confirmation) {
+    return;
+  }
+
+  const promptActionSequence = pendingActionSequence;
+  const promptContextVersion = targetContextVersion;
+  const submittedTargetId = isAttachMode.value ? targetRecordId.value : null;
+
+  try {
+    await ElMessageBox.confirm(
+      "放弃后会删除本次暂存报告，原档案、原报告和已有指标不会变化。",
+      "放弃暂存报告",
+      {
+        type: "warning",
+        confirmButtonText: "确认放弃",
+        cancelButtonText: "继续核对",
+      }
+    );
+  } catch (error) {
+    if (error === "cancel" || error === "close") return;
+    throw error;
+  }
+
+  if (
+    promptActionSequence !== pendingActionSequence
+    || promptContextVersion !== targetContextVersion
+    || (submittedTargetId && targetRecordId.value !== submittedTargetId)
+    || uploadResult.value?.item?.id !== recordId
+    || uploadResult.value?.ocr?.attachment_id !== attachmentId
+    || !uploadResult.value?.ocr?.pending_confirmation
+  ) {
+    return;
+  }
+
+  const actionSequence = ++pendingActionSequence;
+  const contextVersion = promptContextVersion;
+  cancelLoading.value = true;
+  try {
+    const { data } = await cancelPendingRecordOcr(recordId, attachmentId);
+    if (
+      actionSequence !== pendingActionSequence
+      || contextVersion !== targetContextVersion
+      || (submittedTargetId && targetRecordId.value !== submittedTargetId)
+    ) {
+      return;
+    }
+    targetRecord.value = data.item;
+    uploadResult.value = null;
+    mappingDraftRows.value = [];
+    selectedFile.value = null;
+    fileList.value = [];
+    ElMessage.success("已放弃暂存报告，原档案保持不变");
+  } catch (error) {
+    if (
+      actionSequence === pendingActionSequence
+      && contextVersion === targetContextVersion
+      && (!submittedTargetId || targetRecordId.value === submittedTargetId)
+    ) {
+      ElMessage.error(error?.response?.data?.message || "放弃暂存报告失败");
+      if (error?.response?.status === 409 && submittedTargetId) {
+        await loadTargetRecord();
+      }
+    }
+  } finally {
+    if (
+      actionSequence === pendingActionSequence
+      && contextVersion === targetContextVersion
+    ) {
+      cancelLoading.value = false;
+    }
   }
 };
 
@@ -428,6 +750,14 @@ const goRecordDetail = (recordId) => {
 
 const goRecords = () => {
   router.push({ name: "records" });
+};
+
+const goBack = () => {
+  if (isAttachMode.value && targetRecordId.value) {
+    router.push({ name: "record-detail", params: { id: targetRecordId.value } });
+    return;
+  }
+  goRecords();
 };
 
 const goTrends = () => {
@@ -451,6 +781,17 @@ const logout = () => {
   router.push({ name: "login" });
 };
 
+watch(targetRecordId, async (recordId, previousRecordId) => {
+  if (recordId === previousRecordId) return;
+  resetTargetUploadState();
+  if (!isAttachMode.value) return;
+  try {
+    await loadTargetRecord();
+  } catch (error) {
+    errorMessage.value = error?.response?.data?.message || "目标档案加载失败";
+  }
+});
+
 onMounted(async () => {
   try {
     if (!authStore.user) {
@@ -458,7 +799,12 @@ onMounted(async () => {
     }
     form.owner_id = authStore.user?.id || null;
     const ownerLoader = authStore.user?.role === "admin" ? loadAdminUsers() : loadFriends();
-    await Promise.all([loadInstitutions(), ownerLoader, loadIndicatorDicts()]);
+    await Promise.all([
+      loadInstitutions(),
+      ownerLoader,
+      loadIndicatorDicts(),
+      loadTargetRecord(),
+    ]);
     await Promise.all(institutions.value.map((institution) => loadPackages(institution.id)));
   } catch (error) {
     errorMessage.value = error?.response?.data?.message || "页面初始化失败";

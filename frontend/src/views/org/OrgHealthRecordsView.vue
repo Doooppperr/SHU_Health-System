@@ -16,7 +16,7 @@
 
     <el-card shadow="never" class="table-card">
       <el-table :data="items" v-loading="loading" empty-text="暂无符合条件的已确认档案">
-        <el-table-column prop="id" label="档案 ID" width="90" />
+        <el-table-column label="档案 ID" width="120"><template #default="scope">{{ formatRecordDisplayId(scope.row) }}</template></el-table-column>
         <el-table-column prop="exam_date" label="体检日期" width="125" />
         <el-table-column label="归属人" min-width="140"><template #default="scope">{{ ownerName(scope.row) }}</template></el-table-column>
         <el-table-column label="套餐" min-width="160"><template #default="scope">{{ scope.row.package?.name || "未选择套餐" }}</template></el-table-column>
@@ -33,7 +33,7 @@
       <el-skeleton v-if="detailLoading" :rows="7" animated />
       <template v-else-if="detail">
         <el-descriptions :column="2" border class="detail-descriptions">
-          <el-descriptions-item label="档案 ID">{{ detail.id }}</el-descriptions-item>
+          <el-descriptions-item label="档案 ID">{{ formatRecordDisplayId(detail) }}</el-descriptions-item>
           <el-descriptions-item label="归属人">{{ ownerName(detail) }}</el-descriptions-item>
           <el-descriptions-item label="体检日期">{{ detail.exam_date }}</el-descriptions-item>
           <el-descriptions-item label="套餐">{{ detail.package?.name || "未选择套餐" }}</el-descriptions-item>
@@ -53,6 +53,7 @@
 <script setup>
 import { onMounted, reactive, ref } from "vue";
 import { fetchOrgHealthRecord, fetchOrgHealthRecords } from "../../api/org";
+import { formatRecordDisplayId } from "../../utils/recordDisplayId";
 
 const items = ref([]); const loading = ref(false); const errorMessage = ref(""); const drawerVisible = ref(false); const detailLoading = ref(false); const detail = ref(null);
 const filters = reactive({ owner_keyword: "" });

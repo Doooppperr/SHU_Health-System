@@ -14,3 +14,8 @@ backend/instance/*.db
 backend/instance/*.sqlite
 backend/instance/*.sqlite3
 scripts/*.log
+
+# Local test inputs and presentation exports
+ocrtest/
+/*.mp4
+/*.pdf

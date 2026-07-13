@@ -6,6 +6,9 @@
           <span>档案详情与指标录入</span>
           <MainNavActions>
             <template #prefix>
+              <el-button type="success" plain data-testid="record-ocr-button" @click="goOcrUpload">
+                {{ record?.ocr_pending_confirmation ? "继续 OCR 确认" : "OCR 上传报告" }}
+              </el-button>
               <el-button plain @click="goBack">返回档案列表</el-button>
             </template>
           </MainNavActions>
@@ -20,11 +23,20 @@
         style="margin-bottom: 16px"
       />
 
+      <el-alert
+        v-if="record?.ocr_pending_confirmation"
+        title="这份档案有一份待确认的 OCR 报告，可点击“继续 OCR 确认”继续核对，或在核对页放弃暂存报告。"
+        type="warning"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 16px"
+      />
+
       <el-skeleton :rows="6" animated v-if="loading" />
 
       <template v-else>
         <el-descriptions :column="1" border style="margin-bottom: 16px">
-          <el-descriptions-item label="档案ID">{{ record?.id || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="档案ID">{{ formatRecordDisplayId(record) }}</el-descriptions-item>
           <el-descriptions-item label="档案归属人">{{ record?.owner?.username || '-' }}</el-descriptions-item>
           <el-descriptions-item label="上传人">{{ record?.uploader?.username || '-' }}</el-descriptions-item>
           <el-descriptions-item label="体检日期">{{ record?.exam_date || '-' }}</el-descriptions-item>
@@ -109,6 +121,7 @@ import {
   updateRecordIndicator,
 } from "../api/records";
 import { useAuthStore } from "../stores/auth";
+import { formatRecordDisplayId } from "../utils/recordDisplayId";
 
 const route = useRoute();
 const router = useRouter();
@@ -217,6 +230,13 @@ const removeIndicator = async (indicatorRow) => {
 
 const goBack = () => {
   router.push({ name: "records" });
+};
+
+const goOcrUpload = () => {
+  router.push({
+    name: "record-upload",
+    query: { record_id: String(recordId.value) },
+  });
 };
 
 const goTrends = () => {

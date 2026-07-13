@@ -61,6 +61,8 @@ def test_indicator_trend_for_owner(client):
     assert payload["summary"]["count"] == 2
     assert payload["series"][0]["record_id"] == first_record_id
     assert payload["series"][1]["record_id"] == second_record_id
+    assert payload["series"][0]["record_display_id"] == f"health{first_record_id}"
+    assert payload["series"][1]["record_display_id"] == f"health{second_record_id}"
     assert payload["summary"]["latest"] == 5.8
     assert payload["summary"]["max"] == 6.4
 

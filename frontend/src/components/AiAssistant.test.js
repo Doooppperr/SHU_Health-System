@@ -35,7 +35,7 @@ function completeStream(_payload, { onEvent }) {
   return Promise.resolve();
 }
 
-function mountAssistant({ authenticated = true } = {}) {
+function mountAssistant({ authenticated = true, overlayMode = false } = {}) {
   const pinia = createPinia();
   setActivePinia(pinia);
   const authStore = useAuthStore(pinia);
@@ -49,6 +49,7 @@ function mountAssistant({ authenticated = true } = {}) {
   aiStore.setOpen(true);
   const wrapper = mount(AiAssistant, {
     attachTo: document.body,
+    props: { overlayMode },
     global: { plugins: [pinia, ElementPlus] },
   });
   wrappers.push(wrapper);
@@ -98,6 +99,34 @@ afterEach(() => {
 });
 
 describe("AiAssistant record-aware interaction", () => {
+  it("uses modal focus behavior and hides resizing in dynamic overlay mode", async () => {
+    const { wrapper } = mountAssistant({ overlayMode: true });
+    await flushPromises();
+
+    const panel = wrapper.get("#ai-chat-panel");
+    expect(panel.attributes("role")).toBe("dialog");
+    expect(panel.attributes("aria-modal")).toBe("true");
+    expect(wrapper.find(".ai-resize-handle").exists()).toBe(false);
+    expect(wrapper.vm.panelOverlayMode).toBe(true);
+  });
+
+  it("moves external focus into an open panel when overlay mode turns on", async () => {
+    const { wrapper } = mountAssistant({ overlayMode: false });
+    await flushPromises();
+
+    const externalButton = document.createElement("button");
+    document.body.appendChild(externalButton);
+    externalButton.focus();
+    expect(document.activeElement).toBe(externalButton);
+
+    await wrapper.setProps({ overlayMode: true });
+    await flushPromises();
+
+    const panel = wrapper.get("#ai-chat-panel");
+    expect(panel.attributes("role")).toBe("dialog");
+    expect(panel.element.contains(document.activeElement)).toBe(true);
+  });
+
   it("does not load or show records initially and loads them on manual request", async () => {
     const { wrapper } = mountAssistant();
     await flushPromises();

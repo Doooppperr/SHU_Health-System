@@ -45,6 +45,7 @@ def _log_access(action: str, institution_id: int, **details):
 def _record_payload(record: HealthRecord, *, include_indicators: bool) -> dict:
     payload = {
         "id": record.id,
+        "display_id": record.display_id,
         "owner_id": record.owner_id,
         "owner_display_name": record.owner.username if record.owner else None,
         "exam_date": record.exam_date.isoformat(),
@@ -154,6 +155,7 @@ def get_trends():
         series.append(
             {
                 "record_id": record.id,
+                "record_display_id": record.display_id,
                 "owner_id": owner.id,
                 "owner_display_name": owner.username,
                 "exam_date": record.exam_date.isoformat(),

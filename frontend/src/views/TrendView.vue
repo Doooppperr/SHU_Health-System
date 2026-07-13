@@ -78,7 +78,9 @@
               </template>
             </el-table-column>
             <el-table-column prop="source" label="来源" width="90" />
-            <el-table-column prop="record_id" label="档案ID" width="90" />
+            <el-table-column label="档案ID" width="120">
+              <template #default="scope">{{ formatRecordDisplayId(scope.row) }}</template>
+            </el-table-column>
           </el-table>
         </div>
       </el-card>
@@ -99,6 +101,7 @@ import { fetchIndicatorTrend } from "../api/trends";
 import { useAppearanceStore } from "../stores/appearance";
 import { useAuthStore } from "../stores/auth";
 import { buildTrendChartOption } from "../utils/chartAppearance";
+import { formatRecordDisplayId } from "../utils/recordDisplayId";
 
 const router = useRouter();
 const authStore = useAuthStore();

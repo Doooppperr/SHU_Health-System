@@ -16,6 +16,14 @@
               >
                 智能分析（{{ selectedRecords.length }}）
               </el-button>
+              <el-button
+                v-if="authStore.user?.role === 'user'"
+                plain
+                data-testid="new-record-ocr-button"
+                @click="goUpload()"
+              >
+                OCR 上传报告
+              </el-button>
               <el-button type="primary" @click="openCreateDialog">新建档案</el-button>
             </template>
           </MainNavActions>
@@ -46,7 +54,9 @@
           :selectable="isRecordSelectable"
           :reserve-selection="false"
         />
-        <el-table-column prop="id" label="档案ID" width="90" />
+        <el-table-column label="档案ID" width="120">
+          <template #default="scope">{{ formatRecordDisplayId(scope.row) }}</template>
+        </el-table-column>
         <el-table-column prop="exam_date" label="体检日期" width="130" />
         <el-table-column label="档案归属人" min-width="140">
           <template #default="scope">
@@ -65,9 +75,17 @@
         </el-table-column>
         <el-table-column prop="status" label="状态" width="110" />
         <el-table-column prop="indicator_count" label="指标数" width="90" />
-        <el-table-column label="操作" width="280" fixed="right">
+        <el-table-column label="操作" width="350" fixed="right">
           <template #default="scope">
             <el-button type="primary" link @click="goDetail(scope.row.id)">录入指标</el-button>
+            <el-button
+              v-if="authStore.user?.role === 'user'"
+              type="success"
+              link
+              @click="goUpload(scope.row)"
+            >
+              {{ scope.row.ocr_pending_confirmation ? "继续OCR确认" : "OCR录入" }}
+            </el-button>
             <el-button type="primary" link @click="openEditDialog(scope.row)">修改档案</el-button>
             <el-button type="danger" link @click="removeRecord(scope.row.id)">删除</el-button>
           </template>
@@ -220,6 +238,7 @@ import { createRecord, deleteRecord, fetchRecords, updateRecord } from "../api/r
 import { fetchUsers } from "../api/users";
 import { useAiChatStore } from "../stores/aiChat";
 import { useAuthStore } from "../stores/auth";
+import { formatRecordDisplayId } from "../utils/recordDisplayId";
 
 const router = useRouter();
 const authStore = useAuthStore();
@@ -523,7 +542,7 @@ const submitCreate = async () => {
       package_id: createForm.package_id,
       status: "confirmed",
     });
-    ElMessage.success("档案创建成功");
+    ElMessage.success("档案创建成功，可选择手工录入或 OCR 录入");
     createDialogVisible.value = false;
     resetCreateForm();
     await loadRecords();
@@ -538,7 +557,14 @@ const goDetail = (recordId) => {
   router.push({ name: "record-detail", params: { id: recordId } });
 };
 
-const goUpload = () => {
+const goUpload = (record = null) => {
+  if (record?.id) {
+    router.push({
+      name: "record-upload",
+      query: { record_id: String(record.id) },
+    });
+    return;
+  }
   router.push({ name: "record-upload" });
 };
 

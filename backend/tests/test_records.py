@@ -35,7 +35,9 @@ def _create_record(client, headers):
         },
     )
     assert response.status_code == 201
-    return response.get_json()["item"]["id"]
+    item = response.get_json()["item"]
+    assert item["display_id"] == f"health{item['id']}"
+    return item["id"]
 
 
 def test_record_crud_flow(client):
@@ -45,11 +47,16 @@ def test_record_crud_flow(client):
 
     list_response = client.get("/api/records", headers=headers)
     assert list_response.status_code == 200
-    assert any(item["id"] == record_id for item in list_response.get_json()["items"])
+    listed_item = next(
+        item for item in list_response.get_json()["items"] if item["id"] == record_id
+    )
+    assert listed_item["display_id"] == f"health{record_id}"
 
     detail_response = client.get(f"/api/records/{record_id}", headers=headers)
     assert detail_response.status_code == 200
-    assert detail_response.get_json()["item"]["id"] == record_id
+    detail_item = detail_response.get_json()["item"]
+    assert detail_item["id"] == record_id
+    assert detail_item["display_id"] == f"health{record_id}"
 
     delete_response = client.delete(f"/api/records/{record_id}", headers=headers)
     assert delete_response.status_code == 200
@@ -248,13 +255,18 @@ def test_admin_uses_dedicated_record_management_api(client, app):
     assert create_by_admin.status_code == 201
     record_id = create_by_admin.get_json()["item"]["id"]
     assert create_by_admin.get_json()["item"]["owner_id"] == owner_user_id
+    assert create_by_admin.get_json()["item"]["display_id"] == f"health{record_id}"
 
     admin_list = client.get("/api/admin/records", headers=admin_headers)
     assert admin_list.status_code == 200
-    assert any(item["id"] == record_id for item in admin_list.get_json()["items"])
+    listed_item = next(
+        item for item in admin_list.get_json()["items"] if item["id"] == record_id
+    )
+    assert listed_item["display_id"] == f"health{record_id}"
 
     admin_detail = client.get(f"/api/admin/records/{record_id}", headers=admin_headers)
     assert admin_detail.status_code == 200
+    assert admin_detail.get_json()["item"]["display_id"] == f"health{record_id}"
 
     dicts = client.get("/api/indicators/dicts", headers=admin_headers).get_json()["items"]
     fbg = next(item for item in dicts if item["code"] == "FBG")
@@ -265,7 +277,9 @@ def test_admin_uses_dedicated_record_management_api(client, app):
         json={"indicator_dict_id": fbg["id"], "value": "6.1"},
     )
     assert add_indicator.status_code == 201
-    indicator_id = add_indicator.get_json()["item"]["id"]
+    indicator_item = add_indicator.get_json()["item"]
+    indicator_id = indicator_item["id"]
+    assert indicator_item["record_display_id"] == f"health{record_id}"
 
     update_indicator = client.put(
         f"/api/admin/records/{record_id}/indicators/{indicator_id}",

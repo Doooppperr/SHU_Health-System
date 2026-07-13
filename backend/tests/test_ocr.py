@@ -2,6 +2,9 @@ import io
 import json
 from datetime import date
 
+from sqlalchemy import update as sqlalchemy_update
+
+from app.records import routes as record_routes
 from app.extensions import db
 from app.models import HealthIndicator, HealthRecord, IndicatorDict, User
 from app.services.ocr import HuaweiOCRProvider, OCRMappingService
@@ -178,6 +181,364 @@ def test_upload_ocr_parse_and_auto_confirm_flow(client, app):
         assert record.status == "confirmed"
         indicators = HealthIndicator.query.filter_by(record_id=record_id).all()
         assert len(indicators) >= 3
+
+
+def test_upload_ocr_can_attach_to_an_existing_manual_record(client, app, tmp_path):
+    app.config["UPLOAD_DIR"] = str(tmp_path)
+    headers = _auth_headers(client, "ocr_attach_user")
+    create_response = client.post(
+        "/api/records",
+        json={"exam_date": "2026-04-09", "status": "confirmed"},
+        headers=headers,
+    )
+    assert create_response.status_code == 201
+    record_id = create_response.get_json()["item"]["id"]
+
+    with app.app_context():
+        alt_id = IndicatorDict.query.filter_by(code="ALT").one().id
+        crea_id = IndicatorDict.query.filter_by(code="CREA").one().id
+
+    for indicator_dict_id, value in [(alt_id, "32"), (crea_id, "88")]:
+        indicator_response = client.post(
+            f"/api/records/{record_id}/indicators",
+            json={"indicator_dict_id": indicator_dict_id, "value": value},
+            headers=headers,
+        )
+        assert indicator_response.status_code == 201
+
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    previous_report = reports_dir / "previous.pdf"
+    previous_report.write_bytes(b"previous report")
+    with app.app_context():
+        record = db.session.get(HealthRecord, record_id)
+        record.report_file_url = "/uploads/reports/previous.pdf"
+        record.ocr_raw_text = json.dumps({"engine": "previous"})
+        db.session.commit()
+
+    with app.app_context():
+        record_count_before = HealthRecord.query.count()
+
+    response = client.post(
+        "/api/records/upload",
+        data={
+            "record_id": str(record_id),
+            "file": (io.BytesIO(b"replacement report"), "report.pdf"),
+        },
+        headers=headers,
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["item"]["id"] == record_id
+    assert payload["item"]["exam_date"] == "2026-04-09"
+    assert payload["item"]["status"] == "confirmed"
+    assert payload["item"]["indicator_count"] == 2
+    assert {item["value"] for item in payload["item"]["indicators"]} == {"32", "88"}
+    assert payload["ocr"]["candidate_mappings"]
+    assert payload["ocr"]["pending_confirmation"] is True
+    attachment_id = payload["ocr"]["attachment_id"]
+    assert attachment_id
+
+    with app.app_context():
+        assert HealthRecord.query.count() == record_count_before
+        record = db.session.get(HealthRecord, record_id)
+        assert record.status == "confirmed"
+        assert record.report_file_url == "/uploads/reports/previous.pdf"
+        pending = json.loads(record.ocr_raw_text)["_pending_attachment"]
+        pending_report = tmp_path / pending["report_file_url"].removeprefix("/uploads/")
+        assert pending_report.is_file()
+        assert previous_report.is_file()
+
+    confirm_response = client.put(
+        f"/api/records/{record_id}/confirm",
+        json={"attachment_id": attachment_id},
+        headers=headers,
+    )
+    assert confirm_response.status_code == 200
+    confirm_payload = confirm_response.get_json()
+    assert confirm_payload["item"]["id"] == record_id
+    assert confirm_payload["item"]["status"] == "confirmed"
+
+    with app.app_context():
+        assert HealthRecord.query.count() == record_count_before
+        stored_alt = HealthIndicator.query.filter_by(
+            record_id=record_id,
+            indicator_dict_id=alt_id,
+        ).one()
+        assert stored_alt.value == "46"
+        assert stored_alt.source == "ocr"
+        stored_crea = HealthIndicator.query.filter_by(
+            record_id=record_id,
+            indicator_dict_id=crea_id,
+        ).one()
+        assert stored_crea.value == "88"
+        assert stored_crea.source == "manual"
+        record = db.session.get(HealthRecord, record_id)
+        assert record.report_file_url == pending["report_file_url"]
+        assert "_pending_attachment" not in json.loads(record.ocr_raw_text)
+
+    assert pending_report.is_file()
+    assert not previous_report.exists()
+
+
+def test_failed_attach_confirmation_keeps_the_original_record_and_report(client, app, tmp_path):
+    app.config["UPLOAD_DIR"] = str(tmp_path)
+    headers = _auth_headers(client, "ocr_attach_rollback")
+    record_id = client.post(
+        "/api/records",
+        json={"exam_date": "2026-04-09", "status": "confirmed"},
+        headers=headers,
+    ).get_json()["item"]["id"]
+
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    previous_report = reports_dir / "original.pdf"
+    previous_report.write_bytes(b"original report")
+    with app.app_context():
+        record = db.session.get(HealthRecord, record_id)
+        record.report_file_url = "/uploads/reports/original.pdf"
+        db.session.commit()
+
+    upload_response = client.post(
+        "/api/records/upload",
+        data={
+            "record_id": str(record_id),
+            "file": (io.BytesIO(b"pending report"), "pending.pdf"),
+        },
+        headers=headers,
+        content_type="multipart/form-data",
+    )
+    assert upload_response.status_code == 200
+    attachment_id = upload_response.get_json()["ocr"]["attachment_id"]
+
+    confirm_response = client.put(
+        f"/api/records/{record_id}/confirm",
+        json={
+            "attachment_id": attachment_id,
+            "confirmed_mappings": [{"indicator_dict_id": 999999, "value": "1"}],
+        },
+        headers=headers,
+    )
+    assert confirm_response.status_code == 400
+
+    with app.app_context():
+        record = db.session.get(HealthRecord, record_id)
+        assert record.status == "confirmed"
+        assert record.report_file_url == "/uploads/reports/original.pdf"
+        pending = json.loads(record.ocr_raw_text)["_pending_attachment"]
+        pending_report = tmp_path / pending["report_file_url"].removeprefix("/uploads/")
+        assert pending_report.is_file()
+    assert previous_report.is_file()
+
+
+def test_pending_attachment_version_prevents_stale_confirm_and_can_be_cancelled(
+    client, app, tmp_path
+):
+    app.config["UPLOAD_DIR"] = str(tmp_path)
+    headers = _auth_headers(client, "ocr_attach_versioned")
+    record_id = client.post(
+        "/api/records",
+        json={"exam_date": "2026-04-09", "status": "confirmed"},
+        headers=headers,
+    ).get_json()["item"]["id"]
+
+    first_upload = client.post(
+        "/api/records/upload",
+        data={
+            "record_id": str(record_id),
+            "file": (io.BytesIO(b"first pending report"), "first.pdf"),
+        },
+        headers=headers,
+        content_type="multipart/form-data",
+    )
+    first_attachment_id = first_upload.get_json()["ocr"]["attachment_id"]
+
+    second_upload = client.post(
+        "/api/records/upload",
+        data={
+            "record_id": str(record_id),
+            "file": (io.BytesIO(b"second pending report"), "second.pdf"),
+        },
+        headers=headers,
+        content_type="multipart/form-data",
+    )
+    second_payload = second_upload.get_json()
+    second_attachment_id = second_payload["ocr"]["attachment_id"]
+    assert second_attachment_id != first_attachment_id
+
+    stale_confirm = client.put(
+        f"/api/records/{record_id}/confirm",
+        json={"attachment_id": first_attachment_id},
+        headers=headers,
+    )
+    assert stale_confirm.status_code == 409
+    assert stale_confirm.get_json()["code"] == "OCR_ATTACHMENT_STALE"
+
+    pending_response = client.get(
+        f"/api/records/{record_id}/ocr-pending",
+        headers=headers,
+    )
+    assert pending_response.status_code == 200
+    pending_payload = pending_response.get_json()
+    assert pending_payload["ocr"]["attachment_id"] == second_attachment_id
+    assert pending_payload["item"]["ocr_pending_confirmation"] is True
+
+    stale_cancel = client.delete(
+        f"/api/records/{record_id}/ocr-pending",
+        json={"attachment_id": first_attachment_id},
+        headers=headers,
+    )
+    assert stale_cancel.status_code == 409
+
+    with app.app_context():
+        record = db.session.get(HealthRecord, record_id)
+        pending = json.loads(record.ocr_raw_text)["_pending_attachment"]
+        pending_file = tmp_path / pending["report_file_url"].removeprefix("/uploads/")
+        assert pending_file.is_file()
+
+    cancel_response = client.delete(
+        f"/api/records/{record_id}/ocr-pending",
+        json={"attachment_id": second_attachment_id},
+        headers=headers,
+    )
+    assert cancel_response.status_code == 200
+    assert cancel_response.get_json()["item"]["ocr_pending_confirmation"] is False
+    assert not pending_file.exists()
+
+
+def test_delete_record_cleans_official_and_pending_ocr_reports(client, app, tmp_path):
+    app.config["UPLOAD_DIR"] = str(tmp_path)
+    headers = _auth_headers(client, "ocr_delete_pending")
+    record_id = client.post(
+        "/api/records",
+        json={"exam_date": "2026-04-09", "status": "confirmed"},
+        headers=headers,
+    ).get_json()["item"]["id"]
+
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    official_report = reports_dir / "official.pdf"
+    official_report.write_bytes(b"official report")
+    with app.app_context():
+        record = db.session.get(HealthRecord, record_id)
+        record.report_file_url = "/uploads/reports/official.pdf"
+        record.ocr_raw_text = json.dumps({"engine": "previous"})
+        indicator_dict_id = IndicatorDict.query.filter_by(code="ALT").one().id
+        db.session.add(
+            HealthIndicator(
+                record_id=record_id,
+                indicator_dict_id=indicator_dict_id,
+                value="32",
+                source="manual",
+            )
+        )
+        db.session.commit()
+
+    upload_response = client.post(
+        "/api/records/upload",
+        data={
+            "record_id": str(record_id),
+            "file": (io.BytesIO(b"pending report"), "pending.pdf"),
+        },
+        headers=headers,
+        content_type="multipart/form-data",
+    )
+    assert upload_response.status_code == 200
+
+    with app.app_context():
+        record = db.session.get(HealthRecord, record_id)
+        pending = json.loads(record.ocr_raw_text)["_pending_attachment"]
+        pending_report = tmp_path / pending["report_file_url"].removeprefix("/uploads/")
+        assert official_report.is_file()
+        assert pending_report.is_file()
+
+    delete_response = client.delete(f"/api/records/{record_id}", headers=headers)
+
+    assert delete_response.status_code == 200
+    assert not official_report.exists()
+    assert not pending_report.exists()
+    with app.app_context():
+        assert db.session.get(HealthRecord, record_id) is None
+        assert HealthIndicator.query.filter_by(record_id=record_id).count() == 0
+
+
+def test_delete_record_snapshot_conflict_keeps_record_and_report(
+    client, app, tmp_path, monkeypatch
+):
+    app.config["UPLOAD_DIR"] = str(tmp_path)
+    headers = _auth_headers(client, "ocr_delete_conflict")
+    record_id = client.post(
+        "/api/records",
+        json={"exam_date": "2026-04-09", "status": "confirmed"},
+        headers=headers,
+    ).get_json()["item"]["id"]
+
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    official_report = reports_dir / "official.pdf"
+    official_report.write_bytes(b"official report")
+    with app.app_context():
+        record = db.session.get(HealthRecord, record_id)
+        record.report_file_url = "/uploads/reports/official.pdf"
+        record.ocr_raw_text = json.dumps({"engine": "previous"})
+        db.session.commit()
+
+    def no_matching_record_update(model):
+        return sqlalchemy_update(model).where(HealthRecord.id == -1)
+
+    monkeypatch.setattr(record_routes, "update", no_matching_record_update)
+
+    delete_response = client.delete(f"/api/records/{record_id}", headers=headers)
+
+    assert delete_response.status_code == 409
+    assert delete_response.get_json()["code"] == "RECORD_DELETE_CONFLICT"
+    assert official_report.is_file()
+    with app.app_context():
+        record = db.session.get(HealthRecord, record_id)
+        assert record is not None
+        assert record.report_file_url == "/uploads/reports/official.pdf"
+
+
+def test_upload_ocr_cannot_attach_to_an_inaccessible_record(client):
+    owner_headers = _auth_headers(client, "ocr_attach_owner")
+    record_id = client.post(
+        "/api/records",
+        json={"exam_date": "2026-04-09"},
+        headers=owner_headers,
+    ).get_json()["item"]["id"]
+    other_headers = _auth_headers(client, "ocr_attach_other")
+
+    response = client.post(
+        "/api/records/upload",
+        data={
+            "record_id": str(record_id),
+            "file": (io.BytesIO(b"private report"), "report.pdf"),
+        },
+        headers=other_headers,
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 404
+    assert response.get_json() == {"message": "record not found"}
+
+
+def test_upload_ocr_rejects_an_invalid_target_record_id(client):
+    headers = _auth_headers(client, "ocr_attach_invalid_id")
+
+    response = client.post(
+        "/api/records/upload",
+        data={
+            "record_id": "health3",
+            "file": (io.BytesIO(b"report"), "report.pdf"),
+        },
+        headers=headers,
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {"message": "record_id must be a positive integer"}
 
 
 def test_upload_ocr_parse_and_manual_confirm_flow(client, app):

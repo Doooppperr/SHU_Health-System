@@ -635,6 +635,7 @@ def analyzable_records():
         items.append(
             {
                 "id": record.id,
+                "display_id": record.display_id,
                 "owner_id": record.owner_id,
                 "owner": {
                     "id": record.owner_id,

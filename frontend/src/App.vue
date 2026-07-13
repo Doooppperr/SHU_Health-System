@@ -3,22 +3,27 @@
   <div
     class="app-with-ai"
     :class="{ 'ai-panel-active': showAi && aiStore.isOpen }"
-    :style="{ '--ai-panel-width': `${aiStore.panelWidth}px` }"
+    :style="aiLayoutStyle"
   >
-    <div class="app-route-stage">
+    <div
+      class="app-route-stage"
+      :inert="aiOverlayActive ? '' : undefined"
+      :aria-hidden="aiOverlayActive ? 'true' : undefined"
+    >
       <router-view />
     </div>
-    <AiAssistant v-if="showAi" />
+    <AiAssistant v-if="showAi" :overlay-mode="aiLayout.overlay" />
   </div>
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 
 import AiAssistant from "./components/AiAssistant.vue";
 import { useAiChatStore } from "./stores/aiChat";
 import { useAuthStore } from "./stores/auth";
+import { calculateAiStageLayout } from "./utils/aiStageLayout";
 
 const authStore = useAuthStore();
 const aiStore = useAiChatStore();
@@ -26,10 +31,34 @@ const route = useRoute();
 const guestAiRoutes = new Set(["public-home", "login", "register"]);
 let tableObserver = null;
 let tableResizeObserver = null;
+let viewportResizeObserver = null;
+function getViewportWidth() {
+  return document.documentElement?.clientWidth || window.innerWidth;
+}
+
+const viewportWidth = ref(getViewportWidth());
+const viewportHeight = ref(window.innerHeight);
 const showAi = computed(() => {
   if (authStore.accessToken) return authStore.user?.role === "user";
   return guestAiRoutes.has(route.name);
 });
+const aiLayout = computed(() =>
+  calculateAiStageLayout({
+    active: showAi.value && aiStore.isOpen,
+    viewportWidth: viewportWidth.value,
+    viewportHeight: viewportHeight.value,
+    panelWidth: aiStore.panelWidth,
+  })
+);
+const aiOverlayActive = computed(() => (
+  showAi.value && aiStore.isOpen && aiLayout.value.overlay
+));
+const aiLayoutStyle = computed(() => ({
+  "--ai-panel-width": `${aiLayout.value.panelWidth}px`,
+  "--ai-stage-design-width": `${aiLayout.value.designWidth}px`,
+  "--ai-stage-design-height": `${aiLayout.value.designHeight}px`,
+  "--ai-stage-scale": String(aiLayout.value.scale),
+}));
 
 authStore.hydrate();
 aiStore.initialize(authStore.user?.id || null);
@@ -93,8 +122,17 @@ function updateTableScrollState(scroller) {
   if (hint?.classList.contains("table-scroll-hint")) hint.hidden = !scrollable;
 }
 
+function updateViewportSize() {
+  viewportWidth.value = getViewportWidth();
+  viewportHeight.value = window.innerHeight;
+}
+
 onMounted(() => {
+  window.addEventListener("resize", updateViewportSize);
+  updateViewportSize();
   if (typeof ResizeObserver === "function") {
+    viewportResizeObserver = new ResizeObserver(updateViewportSize);
+    viewportResizeObserver.observe(document.documentElement);
     tableResizeObserver = new ResizeObserver((entries) => {
       entries.forEach((entry) => updateTableScrollState(entry.target));
     });
@@ -119,7 +157,9 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener("resize", updateViewportSize);
   tableObserver?.disconnect();
   tableResizeObserver?.disconnect();
+  viewportResizeObserver?.disconnect();
 });
 </script>

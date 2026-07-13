@@ -85,6 +85,7 @@ def dashboard():
         "recent_records": [
             {
                 "id": item.id,
+                "display_id": item.display_id,
                 "owner_id": item.owner_id,
                 "owner_display_name": item.owner.username if item.owner else None,
                 "exam_date": item.exam_date.isoformat(),

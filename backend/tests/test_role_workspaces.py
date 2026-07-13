@@ -301,6 +301,16 @@ def test_institution_health_is_confirmed_scoped_sanitized_and_read_only(client, 
     )
     assert confirmed.status_code == 201
     record_id = confirmed.get_json()["item"]["id"]
+    indicator_dicts = client.get(
+        "/api/indicators/dicts", headers=user_headers
+    ).get_json()["items"]
+    fbg = next(item for item in indicator_dicts if item["code"] == "FBG")
+    add_indicator = client.post(
+        f"/api/records/{record_id}/indicators",
+        headers=user_headers,
+        json={"indicator_dict_id": fbg["id"], "value": "5.6"},
+    )
+    assert add_indicator.status_code == 201
     with app.app_context():
         db.session.get(HealthRecord, record_id).report_file_url = "/uploads/reports/private.pdf"
         db.session.commit()
@@ -324,6 +334,7 @@ def test_institution_health_is_confirmed_scoped_sanitized_and_read_only(client, 
     listing = client.get("/api/institution-health/records", headers=org_headers)
     assert listing.status_code == 200
     assert [row["id"] for row in listing.get_json()["items"]] == [record_id]
+    assert listing.get_json()["items"][0]["display_id"] == f"health{record_id}"
     assert "report_file_url" not in listing.get_data(as_text=True)
     assert "uploader" not in listing.get_data(as_text=True)
     assert "email" not in listing.get_data(as_text=True)
@@ -331,6 +342,7 @@ def test_institution_health_is_confirmed_scoped_sanitized_and_read_only(client, 
 
     detail = client.get(f"/api/institution-health/records/{record_id}", headers=org_headers)
     assert detail.status_code == 200
+    assert detail.get_json()["item"]["display_id"] == f"health{record_id}"
     detail_text = detail.get_data(as_text=True)
     assert "report_file_url" not in detail_text
     assert "private.pdf" not in detail_text
@@ -340,6 +352,24 @@ def test_institution_health_is_confirmed_scoped_sanitized_and_read_only(client, 
         json={"status": "draft"},
     ).status_code == 405
     assert client.get("/uploads/reports/private.pdf").status_code == 404
+
+    dashboard = client.get("/api/org/dashboard", headers=org_headers)
+    assert dashboard.status_code == 200
+    recent_record = next(
+        item
+        for item in dashboard.get_json()["recent_records"]
+        if item["id"] == record_id
+    )
+    assert recent_record["display_id"] == f"health{record_id}"
+
+    trends = client.get(
+        "/api/institution-health/trends",
+        headers=org_headers,
+        query_string={"indicator_dict_id": fbg["id"]},
+    )
+    assert trends.status_code == 200
+    assert trends.get_json()["series"][0]["record_id"] == record_id
+    assert trends.get_json()["series"][0]["record_display_id"] == f"health{record_id}"
 
     clear_source = client.put(
         f"/api/records/{record_id}",

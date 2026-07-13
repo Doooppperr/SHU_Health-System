@@ -27,6 +27,16 @@ export function fetchRecordDetail(recordId) {
   return http.get(`/records/${recordId}`);
 }
 
+export function fetchPendingRecordOcr(recordId) {
+  return http.get(`/records/${recordId}/ocr-pending`);
+}
+
+export function cancelPendingRecordOcr(recordId, attachmentId) {
+  return http.delete(`/records/${recordId}/ocr-pending`, {
+    data: { attachment_id: attachmentId },
+  });
+}
+
 export function fetchRecordFile(recordId) {
   return http.get(`/records/${recordId}/file`, { responseType: "blob" });
 }

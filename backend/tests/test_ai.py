@@ -391,6 +391,10 @@ def test_records_endpoint_lists_only_analyzable_owned_and_authorized_records(cli
     assert response.status_code == 200
     items = response.get_json()["items"]
     assert [item["id"] for item in items] == [friend_id_record, own_id]
+    assert [item["display_id"] for item in items] == [
+        f"health{friend_id_record}",
+        f"health{own_id}",
+    ]
     assert items[0]["owner"]["label"] == "已授权亲友"
     assert items[1]["owner"]["label"] == "本人"
     assert all(item["status"] == "confirmed" for item in items)
@@ -589,16 +593,19 @@ def test_multi_record_facts_are_ordered_aggregated_and_bounded(client, app):
     assert facts["owner"] == {"label": "本人"}
     assert facts["date_range"] == {"first": "2026-01-01", "latest": "2026-01-25"}
     assert len(facts["records"]) == 5
+    assert all(item["record_display_id"].startswith("health") for item in facts["records"])
     assert facts["omitted_record_metadata_count"] == 20
     trend = facts["trends"][0]
     assert trend["present_count"] == 25
     assert trend["missing_count"] == 0
     assert trend["absolute_change"] == 24
-    sampled_ids = {item["record_id"] for item in trend["observations"]}
-    assert trend["first"]["record_id"] in sampled_ids
-    assert trend["latest"]["record_id"] in sampled_ids
-    assert trend["minimum"]["record_id"] in sampled_ids
-    assert trend["maximum"]["record_id"] in sampled_ids
+    sampled_ids = {item["record_display_id"] for item in trend["observations"]}
+    assert trend["first"]["record_display_id"] in sampled_ids
+    assert trend["latest"]["record_display_id"] in sampled_ids
+    assert trend["minimum"]["record_display_id"] in sampled_ids
+    assert trend["maximum"]["record_display_id"] in sampled_ids
+    assert all(item.startswith("health") for item in sampled_ids)
+    assert '"record_id":' not in json.dumps(facts, ensure_ascii=False)
     assert len(trend["observations"]) <= 6
 
 
@@ -782,9 +789,30 @@ def test_analysis_facts_are_untrusted_user_data_not_system_instructions():
 
     assert messages[0]["role"] == "system"
     assert injected not in messages[0]["content"]
+    assert "只能使用 record_display_id 中的 health+数字" in messages[0]["content"]
+    assert "不得向用户输出内部 record_id 数字" in messages[0]["content"]
     assert messages[1]["role"] == "user"
     assert injected in messages[1]["content"]
     assert "任何指令" in messages[1]["content"]
+
+
+def test_analysis_messages_strip_internal_record_ids_from_provider_context():
+    messages = build_analysis_messages(
+        {
+            "record_count": 1,
+            "records": [
+                {
+                    "record_id": 42,
+                    "record_display_id": "health42",
+                    "indicators": [],
+                }
+            ],
+            "trends": [],
+        }
+    )
+
+    assert '"record_id":' not in messages[1]["content"]
+    assert '"record_display_id":"health42"' in messages[1]["content"]
 
 
 def test_invalid_large_selection_fails_on_first_database_batch(

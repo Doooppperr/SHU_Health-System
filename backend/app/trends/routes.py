@@ -91,6 +91,7 @@ def get_indicator_trend(indicator_dict_id: int):
         points.append(
             {
                 "record_id": record.id,
+                "record_display_id": record.display_id,
                 "exam_date": record.exam_date.isoformat(),
                 "value": indicator_row.value,
                 "numeric_value": numeric_value,

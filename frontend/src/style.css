@@ -149,11 +149,24 @@ a {
 }
 
 .app-route-stage {
-  transition: margin-right 0.2s ease;
+  width: 100%;
+  transform-origin: top left;
 }
 
-.ai-panel-active .app-route-stage {
-  margin-right: var(--ai-panel-width);
+@media (min-width: 861px) {
+  .ai-panel-active {
+    overflow-x: hidden;
+  }
+
+  .ai-panel-active .app-route-stage {
+    width: var(--ai-stage-design-width);
+    min-height: var(--ai-stage-design-height);
+    zoom: var(--ai-stage-scale);
+  }
+
+  .ai-panel-active .app-route-stage > * {
+    min-height: var(--ai-stage-design-height);
+  }
 }
 
 /* Public portal */
@@ -2044,10 +2057,6 @@ a {
 }
 
 @media (max-width: 720px) {
-  .ai-panel-active .app-route-stage {
-    margin-right: 0;
-  }
-
   .portal-header {
     width: calc(100% - 28px);
   }

@@ -28,7 +28,7 @@
           <el-descriptions-item label="参考范围">{{ result.summary?.reference_low ?? "-" }} ~ {{ result.summary?.reference_high ?? "-" }}</el-descriptions-item>
         </el-descriptions>
         <el-table :data="result.series || []" empty-text="暂无趋势数据">
-          <el-table-column prop="exam_date" label="体检日期" width="130" /><el-table-column prop="value" label="指标值" min-width="120" /><el-table-column label="异常" width="100"><template #default="scope"><el-tag :type="scope.row.is_abnormal ? 'danger' : 'success'">{{ scope.row.is_abnormal ? "异常" : "正常" }}</el-tag></template></el-table-column><el-table-column prop="record_id" label="档案 ID" width="100" />
+          <el-table-column prop="exam_date" label="体检日期" width="130" /><el-table-column prop="value" label="指标值" min-width="120" /><el-table-column label="异常" width="100"><template #default="scope"><el-tag :type="scope.row.is_abnormal ? 'danger' : 'success'">{{ scope.row.is_abnormal ? "异常" : "正常" }}</el-tag></template></el-table-column><el-table-column label="档案 ID" width="120"><template #default="scope">{{ formatRecordDisplayId(scope.row) }}</template></el-table-column>
         </el-table>
       </div>
     </el-card>
@@ -45,6 +45,7 @@ import { fetchIndicatorDicts } from "../../api/indicators";
 import { fetchOrgHealthRecords, fetchOrgHealthTrends } from "../../api/org";
 import { useAppearanceStore } from "../../stores/appearance";
 import { buildTrendChartOption } from "../../utils/chartAppearance";
+import { formatRecordDisplayId } from "../../utils/recordDisplayId";
 
 const appearanceStore = useAppearanceStore();
 const { effectiveTheme, careMode } = storeToRefs(appearanceStore);
