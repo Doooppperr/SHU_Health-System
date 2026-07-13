@@ -36,10 +36,11 @@ class Config:
     DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
     DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
     DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+    AI_CONNECT_TIMEOUT_SECONDS = float(os.getenv("AI_CONNECT_TIMEOUT_SECONDS", "5"))
+    AI_READ_TIMEOUT_SECONDS = float(os.getenv("AI_READ_TIMEOUT_SECONDS", "30"))
     AI_REQUEST_TIMEOUT_SECONDS = float(os.getenv("AI_REQUEST_TIMEOUT_SECONDS", "60"))
     AI_SUPPORT_PHONE = os.getenv("AI_SUPPORT_PHONE", "")
     AI_MAX_HISTORY_MESSAGES = int(os.getenv("AI_MAX_HISTORY_MESSAGES", "20"))
-    AI_MAX_SELECTED_RECORDS = int(os.getenv("AI_MAX_SELECTED_RECORDS", "5"))
     AI_GUEST_RATE_LIMIT_PER_MINUTE = int(os.getenv("AI_GUEST_RATE_LIMIT_PER_MINUTE", "10"))
     AI_AUTH_RATE_LIMIT_PER_MINUTE = int(os.getenv("AI_AUTH_RATE_LIMIT_PER_MINUTE", "30"))
 

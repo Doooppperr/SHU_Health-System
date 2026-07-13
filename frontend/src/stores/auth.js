@@ -4,6 +4,8 @@ import { getMe, login, refresh, register } from "../api/auth";
 import { clearAllAiSessionStorage } from "../utils/aiSession";
 
 const STORAGE_KEY = "health-system-auth";
+let refreshInFlight = null;
+let refreshTokenInFlight = "";
 
 export const useAuthStore = defineStore("auth", {
   state: () => ({
@@ -78,14 +80,37 @@ export const useAuthStore = defineStore("auth", {
         return false;
       }
 
+      const requestedToken = this.refreshToken;
+      if (refreshInFlight && refreshTokenInFlight === requestedToken) {
+        return refreshInFlight;
+      }
+
+      const refreshTask = (async () => {
+        try {
+          const { data } = await refresh(requestedToken);
+          if (this.refreshToken !== requestedToken) {
+            return false;
+          }
+          this.accessToken = data.access_token;
+          this.persist();
+          return true;
+        } catch {
+          if (this.refreshToken === requestedToken) {
+            this.logout();
+          }
+          return false;
+        }
+      })();
+
+      refreshInFlight = refreshTask;
+      refreshTokenInFlight = requestedToken;
       try {
-        const { data } = await refresh(this.refreshToken);
-        this.accessToken = data.access_token;
-        this.persist();
-        return true;
-      } catch {
-        this.logout();
-        return false;
+        return await refreshTask;
+      } finally {
+        if (refreshInFlight === refreshTask) {
+          refreshInFlight = null;
+          refreshTokenInFlight = "";
+        }
       }
     },
 

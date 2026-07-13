@@ -57,54 +57,6 @@
         </div>
       </header>
 
-      <section v-if="authenticated" class="ai-record-context">
-        <div class="ai-section-heading">
-          <span>本次参考档案</span>
-          <span class="ai-selection-count">{{ aiStore.selectedRecordIds.length }}/5</span>
-        </div>
-
-        <el-select
-          :model-value="aiStore.selectedRecordIds"
-          multiple
-          collapse-tags
-          :max-collapse-tags="2"
-          clearable
-          filterable
-          placeholder="可选择同一人的最多 5 份已确认档案"
-          style="width: 100%"
-          :loading="recordsLoading"
-          @change="changeRecordSelection"
-        >
-          <el-option-group
-            v-for="group in recordGroups"
-            :key="group.ownerId"
-            :label="group.label"
-          >
-            <el-option
-              v-for="record in group.records"
-              :key="record.id"
-              :label="recordOptionLabel(record)"
-              :value="record.id"
-              :disabled="isRecordDisabled(record)"
-            />
-          </el-option-group>
-        </el-select>
-
-        <p v-if="recordsError" class="ai-context-error">{{ recordsError }}</p>
-        <p v-else-if="!recordsLoading && availableRecords.length === 0" class="ai-context-tip">
-          暂无带指标的已确认档案，仍可咨询一般健康和系统问题。
-        </p>
-
-        <el-checkbox
-          v-if="aiStore.selectedRecordIds.length"
-          :model-value="aiStore.consentGiven"
-          class="ai-consent"
-          @change="aiStore.setConsentGiven"
-        >
-          我知晓所选指标将发送至 DeepSeek API 处理
-        </el-checkbox>
-      </section>
-
       <section
         ref="messageArea"
         class="ai-message-area"
@@ -138,14 +90,15 @@
         </div>
 
         <div
-          v-for="(message, index) in aiStore.messages"
-          :key="`${index}-${message.role}`"
+          v-for="message in aiStore.messages"
+          :key="message.id"
           class="ai-message-row"
-          :class="message.role"
+          :class="[message.role, { failed: message.failed }]"
         >
           <div class="ai-message-bubble">
             <div v-if="message.role === 'assistant'" class="ai-message-label">
               AI 助手
+              <el-tag v-if="message.kind === 'analysis'" size="small" type="success">智能分析</el-tag>
               <el-tag v-if="message.decision === 'support'" size="small" type="warning">转人工</el-tag>
               <el-tag v-else-if="message.decision === 'emergency'" size="small" type="danger">紧急提醒</el-tag>
             </div>
@@ -157,25 +110,247 @@
             >
               拨打 {{ message.supportPhone }}
             </a>
+
+            <p v-if="message.failed" class="ai-message-error" role="alert">
+              {{ message.errorMessage }}
+            </p>
+            <div v-if="message.role === 'assistant'" class="ai-message-actions">
+              <el-button
+                v-if="message.failed && message.retryable && message.retryRecords?.length"
+                size="small"
+                plain
+                :disabled="messageActionsLocked"
+                data-testid="retry-analysis"
+                @click="retryAnalysis(message)"
+              >
+                重新准备分析
+              </el-button>
+              <el-button
+                v-else-if="message.failed && message.retryable && message.kind !== 'analysis'"
+                size="small"
+                plain
+                :disabled="messageActionsLocked"
+                data-testid="retry-message"
+                @click="retryMessage(message.id)"
+              >
+                重试
+              </el-button>
+              <el-button
+                v-if="!message.failed && message.recordSensitive && message.contextRecordIds?.length"
+                size="small"
+                plain
+                :disabled="messageActionsLocked"
+                data-testid="follow-up-records"
+                @click="prepareRecordFollowUp(message)"
+              >
+                基于这组档案继续追问
+              </el-button>
+              <el-button
+                v-if="message.action === 'select_records' && aiStore.pickerContext?.assistantId !== message.id"
+                size="small"
+                plain
+                :disabled="messageActionsLocked"
+                @click="openActionPicker(message)"
+              >
+                选择档案继续
+              </el-button>
+            </div>
+
+            <div
+              v-if="aiStore.pickerContext?.assistantId === message.id"
+              :ref="setRecordPickerCard"
+              class="ai-action-card ai-record-picker"
+              tabindex="-1"
+              data-testid="action-record-picker"
+            >
+              <div class="ai-section-heading">
+                <span>选择本次引用的档案</span>
+                <span class="ai-selection-count">已选 {{ aiStore.selectedRecordIds.length }} 份</span>
+              </div>
+              <el-select
+                :model-value="aiStore.selectedRecordIds"
+                multiple
+                collapse-tags
+                :max-collapse-tags="2"
+                clearable
+                filterable
+                placeholder="可多选同一人的已确认档案"
+                style="width: 100%"
+                :loading="aiStore.recordsLoading"
+                @change="changeRecordSelection"
+              >
+                <el-option-group
+                  v-for="group in recordGroups"
+                  :key="group.ownerId"
+                  :label="group.label"
+                >
+                  <el-option
+                    v-for="record in group.records"
+                    :key="record.id"
+                    :label="recordOptionLabel(record)"
+                    :value="record.id"
+                    :disabled="isRecordDisabled(record)"
+                  />
+                </el-option-group>
+              </el-select>
+              <p v-if="aiStore.recordsError" class="ai-context-error">
+                {{ aiStore.recordsError }}
+                <el-button link type="primary" @click="reloadRecords">重试</el-button>
+              </p>
+              <p
+                v-else-if="!aiStore.recordsLoading && aiStore.recordsLoaded && aiStore.availableRecords.length === 0"
+                class="ai-context-tip"
+              >
+                暂无带指标的已确认档案。
+              </p>
+              <el-checkbox
+                v-if="aiStore.selectedRecordIds.length"
+                :model-value="aiStore.consentGiven"
+                class="ai-consent"
+                @change="aiStore.setConsentGiven"
+              >
+                我知晓所选指标将发送至 DeepSeek API 处理（仅本次）
+              </el-checkbox>
+              <div class="ai-card-actions">
+                <el-button size="small" @click="aiStore.closeRecordPicker">取消</el-button>
+                <el-button
+                  type="primary"
+                  size="small"
+                  :disabled="!aiStore.selectedRecordIds.length || !aiStore.consentGiven || aiStore.isSending || aiStore.recordsLoading"
+                  data-testid="confirm-record-picker"
+                  @click="confirmRecordPicker"
+                >
+                  {{ aiStore.pickerContext?.mode === "action" ? "选择并继续" : "引用到下一条消息" }}
+                </el-button>
+              </div>
+            </div>
           </div>
+        </div>
+
+        <article
+          v-if="aiStore.preparedAnalysis && !aiStore.isSending"
+          ref="analysisCard"
+          class="ai-action-card ai-analysis-card"
+          tabindex="-1"
+          data-testid="analysis-confirmation"
+        >
+          <div class="ai-section-heading">
+            <span>智能分析确认</span>
+            <el-tag type="success" size="small">
+              {{ aiStore.selectedRecordIds.length }} 份档案
+            </el-tag>
+          </div>
+          <p>
+            {{ aiStore.preparedAnalysis.ownerName }} · {{ aiStore.preparedAnalysis.dateRange }}
+          </p>
+          <p class="ai-context-tip">
+            单份档案将分析全部指标；多份档案还会分析指标变化和趋势。
+          </p>
+          <el-checkbox
+            :model-value="aiStore.consentGiven"
+            class="ai-consent"
+            @change="aiStore.setConsentGiven"
+          >
+            我知晓所选指标将发送至 DeepSeek API 处理（仅本次）
+          </el-checkbox>
+          <div class="ai-card-actions">
+            <el-button size="small" @click="cancelRecordContext">取消</el-button>
+            <el-button
+              type="primary"
+              size="small"
+              :disabled="!aiStore.consentGiven"
+              data-testid="start-analysis"
+              @click="startPreparedAnalysis"
+            >
+              开始智能分析
+            </el-button>
+          </div>
+        </article>
+
+        <div
+          v-if="aiStore.pickerContext && !aiStore.pickerContext.assistantId"
+          :ref="setRecordPickerCard"
+          class="ai-action-card ai-record-picker"
+          tabindex="-1"
+          data-testid="manual-record-picker"
+        >
+          <div class="ai-section-heading">
+            <span>引用档案到下一条消息</span>
+            <span class="ai-selection-count">已选 {{ aiStore.selectedRecordIds.length }} 份</span>
+          </div>
+          <el-select
+            :model-value="aiStore.selectedRecordIds"
+            multiple
+            collapse-tags
+            :max-collapse-tags="2"
+            clearable
+            filterable
+            placeholder="可多选同一人的已确认档案"
+            style="width: 100%"
+            :loading="aiStore.recordsLoading"
+            @change="changeRecordSelection"
+          >
+            <el-option-group
+              v-for="group in recordGroups"
+              :key="group.ownerId"
+              :label="group.label"
+            >
+              <el-option
+                v-for="record in group.records"
+                :key="record.id"
+                :label="recordOptionLabel(record)"
+                :value="record.id"
+                :disabled="isRecordDisabled(record)"
+              />
+            </el-option-group>
+          </el-select>
+          <p v-if="aiStore.recordsError" class="ai-context-error">
+            {{ aiStore.recordsError }}
+            <el-button link type="primary" @click="reloadRecords">重试</el-button>
+          </p>
+          <p
+            v-else-if="!aiStore.recordsLoading && aiStore.recordsLoaded && aiStore.availableRecords.length === 0"
+            class="ai-context-tip"
+          >
+            暂无带指标的已确认档案。
+          </p>
+          <el-checkbox
+            v-if="aiStore.selectedRecordIds.length"
+            :model-value="aiStore.consentGiven"
+            class="ai-consent"
+            @change="aiStore.setConsentGiven"
+          >
+            我知晓所选指标将发送至 DeepSeek API 处理（仅本次）
+          </el-checkbox>
+          <div class="ai-card-actions">
+            <el-button size="small" @click="aiStore.closeRecordPicker">取消</el-button>
+            <el-button
+              type="primary"
+              size="small"
+              :disabled="!aiStore.selectedRecordIds.length || !aiStore.consentGiven || aiStore.isSending || aiStore.recordsLoading"
+              data-testid="confirm-record-picker"
+              @click="confirmRecordPicker"
+            >
+              {{ aiStore.pickerContext?.mode === "action" ? "选择并继续" : "引用到下一条消息" }}
+            </el-button>
+          </div>
+        </div>
+
+        <div v-if="aiStore.isSending" class="ai-stream-status" role="status">
+          <span class="ai-thinking" aria-hidden="true"><i /><i /><i /></span>
+          <span>{{ aiStore.statusText || "正在等待 AI 回复…" }}</span>
+          <el-button size="small" plain data-testid="cancel-stream" @click="aiStore.cancelActive">
+            取消
+          </el-button>
         </div>
 
         <div
-          v-if="aiStore.pendingMessage"
-          class="ai-message-row user pending"
-          aria-hidden="true"
+          v-if="hasPendingReference"
+          class="ai-reference-ready"
+          data-testid="pending-reference"
         >
-          <div class="ai-message-bubble">
-            <div class="ai-message-content">{{ aiStore.pendingMessage }}</div>
-          </div>
-        </div>
-
-        <div v-if="aiStore.isSending" class="ai-message-row assistant" aria-hidden="true">
-          <div class="ai-message-bubble ai-thinking">
-            <span />
-            <span />
-            <span />
-          </div>
+          <span>已引用 {{ aiStore.selectedRecordIds.length }} 份档案，仅用于下一条消息。</span>
+          <el-button link type="primary" @click="cancelRecordContext">移除</el-button>
         </div>
       </section>
 
@@ -184,14 +359,14 @@
           {{ sendingAnnouncement }}
         </span>
         <el-alert
-          v-if="errorMessage"
+          v-if="displayError"
           class="ai-error-alert"
-          :title="errorMessage"
+          :title="displayError"
           type="error"
           role="alert"
           show-icon
           closable
-          @close="errorMessage = ''"
+          @close="clearError"
         />
         <el-input
           ref="composerInput"
@@ -203,16 +378,26 @@
           resize="none"
           maxlength="2000"
           show-word-limit
-          :disabled="aiStore.isSending"
+          :disabled="aiStore.isSending || Boolean(aiStore.pickerContext) || Boolean(aiStore.preparedAnalysis)"
           :placeholder="authenticated ? '询问指标含义、健康常识或系统功能…' : '询问如何注册、登录或使用系统…'"
-          @keydown.enter.exact.prevent="submitMessage"
+          @keydown.enter.exact="handleComposerEnter"
         />
         <div class="ai-composer-actions">
+          <el-button
+            v-if="authenticated && !aiStore.pickerContext && !aiStore.preparedAnalysis && !hasPendingReference"
+            size="small"
+            plain
+            :disabled="aiStore.isSending"
+            data-testid="open-record-picker"
+            @click="openManualPicker"
+          >
+            引用档案
+          </el-button>
           <span>Enter 发送，Shift + Enter 换行</span>
           <el-button
             type="primary"
-            :loading="aiStore.isSending"
-            :disabled="!inputMessage.trim()"
+            :disabled="!inputMessage.trim() || aiStore.isSending || Boolean(aiStore.pickerContext) || Boolean(aiStore.preparedAnalysis)"
+            data-testid="send-message"
             @click="submitMessage"
           >
             发送
@@ -229,9 +414,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { useRoute } from "vue-router";
 
-import { fetchRecords } from "../api/records";
 import { useAiChatStore } from "../stores/aiChat";
 import { useAuthStore } from "../stores/auth";
 
@@ -255,7 +438,6 @@ let suppressBallClick = false;
 
 const aiStore = useAiChatStore();
 const authStore = useAuthStore();
-const route = useRoute();
 
 const inputMessage = ref("");
 const errorMessage = ref("");
@@ -263,9 +445,8 @@ const ballButton = ref(null);
 const chatPanel = ref(null);
 const composerInput = ref(null);
 const messageArea = ref(null);
-const recordsLoading = ref(false);
-const recordsError = ref("");
-const availableRecords = ref([]);
+const analysisCard = ref(null);
+const recordPickerCard = ref(null);
 const ballPosition = ref({ x: 0, y: 0 });
 const viewportWidth = ref(window.innerWidth);
 
@@ -283,7 +464,25 @@ const panelWidthNow = computed(() =>
   )
 );
 const sendingAnnouncement = computed(() =>
-  aiStore.isSending ? "消息正在发送，正在等待 AI 回复。" : ""
+  aiStore.isSending ? aiStore.statusText || "消息正在发送，正在等待 AI 回复。" : ""
+);
+const displayError = computed(() => errorMessage.value || aiStore.lastError);
+const hasPendingReference = computed(
+  () =>
+    aiStore.selectedRecordIds.length > 0 &&
+    aiStore.consentGiven &&
+    !aiStore.pickerContext &&
+    !aiStore.preparedAnalysis &&
+    !aiStore.isSending
+);
+const recordContextActive = computed(
+  () =>
+    Boolean(aiStore.pickerContext) ||
+    Boolean(aiStore.preparedAnalysis) ||
+    hasPendingReference.value
+);
+const messageActionsLocked = computed(
+  () => recordContextActive.value || aiStore.isSending
 );
 
 const suggestions = computed(() =>
@@ -293,7 +492,7 @@ const suggestions = computed(() =>
 );
 
 const selectedOwnerId = computed(() => {
-  const selected = availableRecords.value.find((record) =>
+  const selected = aiStore.availableRecords.find((record) =>
     aiStore.selectedRecordIds.includes(record.id)
   );
   return selected?.owner_id || null;
@@ -301,12 +500,14 @@ const selectedOwnerId = computed(() => {
 
 const recordGroups = computed(() => {
   const groups = new Map();
-  availableRecords.value.forEach((record) => {
+  aiStore.availableRecords.forEach((record) => {
     if (!groups.has(record.owner_id)) {
       const isSelf = record.owner_id === authStore.user?.id;
       groups.set(record.owner_id, {
         ownerId: record.owner_id,
-        label: isSelf ? `本人 · ${record.owner?.username || "当前用户"}` : `已授权亲友 · ${record.owner?.username || record.owner_id}`,
+        label: isSelf
+          ? `本人 · ${record.owner_name || "当前用户"}`
+          : `已授权亲友 · ${record.owner_name || record.owner_id}`,
         records: [],
       });
     }
@@ -322,6 +523,7 @@ const ballStyle = computed(() => ({
 
 async function focusComposer() {
   await nextTick();
+  if (recordContextActive.value) return;
   if (composerInput.value?.focus) {
     composerInput.value.focus();
   } else {
@@ -503,8 +705,7 @@ function resizeWithKeyboard(event) {
 }
 
 function recordOptionLabel(record) {
-  const institution = record.institution?.name || "未填写机构";
-  return `${record.exam_date} · ${institution} · ${record.indicator_count || 0} 项指标`;
+  return `${record.exam_date || "日期未填写"} · ${record.institution_name || "未填写机构"} · ${record.indicator_count || 0} 项指标`;
 }
 
 function isRecordDisabled(record) {
@@ -512,66 +713,93 @@ function isRecordDisabled(record) {
   if (alreadySelected) {
     return false;
   }
-  if (aiStore.selectedRecordIds.length >= 5) {
-    return true;
-  }
   return selectedOwnerId.value !== null && selectedOwnerId.value !== record.owner_id;
 }
 
 function changeRecordSelection(ids) {
   const selectedRecords = ids
-    .map((id) => availableRecords.value.find((record) => record.id === id))
+    .map((id) => aiStore.availableRecords.find((record) => record.id === id))
     .filter(Boolean);
   const ownerIds = new Set(selectedRecords.map((record) => record.owner_id));
   if (ownerIds.size > 1) {
     ElMessage.warning("一次对话只能选择同一归属人的档案");
     return;
   }
-  if (ids.length > 5) {
-    ElMessage.warning("一次最多选择 5 份档案");
-    return;
-  }
   aiStore.setSelectedRecordIds(ids);
 }
 
-function applyRouteRecordDefault() {
-  if (route.name !== "record-detail" || availableRecords.value.length === 0) {
-    return;
-  }
-  const recordId = Number(route.params.id);
-  const current = availableRecords.value.find((record) => record.id === recordId);
-  if (!current || aiStore.selectedRecordIds.includes(recordId)) {
-    return;
-  }
-  const sameOwner = aiStore.selectedRecordIds.filter((id) => {
-    const record = availableRecords.value.find((item) => item.id === id);
-    return record?.owner_id === current.owner_id;
-  });
-  aiStore.setSelectedRecordIds([recordId, ...sameOwner].slice(0, 5));
+function setRecordPickerCard(element) {
+  if (element) recordPickerCard.value = element;
 }
 
-async function loadAvailableRecords() {
-  if (!authenticated.value || recordsLoading.value) {
-    return;
-  }
-  recordsLoading.value = true;
-  recordsError.value = "";
-  try {
-    const { data } = await fetchRecords();
-    availableRecords.value = (data.items || []).filter(
-      (record) => record.status === "confirmed" && Number(record.indicator_count) > 0
-    );
-    const validIds = new Set(availableRecords.value.map((record) => record.id));
-    const sanitized = aiStore.selectedRecordIds.filter((id) => validIds.has(id));
-    if (sanitized.length !== aiStore.selectedRecordIds.length) {
-      aiStore.setSelectedRecordIds(sanitized);
-    }
-    applyRouteRecordDefault();
-  } catch (error) {
-    recordsError.value = error?.response?.data?.message || "档案列表加载失败";
-  } finally {
-    recordsLoading.value = false;
-  }
+async function revealCard(element, { focus = false } = {}) {
+  await nextTick();
+  const target = element.value;
+  if (!target) return;
+  target.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  if (focus) target.focus?.({ preventScroll: true });
+}
+
+function handleComposerEnter(event) {
+  if (event.isComposing || event.keyCode === 229) return;
+  event.preventDefault();
+  void submitMessage();
+}
+
+function openManualPicker() {
+  aiStore.showRecordPicker({ mode: "manual" });
+}
+
+function openActionPicker(message) {
+  aiStore.showRecordPicker({
+    assistantId: message.id,
+    query: aiStore.messages.find(
+      (item, index) => aiStore.messages[index + 1]?.id === message.id && item.role === "user"
+    )?.content || "",
+    mode: "action",
+  });
+}
+
+function reloadRecords() {
+  void aiStore.loadAvailableRecords({ force: true });
+}
+
+async function confirmRecordPicker() {
+  await aiStore.confirmRecordPicker(authenticated.value);
+  await scrollToBottom();
+}
+
+function cancelRecordContext() {
+  aiStore.resetRecordContext();
+}
+
+async function startPreparedAnalysis() {
+  errorMessage.value = "";
+  const pending = aiStore.analyzePreparedRecords();
+  await scrollToBottom();
+  await pending;
+  await scrollToBottom();
+}
+
+async function retryMessage(messageId) {
+  errorMessage.value = "";
+  const pending = aiStore.retryMessage(messageId, authenticated.value);
+  await scrollToBottom();
+  await pending;
+  await scrollToBottom();
+}
+
+function retryAnalysis(message) {
+  aiStore.retryAnalysis(message);
+}
+
+function prepareRecordFollowUp(message) {
+  aiStore.prepareRecordFollowUp(message);
+}
+
+function clearError() {
+  errorMessage.value = "";
+  aiStore.lastError = "";
 }
 
 function phoneHref(phone) {
@@ -600,20 +828,11 @@ async function submitMessage() {
   }
 
   errorMessage.value = "";
-  try {
-    await aiStore.sendMessage(message, authenticated.value);
-    inputMessage.value = "";
-    await scrollToBottom();
-  } catch (error) {
-    const status = error?.response?.status;
-    if (status === 503) {
-      errorMessage.value = "AI 服务尚未配置，请联系管理员设置 DeepSeek API Key。";
-    } else if (status === 429) {
-      errorMessage.value = "发送过于频繁，请稍后再试。";
-    } else {
-      errorMessage.value = error?.response?.data?.message || "AI 暂时无法回复，请稍后再试。";
-    }
-  }
+  inputMessage.value = "";
+  const pending = aiStore.sendMessage(message, authenticated.value);
+  await scrollToBottom();
+  await pending;
+  await scrollToBottom();
 }
 
 async function confirmEndConversation() {
@@ -652,7 +871,6 @@ watch(
   () => aiStore.isOpen,
   async (isOpen) => {
     if (isOpen) {
-      loadAvailableRecords();
       scrollToBottom();
       await focusComposer();
     } else {
@@ -665,37 +883,43 @@ watch(
 watch(
   () => authStore.user?.id || null,
   () => {
-    availableRecords.value = [];
-    recordsError.value = "";
-    if (authenticated.value && aiStore.isOpen) {
-      loadAvailableRecords();
-    }
+    errorMessage.value = "";
   }
 );
 
 watch(
-  () => route.fullPath,
-  () => {
-    if (authenticated.value && aiStore.isOpen) {
-      if (availableRecords.value.length) {
-        applyRouteRecordDefault();
-      } else {
-        loadAvailableRecords();
-      }
-    }
-  }
+  () => aiStore.preparedAnalysis,
+  (analysis) => {
+    if (analysis) void revealCard(analysisCard, { focus: true });
+  },
+  { immediate: true }
 );
 
 watch(
-  () => [aiStore.messages.length, aiStore.pendingMessage, aiStore.isSending],
+  () => aiStore.pickerContext,
+  (context) => {
+    if (context) void revealCard(recordPickerCard, { focus: true });
+  },
+  { immediate: true }
+);
+
+watch(
+  () => [
+    aiStore.messages.length,
+    aiStore.messages.at(-1)?.content,
+    aiStore.isSending,
+    aiStore.statusText,
+  ],
   scrollToBottom
 );
 
 onMounted(() => {
+  if (!compactViewport.value) {
+    aiStore.setPanelWidth(panelWidthNow.value);
+  }
   initializeBallPosition();
   window.addEventListener("resize", handleViewportResize);
   if (aiStore.isOpen) {
-    loadAvailableRecords();
     scrollToBottom();
     focusComposer();
   }
@@ -1029,6 +1253,10 @@ onBeforeUnmount(() => {
   border-bottom-left-radius: var(--radius-sm, 0.5rem);
 }
 
+.ai-message-row.failed .ai-message-bubble {
+  border-color: var(--color-danger, #c9342f);
+}
+
 .ai-message-row.pending .ai-message-bubble {
   opacity: 0.68;
 }
@@ -1051,6 +1279,72 @@ onBeforeUnmount(() => {
   line-height: 1.65;
 }
 
+.ai-message-error {
+  margin: 8px 0 0;
+  color: var(--color-danger, #c9342f);
+  font-size: var(--text-xs, 0.75rem);
+  line-height: 1.45;
+}
+
+.ai-message-actions,
+.ai-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.ai-action-card {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--color-border, #d2d2d7);
+  border-radius: var(--radius-md, 0.75rem);
+  background: var(--color-surface-elevated, #ffffff);
+  box-shadow: var(--shadow-sm, 0 2px 8px rgb(29 29 31 / 8%));
+}
+
+.ai-message-bubble .ai-action-card {
+  margin-top: 12px;
+  box-shadow: none;
+}
+
+.ai-analysis-card > p {
+  margin: 6px 0 0;
+  line-height: 1.55;
+}
+
+.ai-record-picker :deep(.el-select__wrapper) {
+  min-height: var(--control-min-height, 36px);
+  color: var(--color-text, #1d1d1f);
+  background: var(--color-surface-muted, #f5f5f7);
+  box-shadow: 0 0 0 1px var(--color-border, #d2d2d7) inset;
+}
+
+.ai-record-picker :deep(.el-select__wrapper.is-focused) {
+  box-shadow: 0 0 0 2px var(--color-focus, #1677ff) inset;
+}
+
+.ai-stream-status,
+.ai-reference-ready {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border, #d2d2d7);
+  border-radius: var(--radius-sm, 0.5rem);
+  color: var(--color-text-secondary, #5f6368);
+  background: var(--color-surface-elevated, #ffffff);
+  font-size: var(--text-sm, 0.875rem);
+  line-height: 1.45;
+}
+
+.ai-stream-status > :nth-child(2),
+.ai-reference-ready > span {
+  flex: 1 1 auto;
+}
+
 .ai-phone-link {
   display: inline-block;
   margin-top: 8px;
@@ -1064,10 +1358,9 @@ onBeforeUnmount(() => {
 .ai-thinking {
   display: flex;
   gap: 5px;
-  padding: 14px 16px;
 }
 
-.ai-thinking span {
+.ai-thinking i {
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -1075,11 +1368,11 @@ onBeforeUnmount(() => {
   animation: ai-bounce 1.1s infinite ease-in-out;
 }
 
-.ai-thinking span:nth-child(2) {
+.ai-thinking i:nth-child(2) {
   animation-delay: 0.14s;
 }
 
-.ai-thinking span:nth-child(3) {
+.ai-thinking i:nth-child(3) {
   animation-delay: 0.28s;
 }
 
@@ -1189,15 +1482,15 @@ onBeforeUnmount(() => {
   min-height: 44px;
 }
 
-:global(html[data-care="on"] .ai-record-context .el-select__wrapper) {
+:global(html[data-care="on"] .ai-record-picker .el-select__wrapper) {
   min-height: 44px;
   height: auto;
 }
 
-:global(html[data-care="on"] .ai-record-context .el-select__selection),
-:global(html[data-care="on"] .ai-record-context .el-select__selected-item),
-:global(html[data-care="on"] .ai-record-context .el-tag),
-:global(html[data-care="on"] .ai-record-context .el-tag__content) {
+:global(html[data-care="on"] .ai-record-picker .el-select__selection),
+:global(html[data-care="on"] .ai-record-picker .el-select__selected-item),
+:global(html[data-care="on"] .ai-record-picker .el-tag),
+:global(html[data-care="on"] .ai-record-picker .el-tag__content) {
   flex-wrap: wrap;
   max-width: 100%;
   height: auto;
@@ -1295,7 +1588,7 @@ onBeforeUnmount(() => {
     scroll-behavior: auto;
   }
 
-  .ai-thinking span {
+  .ai-thinking i {
     animation: none;
   }
 }

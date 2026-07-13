@@ -6,6 +6,16 @@
           <span>体检档案列表</span>
           <MainNavActions>
             <template #prefix>
+              <el-button
+                v-if="authStore.user?.role === 'user'"
+                type="success"
+                :disabled="selectedRecords.length === 0 || aiStore.isSending"
+                :loading="aiStore.isSending"
+                data-testid="record-analysis-button"
+                @click="prepareAnalysis"
+              >
+                智能分析（{{ selectedRecords.length }}）
+              </el-button>
               <el-button type="primary" @click="openCreateDialog">新建档案</el-button>
             </template>
           </MainNavActions>
@@ -20,7 +30,22 @@
         style="margin-bottom: 16px"
       />
 
-      <el-table :data="records" border v-loading="loading" empty-text="暂无档案，请先创建">
+      <el-table
+        ref="recordTableRef"
+        :data="records"
+        row-key="id"
+        border
+        v-loading="loading"
+        empty-text="暂无档案，请先创建"
+        @selection-change="handleSelectionChange"
+      >
+        <el-table-column
+          v-if="authStore.user?.role === 'user'"
+          type="selection"
+          width="55"
+          :selectable="isRecordSelectable"
+          :reserve-selection="false"
+        />
         <el-table-column prop="id" label="档案ID" width="90" />
         <el-table-column prop="exam_date" label="体检日期" width="130" />
         <el-table-column label="档案归属人" min-width="140">
@@ -193,14 +218,19 @@ import { fetchFriends } from "../api/friends";
 import { fetchInstitutions, fetchInstitutionPackages } from "../api/institutions";
 import { createRecord, deleteRecord, fetchRecords, updateRecord } from "../api/records";
 import { fetchUsers } from "../api/users";
+import { useAiChatStore } from "../stores/aiChat";
 import { useAuthStore } from "../stores/auth";
 
 const router = useRouter();
 const authStore = useAuthStore();
+const aiStore = useAiChatStore();
 
 const loading = ref(false);
 const errorMessage = ref("");
 const records = ref([]);
+const recordTableRef = ref(null);
+const selectedRecords = ref([]);
+let synchronizingSelection = false;
 
 const institutions = ref([]);
 const packageMap = ref({});
@@ -264,6 +294,55 @@ const ownerOptions = computed(() => {
   return [...selfUser, ...friendUsers];
 });
 
+const selectedOwnerId = computed(() => selectedRecords.value[0]?.owner_id ?? null);
+
+const isRecordAnalyzable = (record) => (
+  record?.status === "confirmed" && Number(record?.indicator_count) > 0
+);
+
+const isRecordSelectable = (record) => {
+  if (!isRecordAnalyzable(record)) {
+    return false;
+  }
+
+  return selectedOwnerId.value === null || record.owner_id === selectedOwnerId.value;
+};
+
+const handleSelectionChange = (selection) => {
+  if (synchronizingSelection) {
+    return;
+  }
+
+  const analyzableSelection = selection.filter(isRecordAnalyzable);
+  const ownerId = selectedOwnerId.value ?? analyzableSelection[0]?.owner_id ?? null;
+  const normalizedSelection = ownerId === null
+    ? []
+    : analyzableSelection.filter((record) => record.owner_id === ownerId);
+  selectedRecords.value = normalizedSelection;
+
+  if (normalizedSelection.length !== selection.length && recordTableRef.value) {
+    synchronizingSelection = true;
+    recordTableRef.value.clearSelection?.();
+    normalizedSelection.forEach((record) => {
+      recordTableRef.value?.toggleRowSelection?.(record, true);
+    });
+    synchronizingSelection = false;
+  }
+};
+
+const clearAnalysisSelection = () => {
+  selectedRecords.value = [];
+  recordTableRef.value?.clearSelection?.();
+};
+
+const prepareAnalysis = () => {
+  if (selectedRecords.value.length === 0 || aiStore.isSending) {
+    return;
+  }
+
+  aiStore.prepareRecordAnalysis([...selectedRecords.value]);
+};
+
 const loadRecords = async () => {
   loading.value = true;
   errorMessage.value = "";
@@ -271,6 +350,7 @@ const loadRecords = async () => {
   try {
     const { data } = await fetchRecords();
     records.value = data.items || [];
+    clearAnalysisSelection();
   } catch (error) {
     errorMessage.value = error?.response?.data?.message || "档案列表加载失败";
   } finally {

@@ -136,13 +136,17 @@ LOCAL_DATABASE_URL=sqlite:///another-local.db
 
 ## AI 助手
 
-POST /api/ai/chat 支持：
+AI 接口支持：
 
 - 匿名用户：公开系统 FAQ 和导览，不允许档案上下文。
-- 普通用户：最多选择同一归属人的 5 份已确认档案，档案 ID 会在后端重新鉴权。
+- `GET /api/ai/records`：按需返回本人及已授权亲友的可分析档案；只包含已确认且至少有一项指标的档案。
+- `POST /api/ai/chat/stream`：SSE 流式对话；普通问题不会读取档案，涉及个人报告且未选择档案时返回 `select_records` 动作。
+- `POST /api/ai/analyze/stream`：同一归属人的档案可多选；服务端先确定性计算指标变化，再交给 AI 解释。
+- `POST /api/ai/chat`：保留的非流式兼容接口。
+- 发送任何档案前必须为本次请求提交 `consent: true`；档案 ID、状态、指标和亲友授权会在每次请求中重新校验。
 - 两类管理员：后台不提供健康 AI，也不能把健康档案 ID 作为 AI 上下文。
 
-后端不保存聊天记录。真实模式从 .env 读取：
+后端不保存聊天或分析结果。流事件依次使用 `meta`、`status`、`delta`、`action`、`done`、`error`；真实模式从 .env 读取：
 
 ~~~env
 AI_PROVIDER=deepseek
@@ -150,6 +154,9 @@ AI_USE_MOCK=0
 DEEPSEEK_API_KEY=
 DEEPSEEK_API_BASE=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-flash
+AI_CONNECT_TIMEOUT_SECONDS=5
+AI_READ_TIMEOUT_SECONDS=30
+AI_REQUEST_TIMEOUT_SECONDS=60
 AI_SUPPORT_PHONE=
 ~~~
 

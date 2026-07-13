@@ -8,7 +8,11 @@ const http = axios.create({
 
 http.interceptors.request.use((config) => {
   const authStore = useAuthStore();
-  if (authStore.accessToken) {
+  const hasExplicitAuthorization =
+    typeof config.headers?.has === "function"
+      ? config.headers.has("Authorization")
+      : Boolean(config.headers?.Authorization || config.headers?.authorization);
+  if (authStore.accessToken && !hasExplicitAuthorization) {
     config.headers.Authorization = `Bearer ${authStore.accessToken}`;
   }
   return config;
@@ -25,6 +29,7 @@ http.interceptors.response.use(
       !originalRequest._retry &&
       !originalRequest.url.includes("/auth/login") &&
       !originalRequest.url.includes("/auth/register") &&
+      !originalRequest.url.includes("/auth/refresh") &&
       authStore.refreshToken
     ) {
       originalRequest._retry = true;
