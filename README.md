@@ -1,6 +1,6 @@
 # 康康健健 HealthDoc：健康档案管理系统
 
-康康健健 HealthDoc 是一个基于 Flask、Vue 3 和 SQLite 的本地 Web 应用。系统以个人健康档案和指标趋势为核心，提供公开门户、独立登录/注册页，以及普通用户、机构管理员、系统管理员三套隔离工作台。
+康康健健 HealthDoc 是一个基于 Flask 和 Vue 3 的健康档案 Web 应用。本地开发默认使用 SQLite，服务器生产环境可通过 openGauss 专用 SQLAlchemy 方言使用 GaussDB/openGauss。系统以个人健康档案和指标趋势为核心，提供公开门户、独立登录/注册页，以及普通用户、机构管理员、系统管理员三套隔离工作台。
 
 ## 当前实现
 
@@ -14,7 +14,7 @@
 - 健康 AI 使用 SSE 流式响应；档案列表不会在打开侧栏时加载，只有问题确实需要档案、用户点击“引用档案”或从档案列表发起“智能分析”时才按需加载。
 - 单档智能分析覆盖全部指标，多档分析不限制用户可见数量，但必须属于同一人；趋势数值由服务端先确定性计算，再交给模型解释。
 - 关怀模式使用统一页面倍率放大文字、控件与间距，桌面端最高为 1.12；可用宽度不足时自动降低倍率或回退到原响应式布局，不再通过分别增大字号和侧栏宽度挤压页面。
-- SQLite schema v2：继续使用现有 SQLite，不依赖 MySQL、PostgreSQL 或云数据库。
+- 数据库双环境：本地 SQLite schema v2 保持轻量开发体验；生产环境通过 `DATABASE_URL` 使用 GaussDB/openGauss。
 
 ## 技术栈
 
@@ -22,7 +22,7 @@
 |---|---|
 | 前端 | Vue 3、Vite 6、Vue Router、Pinia、Element Plus、Axios、ECharts 6 |
 | 后端 | Flask 3、Flask-SQLAlchemy、Flask-JWT-Extended、Flask-Cors |
-| 数据库 | SQLite，PRAGMA user_version=2 |
+| 数据库 | 本地 SQLite schema v2；生产 GaussDB/openGauss |
 | 图片处理 | Pillow，服务端解码、重编码并清除 EXIF |
 | OCR | 本地 Mock；可选华为云 OCR API |
 | AI | DeepSeek V4 Flash、SSE 流式输出、本地 FAQ/安全分流与测试 Mock |
@@ -50,8 +50,12 @@ health system/
 │     ├─ views/org/
 │     └─ ...
 ├─ scripts/                        # Windows 本地启动脚本
+├─ deploy/                         # Apache、systemd 与服务器发布配置
+├─ local-assets/                   # 本地资料、样例与历史备份（Git 忽略）
 └─ 项目文档/
 ~~~
+
+`local-assets/` 只用于保留课程材料、OCR 手工样例、机构原图和历史数据库备份，不参与构建、测试、发布或 Git 同步。运行时上传文件与当前 SQLite 数据仍分别保存在 `backend/uploads/` 和 `backend/instance/health_system.db`。
 
 ## 环境要求
 
@@ -86,7 +90,7 @@ if (-not (Test-Path .\backend\.env)) {
 
 真实密钥只允许写入被 Git 忽略的 backend/.env。
 
-## SQLite schema v2
+## 本地 SQLite schema v2
 
 正式数据库仍是：
 
@@ -148,6 +152,16 @@ LOCAL_DATABASE_URL=sqlite:///another-local.db
 - 后端：http://127.0.0.1:5050
 
 两个模式均读取同一个本地 SQLite 文件，不需要远程数据库。
+
+## 服务器部署与同步
+
+线上采用 Apache + Waitress + openGauss，本地仍使用 SQLite。首次 SQLite 数据迁移、目录结构、状态检查、SSH 隧道和后续代码发布流程见[服务器部署与后续同步](项目文档/服务器部署与同步.md)。日常发布入口为：
+
+~~~powershell
+.\scripts\deploy-server.ps1
+~~~
+
+该脚本只发布代码和前端构建，不覆盖服务器数据库或上传文件。
 
 如果终端出现 `Production startup requires an explicit JWT_SECRET_KEY`，说明使用的是旧启动脚本或直接调用了 Waitress。关闭失败进程后，从项目根目录重新运行 `.\scripts\start-full-prod.ps1`；新版脚本会在本机回环模式下自动初始化随机密钥。直接调用 Waitress 时则必须手工配置 `.env`。
 
