@@ -1,6 +1,6 @@
 # 康康健健 HealthDoc 后端
 
-Flask 后端负责三角色认证与授权、健康档案、OCR、指标标准化、机构运营、系统管理、机构图片处理和本地 SQLite schema v2。
+Flask 后端负责三角色认证与授权、健康档案、OCR、指标标准化、机构运营、系统管理和机构图片处理。本地默认使用 SQLite schema v2，生产环境可通过 `DATABASE_URL` 使用 GaussDB/openGauss。
 
 ## 环境与安装
 
@@ -22,13 +22,15 @@ if (-not (Test-Path .env)) {
 
 后端默认监听 http://127.0.0.1:5050，健康检查为 GET /api/health。
 
-## SQLite 数据库
+## 数据库
 
 默认数据库：
 
 ~~~text
 instance/health_system.db
 ~~~
+
+生产服务器设置 `DATABASE_URL=opengauss+psycopg2://...` 后使用 openGauss；`DATABASE_URL` 的优先级高于本地 `LOCAL_DATABASE_URL`。一次性数据迁移脚本为 `scripts/migrate_sqlite_to_gaussdb.py`，日常代码发布不应重复覆盖线上数据。
 
 开发入口和 Waitress 入口读取同一个文件。2026-07-11 的 schema v2 迁移验收基线为：
 
@@ -82,6 +84,15 @@ LOCAL_DATABASE_URL=sqlite:///another-local.db
 7. 原子替换正式数据库。
 
 迁移失败时正式文件不会被替换。对已经是 v2 的数据库重复运行是幂等检查，不会再次重建。
+
+本地测试和 OCR 调试可能留下未被数据库引用的上传文件。先预览、再清理：
+
+~~~powershell
+.\.venv\Scripts\python.exe .\scripts\cleanup_local_runtime.py
+.\.venv\Scripts\python.exe .\scripts\cleanup_local_runtime.py --apply
+~~~
+
+清理器会递归检查档案、待确认 OCR 附件和机构相册引用，不修改数据库，也不会处理服务器 openGauss 数据。
 
 ## 数据模型要点
 

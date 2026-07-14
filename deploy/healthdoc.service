@@ -1,0 +1,23 @@
+[Unit]
+Description=HealthDoc Flask API
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=healthdoc
+Group=www-data
+WorkingDirectory=/opt/healthdoc/current/backend
+EnvironmentFile=/etc/healthdoc/healthdoc.env
+ExecStart=/opt/healthdoc/venv/bin/waitress-serve --listen=127.0.0.1:5050 --threads=6 wsgi:app
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/healthdoc/uploads
+
+[Install]
+WantedBy=multi-user.target

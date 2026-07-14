@@ -8,10 +8,14 @@ load_dotenv()
 
 
 class Config:
-    # The application runs entirely on the local SQLite database.
-    # Flask-SQLAlchemy resolves this relative path under backend/instance.
+    # Local development keeps using SQLite.  Production deployments can set
+    # DATABASE_URL to an opengauss+psycopg2 GaussDB/openGauss connection URL.
+    # Flask-SQLAlchemy resolves the default relative SQLite path under
+    # backend/instance.
     SQLALCHEMY_DATABASE_URI = (
-        os.getenv("LOCAL_DATABASE_URL") or "sqlite:///health_system.db"
+        os.getenv("DATABASE_URL")
+        or os.getenv("LOCAL_DATABASE_URL")
+        or "sqlite:///health_system.db"
     )
     SQLALCHEMY_ENGINE_OPTIONS = {}
     SQLALCHEMY_TRACK_MODIFICATIONS = False

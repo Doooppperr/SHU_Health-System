@@ -10,6 +10,14 @@ permissions:
   contents: read
 
 jobs:
+  repository:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n deploy/release-server.sh
+      - shell: pwsh
+        run: "[void][ScriptBlock]::Create((Get-Content -Raw scripts/deploy-server.ps1))"
+
   backend:
     runs-on: ubuntu-latest
     defaults:
