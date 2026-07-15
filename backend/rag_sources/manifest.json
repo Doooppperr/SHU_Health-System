@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "source_id": "healthdoc-public-guide",
+      "kind": "local_markdown",
+      "path": "rag_sources/system_public.md",
+      "title": "HealthDoc 用户功能说明",
+      "publisher": "HealthDoc",
+      "version": "2026-07",
+      "audience": "public",
+      "category": "system_usage",
+      "approved_sha256": "4920cc2563585c1c876819ec19d55d8fb965f462760df2e73b32f0e37c18ed04",
+      "indicator_codes": []
+    },
+    {
+      "source_id": "nhc-weight-management-2024",
+      "kind": "remote_pdf",
+      "url": "https://www.nhc.gov.cn/ylyjs/zcwj/202412/75cb79c171c94def9e768193e65484f7/files/1736390749000_59785.pdf",
+      "title": "体重管理指导原则（2024年版）",
+      "publisher": "国家卫生健康委员会",
+      "version": "2024",
+      "audience": "authenticated",
+      "category": "weight_management",
+      "approved_sha256": "7a801bfd1cb5a40653a99f731aeaf7c061be63d7d983ff35415d450eeef3d02c",
+      "indicator_codes": ["BMI"]
+    },
+    {
+      "source_id": "nhc-diabetes-diet-2023",
+      "kind": "remote_pdf",
+      "url": "https://www.nhc.gov.cn/cms-search/downFiles/4fcbecd2c18e46baaf291bf46c2b79cd.pdf",
+      "title": "成人糖尿病食养指南（2023年版）",
+      "publisher": "国家卫生健康委员会",
+      "version": "2023",
+      "audience": "authenticated",
+      "category": "glucose_nutrition",
+      "approved_sha256": "2e03cd9e06b1a1faf67298647a01c5e5d2be9cd99aacb527732c51f1ee378d87",
+      "indicator_codes": ["FBG", "BMI"]
+    },
+    {
+      "source_id": "nhc-hyperlipidemia-diet-2023",
+      "kind": "remote_pdf",
+      "url": "https://www.nhc.gov.cn/wjw/c100378/202301/7faed9993c9b45aea158c5335346f282/files/1732844468018_41219.pdf",
+      "title": "成人高脂血症食养指南（2023年版）",
+      "publisher": "国家卫生健康委员会",
+      "version": "2023",
+      "audience": "authenticated",
+      "category": "lipid_nutrition",
+      "approved_sha256": "595f0f3358c7b96580a548ee93923010b2a2ff672f500e3bf0859344811893d0",
+      "indicator_codes": ["TC", "TG", "HDL", "LDL"]
+    },
+    {
+      "source_id": "nhc-hyperuricemia-gout-diet-2024",
+      "kind": "remote_pdf",
+      "url": "https://www.nhc.gov.cn/wjw/c100378/202402/afd5dda4bd6745fda10aad8d43a16369/files/1732845129551_37712.pdf",
+      "title": "成人高尿酸血症与痛风食养指南（2024年版）",
+      "publisher": "国家卫生健康委员会",
+      "version": "2024",
+      "audience": "authenticated",
+      "category": "uric_acid_nutrition",
+      "approved_sha256": "1557d1f7ebef8ab7185cbf67bfbd6b1890cbb5d148f56d0728d07647d18e377f",
+      "indicator_codes": ["UA"]
+    },
+    {
+      "source_id": "nhc-ckd-diet-2024",
+      "kind": "remote_pdf",
+      "url": "https://www.nhc.gov.cn/wjw/c100378/202402/afd5dda4bd6745fda10aad8d43a16369/files/1732845128797_75692.pdf",
+      "title": "成人慢性肾脏病食养指南（2024年版）",
+      "publisher": "国家卫生健康委员会",
+      "version": "2024",
+      "audience": "authenticated",
+      "category": "renal_nutrition",
+      "approved_sha256": "35df6e62cec5f3d30fbdfe8cf52c3e9465e58ae443ba3a44378e37048196aef9",
+      "indicator_codes": ["CREA", "UA"]
+    },
+    {
+      "source_id": "nhc-liver-reference-intervals",
+      "kind": "remote_pdf",
+      "url": "https://www.nhc.gov.cn/wjw/s9492/201301/9b2e494990ce4825a48b4b476f6f928b/files/1739781504016_48990.pdf",
+      "title": "血清酶活性参考区间（ALT、AST 等）",
+      "publisher": "国家卫生健康委员会",
+      "version": "WS/T 404.1—2012",
+      "audience": "authenticated",
+      "category": "liver_reference_intervals",
+      "approved_sha256": "9c8f1094934c08becb14b5b0dd61b899392b18fc37f69a8ffb493438ec5f7d78",
+      "indicator_codes": ["ALT", "AST"]
+    }
+  ]
+}

@@ -22,6 +22,8 @@ try {
     if (-not $SkipTests) {
         Push-Location (Join-Path $projectRoot "backend")
         try {
+            & ".\.venv\Scripts\python.exe" -m pip check
+            Assert-LastExitCode "Backend dependency check"
             & ".\.venv\Scripts\python.exe" -m pytest -q
             Assert-LastExitCode "Backend tests"
         }
@@ -31,6 +33,8 @@ try {
 
         Push-Location (Join-Path $projectRoot "frontend")
         try {
+            npm audit --omit=dev
+            Assert-LastExitCode "Frontend production dependency audit"
             npm test
             Assert-LastExitCode "Frontend tests"
         }

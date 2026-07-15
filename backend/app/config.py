@@ -6,6 +6,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+_BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 class Config:
     # Local development keeps using SQLite.  Production deployments can set
@@ -48,6 +50,28 @@ class Config:
     AI_GUEST_RATE_LIMIT_PER_MINUTE = int(os.getenv("AI_GUEST_RATE_LIMIT_PER_MINUTE", "10"))
     AI_AUTH_RATE_LIMIT_PER_MINUTE = int(os.getenv("AI_AUTH_RATE_LIMIT_PER_MINUTE", "30"))
 
+    RAG_ENABLED = os.getenv("RAG_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+    RAG_USE_MOCK = os.getenv("RAG_USE_MOCK", "0").strip().lower() in {"1", "true", "yes", "on"}
+    RAG_EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
+    RAG_VECTOR_SIZE = int(os.getenv("RAG_VECTOR_SIZE", "512"))
+    RAG_QDRANT_URL = os.getenv("RAG_QDRANT_URL", "").strip()
+    RAG_QDRANT_API_KEY = os.getenv("RAG_QDRANT_API_KEY", "").strip()
+    RAG_RUNTIME_PATH = os.getenv(
+        "RAG_RUNTIME_PATH", os.path.join(_BACKEND_DIR, "instance", "rag")
+    )
+    RAG_STORAGE_PATH = os.getenv(
+        "RAG_STORAGE_PATH", os.path.join(_BACKEND_DIR, "instance", "rag", "qdrant")
+    )
+    RAG_MODEL_CACHE_PATH = os.getenv(
+        "RAG_MODEL_CACHE_PATH", os.path.join(_BACKEND_DIR, "instance", "rag", "models")
+    )
+    RAG_COLLECTION_ALIAS = os.getenv("RAG_COLLECTION_ALIAS", "healthdoc_knowledge_current")
+    RAG_TOP_K = int(os.getenv("RAG_TOP_K", "8"))
+    RAG_CHAT_CONTEXT_K = int(os.getenv("RAG_CHAT_CONTEXT_K", "4"))
+    RAG_ANALYSIS_CONTEXT_K = int(os.getenv("RAG_ANALYSIS_CONTEXT_K", "6"))
+    RAG_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.35"))
+    RAG_MAX_CONTEXT_CHARS = int(os.getenv("RAG_MAX_CONTEXT_CHARS", "12000"))
+
     UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(os.getcwd(), "uploads"))
     UPLOAD_URL_BASE = os.getenv("UPLOAD_URL_BASE", "/uploads")
     MAX_CONTENT_LENGTH = 20 * 1024 * 1024
@@ -73,6 +97,7 @@ class TestingConfig(Config):
     AI_USE_MOCK = True
     AI_GUEST_RATE_LIMIT_PER_MINUTE = 1000
     AI_AUTH_RATE_LIMIT_PER_MINUTE = 1000
+    RAG_USE_MOCK = True
 
 
 class ProductionConfig(Config):

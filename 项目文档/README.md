@@ -1,6 +1,6 @@
 # 康康健健 HealthDoc 项目文档索引
 
-> 最后核对：2026-07-14。当前发布分支为 `main`，自动化基线为后端 143 项、前端 19 个文件 109 项；Vite production build 和生产依赖审计通过。
+> 最后核对：2026-07-15。当前发布分支为 `main`，自动化基线为后端 161 项、前端 19 个文件 110 项；RAG 黄金查询、Vite production build 和 Python/npm 依赖审计通过。
 
 本目录只保留描述当前实现且有明确维护职责的正式文档。完成历史由 Git 提交记录追溯，验证基线集中在《测试报告》，不再维护独立的过程记录文档。
 
@@ -44,7 +44,7 @@
 | 登录、注册、验证码、角色跳转 | `backend/app/auth/`、前端认证 Store 与路由 | 前后端 README、需求方案、认证/路由测试 |
 | 健康档案、指标和趋势 | records/trends/indicator 服务与对应视图 | 需求方案、数据库说明、测试报告 |
 | 机构、套餐、邀请码和相册 | admin/org/institutions 路由与服务 | 需求方案、演示指南、数据库说明、角色测试 |
-| AI 流式对话或分析 | `backend/app/ai/`、AI Store 与助手组件 | AI/OCR 说明、Mock、SSE 与前端交互测试 |
+| AI 流式对话、分析或 RAG | `backend/app/ai/`、`backend/rag_sources/`、AI Store 与助手组件 | AI/OCR 说明、来源清单、Mock、SSE、检索与前端交互测试 |
 | OCR 解析或确认 | OCR 服务、records 路由与上传视图 | AI/OCR 说明、解析/并发测试、演示指南 |
 | 主题、关怀和响应式布局 | appearance Store、全局样式与工作台布局 | 前端 README、视觉/组件测试、测试报告 |
 | 构建、分包或依赖 | Vite 配置、依赖清单和共享运行时 | 前端 README、测试报告、CI |

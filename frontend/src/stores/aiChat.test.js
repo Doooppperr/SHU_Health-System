@@ -98,6 +98,39 @@ describe("AI chat store", () => {
     expect(store.consentGiven).toBe(false);
   });
 
+  it("sends an owner-wide scope once and resets its consent", async () => {
+    api.fetchAiRecords.mockResolvedValueOnce({
+      data: {
+        items: [record],
+        owners: [
+          {
+            owner_id: 10,
+            owner: { username: "测试用户", label: "本人" },
+            record_count: 20,
+            date_range: { first: "2021-09-15", latest: "2026-06-15" },
+          },
+        ],
+      },
+    });
+    const store = useAiChatStore();
+    store.initialize(10);
+    store.showRecordPicker({ mode: "manual" });
+    await flushPromises();
+    store.setRecordSelectionMode("owner");
+    store.setSelectedOwnerId(10);
+    store.setConsentGiven(true);
+
+    await store.confirmRecordPicker(true);
+    await store.sendMessage("分析全部历史档案", true);
+
+    const payload = api.streamAiChat.mock.calls[0][0];
+    expect(payload.record_scope).toEqual({ owner_id: 10, mode: "all_confirmed" });
+    expect(payload.selected_record_ids).toBeUndefined();
+    expect(payload.consent).toBe(true);
+    expect(store.selectedOwnerId).toBeNull();
+    expect(store.consentGiven).toBe(false);
+  });
+
   it("opens an action picker while streaming and reuses the original message pair", async () => {
     api.streamAiChat
       .mockImplementationOnce(async (_payload, options) => {

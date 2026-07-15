@@ -17,6 +17,7 @@ from app.ai.service import (
     build_analysis_facts,
     format_analysis_context,
 )
+from app.ai.rag import RetrievalResult
 from app.extensions import db
 from app.models import FriendRelation, HealthIndicator, HealthRecord, IndicatorDict, User
 
@@ -144,6 +145,85 @@ def test_emergency_phrase_uses_deterministic_safety_reply(client):
     assert payload["decision"] == "emergency"
     assert payload["source"] == "safety_rule"
     assert "120" in payload["reply"]
+
+
+def test_emergency_stream_does_not_invoke_retrieval(client, app):
+    headers, _user_id = _register(client, "ai_emergency_no_rag")
+
+    class ForbiddenRetriever:
+        @staticmethod
+        def retrieve(*_args, **_kwargs):
+            raise AssertionError("emergency path must not retrieve")
+
+    app.extensions["knowledge_retriever"] = ForbiddenRetriever()
+    response = client.post(
+        "/api/ai/chat/stream",
+        headers=headers,
+        json={"message": "我胸痛并且呼吸困难", "history": []},
+    )
+    events = _sse_events(response)
+    stages = [data.get("stage") for name, data in events if name == "status"]
+    assert "retrieving" not in stages
+    assert events[-1][1]["decision"] == "emergency"
+
+
+def test_retrieval_unavailable_transparently_falls_back(client, app):
+    headers, _user_id = _register(client, "ai_rag_unavailable")
+
+    class UnavailableRetriever:
+        @staticmethod
+        def retrieve(*_args, **_kwargs):
+            return RetrievalResult(status="unavailable", error_code="ModelLoadError")
+
+    app.extensions["knowledge_retriever"] = UnavailableRetriever()
+    response = client.post(
+        "/api/ai/chat",
+        headers=headers,
+        json={"message": "解释空腹血糖的含义", "history": []},
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["rag_used"] is False
+    assert payload["retrieval_status"] == "unavailable"
+    assert payload["knowledge_source_count"] == 0
+
+
+def test_administrator_only_retrieves_public_corpus_and_cannot_attach_records(client, app):
+    headers, user_id = _register(client, "ai_admin_boundary")
+    with app.app_context():
+        user = db.session.get(User, user_id)
+        user.role = "admin"
+        db.session.commit()
+
+    audiences = []
+
+    class CapturingRetriever:
+        @staticmethod
+        def retrieve(_query, *, audience, **_kwargs):
+            audiences.append(audience)
+            return RetrievalResult(status="no_match")
+
+    app.extensions["knowledge_retriever"] = CapturingRetriever()
+    response = client.post(
+        "/api/ai/chat",
+        headers=headers,
+        json={"message": "请简单介绍一下这个平台", "history": []},
+    )
+    assert response.status_code == 200
+    assert audiences == ["public"]
+
+    record_id = _create_record(app, user_id, user_id)
+    denied = client.post(
+        "/api/ai/chat",
+        headers=headers,
+        json={
+            "message": "解释档案",
+            "selected_record_ids": [record_id],
+            "consent": True,
+        },
+    )
+    assert denied.status_code == 403
+    assert denied.get_json()["error"]["code"] == "regular_user_required"
 
 
 def test_user_can_attach_multiple_confirmed_records_for_same_owner(client, app):
@@ -399,6 +479,11 @@ def test_records_endpoint_lists_only_analyzable_owned_and_authorized_records(cli
     assert items[1]["owner"]["label"] == "本人"
     assert all(item["status"] == "confirmed" for item in items)
     assert all(item["indicator_count"] == 1 for item in items)
+    owners = response.get_json()["owners"]
+    assert [(item["owner_id"], item["record_count"]) for item in owners] == [
+        (friend_id, 1),
+        (user_id, 1),
+    ]
 
     with app.app_context():
         relation = FriendRelation.query.filter_by(
@@ -422,6 +507,78 @@ def test_record_context_requires_per_request_consent(client, app):
 
     assert response.status_code == 400
     assert response.get_json()["error"]["code"] == "record_consent_required"
+
+
+def test_owner_record_scope_loads_all_confirmed_records(client, app):
+    headers, user_id = _register(client, "ai_scope_owner")
+    first_id = _create_record(app, user_id, user_id, value="6.2")
+    second_id = _create_record(
+        app, user_id, user_id, value="5.8", exam_date=date(2026, 4, 1)
+    )
+    _create_record(app, user_id, user_id, status="draft")
+
+    response = client.post(
+        "/api/ai/chat",
+        headers=headers,
+        json={
+            "message": "解释我的历史血糖变化",
+            "record_scope": {"owner_id": user_id, "mode": "all_confirmed"},
+            "consent": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["selected_record_ids"] == [second_id, first_id]
+    assert payload["record_scope"] == {"owner_id": user_id, "mode": "all_confirmed"}
+
+
+@pytest.mark.parametrize(
+    ("body", "code"),
+    [
+        (
+            {
+                "selected_record_ids": [1],
+                "record_scope": {"owner_id": 1, "mode": "all_confirmed"},
+                "consent": True,
+            },
+            "record_scope_conflict",
+        ),
+        ({"record_scope": {"owner_id": 1, "mode": "unsupported"}}, "invalid_record_scope"),
+    ],
+)
+def test_invalid_record_scope_contract(client, body, code):
+    response = client.post("/api/ai/chat", json={"message": "test", **body})
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == code
+
+
+def test_revoked_friend_owner_scope_is_unavailable(client, app):
+    headers, user_id = _register(client, "ai_scope_requester")
+    _friend_headers, friend_id = _register(client, "ai_scope_friend")
+    _create_record(app, friend_id, friend_id)
+    with app.app_context():
+        db.session.add(
+            FriendRelation(
+                user_id=user_id,
+                friend_user_id=friend_id,
+                relation_name="亲友",
+                auth_status=False,
+            )
+        )
+        db.session.commit()
+
+    response = client.post(
+        "/api/ai/chat",
+        headers=headers,
+        json={
+            "message": "解释亲友历史指标",
+            "record_scope": {"owner_id": friend_id, "mode": "all_confirmed"},
+            "consent": True,
+        },
+    )
+    assert response.status_code == 404
+    assert response.get_json()["error"]["code"] == "record_scope_unavailable"
 
 
 def test_chat_stream_emits_fixed_event_contract(client):
@@ -735,7 +892,8 @@ def test_stream_configuration_failure_uses_error_event(client, app):
 
     assert response.status_code == 200
     events = _sse_events(response)
-    assert [name for name, _data in events] == ["meta", "status", "error"]
+    assert [name for name, _data in events] == ["meta", "status", "status", "error"]
+    assert events[2][1]["stage"] == "retrieving"
     error = events[-1][1]
     assert error["code"] == "ai_not_configured"
     assert error["retryable"] is False
@@ -987,6 +1145,7 @@ def test_client_disconnect_closes_active_provider_stream(client, monkeypatch):
     iterator = iter(response.response)
 
     assert b"event: meta" in next(iterator)
+    assert b"event: status" in next(iterator)
     assert b"event: status" in next(iterator)
     assert b"event: status" in next(iterator)
     response.close()

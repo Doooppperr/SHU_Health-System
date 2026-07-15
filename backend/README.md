@@ -157,11 +157,13 @@ AI 接口支持：
 
 - 匿名用户：公开系统 FAQ 和导览，不允许档案上下文。
 - `GET /api/ai/records`：按需返回本人及已授权亲友的可分析档案；只包含已确认且至少有一项指标的档案。
+- `GET /api/ai/records` 同时返回按归属人聚合的 `owners`（档案数和日期范围）。
 - `POST /api/ai/chat/stream`：SSE 流式对话；普通问题不会读取档案，涉及个人报告且未选择档案时返回 `select_records` 动作。
 - `POST /api/ai/analyze/stream`：同一归属人的档案可多选；服务端先确定性计算指标变化，再交给 AI 解释。
 - `POST /api/ai/chat`：保留的非流式兼容接口。
 - 发送任何档案前必须为本次请求提交 `consent: true`；档案 ID、状态、指标和亲友授权会在每次请求中重新校验。
 - 可分析档案必须为本人或已授权亲友的 `confirmed` 档案且至少有一项指标；一次请求必须属于同一所有者，不设置数量上限，数据库查询会分批执行。
+- 请求可在 `selected_record_ids` 精确档案和 `record_scope: {"owner_id": 2, "mode": "all_confirmed"}` 全部历史之间二选一；两者互斥且每次均需 `consent: true`。
 - 两类管理员：后台不提供健康 AI，也不能把健康档案 ID 作为 AI 上下文。
 
 后端不保存聊天或分析结果。历史满 20 条时使用本地确定性裁剪与摘要合并，不会额外调用一次模型。流事件使用 `meta`、`status`、`delta`、`action`、`done`、`error`；所有流请求带 `request_id`，错误事件包含稳定 `code` 和 `retryable`。响应只发送 `Cache-Control` 与 `X-Accel-Buffering` 等端到端头，不设置 Waitress/WSGI 禁止的 `Connection` 头。
@@ -181,7 +183,29 @@ AI_MAX_HISTORY_MESSAGES=20
 AI_SUPPORT_PHONE=
 AI_GUEST_RATE_LIMIT_PER_MINUTE=10
 AI_AUTH_RATE_LIMIT_PER_MINUTE=30
+RAG_ENABLED=0
+RAG_EMBEDDING_MODEL=BAAI/bge-small-zh-v1.5
+RAG_QDRANT_URL=
 ~~~
+
+RAG 仅索引批准的公共知识，不索引用户问题、聊天、OCR 原文、用户 ID 或健康指标值。应用启动与请求期间不联网；首次在 `backend` 目录显式执行：
+
+~~~powershell
+.\.venv\Scripts\python.exe scripts\rag_sync.py sync
+~~~
+
+同步成功后把 `.env` 中 `RAG_ENABLED=1` 并重启后端。远端文件哈希变化时新文件会进入 `instance/rag/sources/*/quarantine-*.pdf`，旧索引继续工作；审核后用 `rag_sync.py approve-change <source_id> <sha256>` 批准，再次同步。SSE 新增 `status.stage=retrieving`，完成结果只返回 `rag_used`、`retrieval_status` 和 `knowledge_source_count`，不把来源正文或 URL 暴露给前端。
+
+本地 100 份纵向档案的默认操作是 dry-run：
+
+~~~powershell
+$env:RAG_DEMO_PASSWORD="至少12字符的本地演示密码"
+.\.venv\Scripts\python.exe scripts\seed_rag_demo.py apply
+.\.venv\Scripts\python.exe scripts\seed_rag_demo.py verify
+.\.venv\Scripts\python.exe scripts\seed_rag_demo.py cleanup
+~~~
+
+脚本只管理 `rag_demo_01` 至 `rag_demo_05` 和运行时 manifest 中记录的数据；重复执行不会增加数据。
 
 连接超时、读取超时和总截止默认分别为 5/30/60 秒。上游在首个模型内容到达前发生连接中断或 502/503/504 时最多自动重试一次；客户端取消或断开会关闭上游流。结构化日志只记录模式、档案数量、提示长度、首次正文 `delta`/总耗时、状态和 token 用量，不记录消息正文、指标值或密钥。
 
@@ -249,9 +273,9 @@ Waitress 本机演示（推荐从项目根目录使用启动脚本）：
 .\.venv\Scripts\python.exe -m pytest -q
 ~~~
 
-当前完整结果：143 passed。
+当前完整结果：161 passed。
 
-测试使用独立内存 SQLite，不修改 instance/health_system.db；覆盖三角色路由与接口隔离、邀请码生命周期和并发消费、一机构一管理员、机构软停用、相册限制与清理、可选机构、指标规范化、报告文件保护、机构数据脱敏只读、AI SSE/分析/超时/取消，以及 OCR 多表区域隔离、表格/文本并行、无表头列推断、短代码误匹配防护、候选冲突复核、数值/单位安全、既有档案 replace/merge 和并发控制。
+测试使用独立内存 SQLite，不修改 instance/health_system.db；覆盖三角色路由与接口隔离、邀请码生命周期和并发消费、一机构一管理员、机构软停用、相册限制与清理、可选机构、指标规范化、报告文件保护、机构数据脱敏只读、AI SSE/分析/超时/取消、归属人范围与逐请求授权、RAG 切分/同步/重排/安全降级，以及 OCR 多表区域隔离、表格/文本并行、无表头列推断、短代码误匹配防护、候选冲突复核、数值/单位安全、既有档案 replace/merge 和并发控制。
 
 另用三份不含真实健康信息的合成报告调用真实华为 OCR 完成 smoke：中文表格、中文列表和英文行式报告分别准确映射 10/9/8 个已配置指标，均无冲突或需复核项。该结果验证的是多布局通用解析链路，不代表未配置的任意医疗项目会被自动识别；未知指标仍需先扩充字典或人工处理。
 

@@ -166,9 +166,33 @@
             >
               <div class="ai-section-heading">
                 <span>选择本次引用的档案</span>
-                <span class="ai-selection-count">已选 {{ aiStore.selectedRecordIds.length }} 份</span>
+                <span class="ai-selection-count">{{ pickerSelectionLabel }}</span>
               </div>
+              <el-radio-group
+                :model-value="aiStore.recordSelectionMode"
+                size="small"
+                @change="aiStore.setRecordSelectionMode"
+              >
+                <el-radio-button value="owner">检索全部历史</el-radio-button>
+                <el-radio-button value="records">精确选择档案</el-radio-button>
+              </el-radio-group>
               <el-select
+                v-if="aiStore.recordSelectionMode === 'owner'"
+                :model-value="aiStore.selectedOwnerId"
+                placeholder="选择本人或一位已授权亲友"
+                style="width: 100%"
+                :loading="aiStore.recordsLoading"
+                @change="aiStore.setSelectedOwnerId"
+              >
+                <el-option
+                  v-for="owner in aiStore.availableOwners"
+                  :key="owner.owner_id"
+                  :label="ownerScopeLabel(owner)"
+                  :value="owner.owner_id"
+                />
+              </el-select>
+              <el-select
+                v-else
                 :model-value="aiStore.selectedRecordIds"
                 multiple
                 collapse-tags
@@ -205,19 +229,19 @@
                 暂无带指标的已确认档案。
               </p>
               <el-checkbox
-                v-if="aiStore.selectedRecordIds.length"
+                v-if="hasRecordPickerSelection"
                 :model-value="aiStore.consentGiven"
                 class="ai-consent"
                 @change="aiStore.setConsentGiven"
               >
-                我知晓所选指标将发送至 DeepSeek API 处理（仅本次）
+                {{ recordConsentLabel }}
               </el-checkbox>
               <div class="ai-card-actions">
                 <el-button size="small" @click="aiStore.closeRecordPicker">取消</el-button>
                 <el-button
                   type="primary"
                   size="small"
-                  :disabled="!aiStore.selectedRecordIds.length || !aiStore.consentGiven || aiStore.isSending || aiStore.recordsLoading"
+                  :disabled="!hasRecordPickerSelection || !aiStore.consentGiven || aiStore.isSending || aiStore.recordsLoading"
                   data-testid="confirm-record-picker"
                   @click="confirmRecordPicker"
                 >
@@ -277,9 +301,33 @@
         >
           <div class="ai-section-heading">
             <span>引用档案到下一条消息</span>
-            <span class="ai-selection-count">已选 {{ aiStore.selectedRecordIds.length }} 份</span>
+            <span class="ai-selection-count">{{ pickerSelectionLabel }}</span>
           </div>
+          <el-radio-group
+            :model-value="aiStore.recordSelectionMode"
+            size="small"
+            @change="aiStore.setRecordSelectionMode"
+          >
+            <el-radio-button value="owner">检索全部历史</el-radio-button>
+            <el-radio-button value="records">精确选择档案</el-radio-button>
+          </el-radio-group>
           <el-select
+            v-if="aiStore.recordSelectionMode === 'owner'"
+            :model-value="aiStore.selectedOwnerId"
+            placeholder="选择本人或一位已授权亲友"
+            style="width: 100%"
+            :loading="aiStore.recordsLoading"
+            @change="aiStore.setSelectedOwnerId"
+          >
+            <el-option
+              v-for="owner in aiStore.availableOwners"
+              :key="owner.owner_id"
+              :label="ownerScopeLabel(owner)"
+              :value="owner.owner_id"
+            />
+          </el-select>
+          <el-select
+            v-else
             :model-value="aiStore.selectedRecordIds"
             multiple
             collapse-tags
@@ -316,19 +364,19 @@
             暂无带指标的已确认档案。
           </p>
           <el-checkbox
-            v-if="aiStore.selectedRecordIds.length"
+            v-if="hasRecordPickerSelection"
             :model-value="aiStore.consentGiven"
             class="ai-consent"
             @change="aiStore.setConsentGiven"
           >
-            我知晓所选指标将发送至 DeepSeek API 处理（仅本次）
+            {{ recordConsentLabel }}
           </el-checkbox>
           <div class="ai-card-actions">
             <el-button size="small" @click="aiStore.closeRecordPicker">取消</el-button>
             <el-button
               type="primary"
               size="small"
-              :disabled="!aiStore.selectedRecordIds.length || !aiStore.consentGiven || aiStore.isSending || aiStore.recordsLoading"
+              :disabled="!hasRecordPickerSelection || !aiStore.consentGiven || aiStore.isSending || aiStore.recordsLoading"
               data-testid="confirm-record-picker"
               @click="confirmRecordPicker"
             >
@@ -350,7 +398,7 @@
           class="ai-reference-ready"
           data-testid="pending-reference"
         >
-          <span>已引用 {{ aiStore.selectedRecordIds.length }} 份档案，仅用于下一条消息。</span>
+          <span>已引用 {{ pickerSelectionLabel }}，仅用于下一条消息。</span>
           <el-button link type="primary" @click="cancelRecordContext">移除</el-button>
         </div>
       </section>
@@ -476,9 +524,32 @@ const sendingAnnouncement = computed(() =>
   aiStore.isSending ? aiStore.statusText || "消息正在发送，正在等待 AI 回复。" : ""
 );
 const displayError = computed(() => errorMessage.value || aiStore.lastError);
+const hasRecordPickerSelection = computed(() =>
+  aiStore.recordSelectionMode === "owner"
+    ? Number.isInteger(aiStore.selectedOwnerId)
+    : aiStore.selectedRecordIds.length > 0
+);
+const selectedScopeOwner = computed(() =>
+  aiStore.availableOwners.find((owner) => owner.owner_id === aiStore.selectedOwnerId)
+);
+const pickerSelectionLabel = computed(() => {
+  if (aiStore.recordSelectionMode !== "owner") {
+    return aiStore.selectedRecordIds.length
+      ? `已选 ${aiStore.selectedRecordIds.length} 份`
+      : "未选择";
+  }
+  const owner = selectedScopeOwner.value;
+  return owner ? `${owner.owner_name} · ${owner.record_count} 份` : "未选择归属人";
+});
+const recordConsentLabel = computed(() => {
+  if (aiStore.recordSelectionMode === "owner" && selectedScopeOwner.value) {
+    return `我同意本次检索 ${selectedScopeOwner.value.owner_name} 的全部已确认档案，并将最小必要指标事实发送至 DeepSeek API（仅本次）`;
+  }
+  return "我同意将所选档案的最小必要指标事实发送至 DeepSeek API（仅本次）";
+});
 const hasPendingReference = computed(
   () =>
-    aiStore.selectedRecordIds.length > 0 &&
+    hasRecordPickerSelection.value &&
     aiStore.consentGiven &&
     !aiStore.pickerContext &&
     !aiStore.preparedAnalysis &&
@@ -717,6 +788,14 @@ function recordOptionLabel(record) {
   return `${record.exam_date || "日期未填写"} · ${record.institution_name || "未填写机构"} · ${record.indicator_count || 0} 项指标`;
 }
 
+function ownerScopeLabel(owner) {
+  const prefix = owner.owner_id === authStore.user?.id ? "本人" : "已授权亲友";
+  const range = owner.date_range?.first && owner.date_range?.latest
+    ? `${owner.date_range.first} 至 ${owner.date_range.latest}`
+    : "日期未填写";
+  return `${prefix} · ${owner.owner_name} · ${owner.record_count} 份 · ${range}`;
+}
+
 function isRecordDisabled(record) {
   const alreadySelected = aiStore.selectedRecordIds.includes(record.id);
   if (alreadySelected) {
@@ -829,7 +908,7 @@ async function submitMessage() {
   }
   if (
     authenticated.value &&
-    aiStore.selectedRecordIds.length > 0 &&
+    hasRecordPickerSelection.value &&
     !aiStore.consentGiven
   ) {
     ElMessage.warning("请先确认所选指标将发送至 DeepSeek API 处理");

@@ -12,6 +12,8 @@
 - 档案采用内部数字主键与用户展示编号分离：界面统一显示 `health+数字`（例如 `health12`）；删除不会重排其余现存档案，编号应视为不保证连续的标识。
 - 已创建档案可继续通过 OCR 录入报告；解析结果先暂存，确认前不会覆盖原报告、状态或指标，也可以安全放弃。确认时界面默认用新报告替换旧 OCR 指标，但始终保留手工指标；也可显式选择合并模式。
 - 健康 AI 使用 SSE 流式响应；档案列表不会在打开侧栏时加载，只有问题确实需要档案、用户点击“引用档案”或从档案列表发起“智能分析”时才按需加载。
+- 健康 AI 使用双通道 RAG：私人档案继续按权限从业务数据库读取并确定性计算，公共科普知识使用 FastEmbed 中文向量和 Qdrant Local；私人档案、聊天和 OCR 原文不进入向量库。
+- 用户可精确选择同一归属人的档案，也可一次性授权检索该归属人的全部已确认档案；授权和档案可见性在每次请求重新校验。
 - 单档智能分析覆盖全部指标，多档分析不限制用户可见数量，但必须属于同一人；趋势数值由服务端先确定性计算，再交给模型解释。
 - 关怀模式使用统一页面倍率放大文字、控件与间距，桌面端最高为 1.12；可用宽度不足时自动降低倍率或回退到原响应式布局，不再通过分别增大字号和侧栏宽度挤压页面。
 - 数据库双环境：本地 SQLite schema v2 保持轻量开发体验；生产环境通过 `DATABASE_URL` 使用 GaussDB/openGauss。
@@ -25,7 +27,7 @@
 | 数据库 | 本地 SQLite schema v2；生产 GaussDB/openGauss |
 | 图片处理 | Pillow，服务端解码、重编码并清除 EXIF |
 | OCR | 本地 Mock；可选华为云 OCR API |
-| AI | DeepSeek V4 Flash、SSE 流式输出、本地 FAQ/安全分流与测试 Mock |
+| AI/RAG | DeepSeek V4 Flash、SSE、FastEmbed `BAAI/bge-small-zh-v1.5`、Qdrant Local、本地 FAQ/安全分流与测试 Mock |
 | 本机演示服务 | Waitress、Vite Preview |
 | 测试 | Pytest、Vitest、Vue Test Utils、jsdom |
 
@@ -42,6 +44,8 @@ health system/
 │  │  └─ ...
 │  ├─ instance/health_system.db    # 本地 SQLite 正式数据库
 │  ├─ scripts/upgrade_local_database.py
+│  ├─ scripts/rag_sync.py            # 白名单语料同步与原子索引切换
+│  ├─ rag_sources/                   # 来源清单、批准哈希与黄金查询
 │  └─ tests/
 ├─ frontend/
 │  └─ src/
@@ -155,13 +159,13 @@ LOCAL_DATABASE_URL=sqlite:///another-local.db
 
 ## 服务器部署与同步
 
-线上采用 Apache + Waitress + openGauss，本地仍使用 SQLite。首次 SQLite 数据迁移、目录结构、状态检查、SSH 隧道和后续代码发布流程见[服务器部署与后续同步](项目文档/服务器部署与同步.md)。日常发布入口为：
+线上采用 Apache + Waitress + openGauss，并使用单后端进程访问持久化 Qdrant Local。首次 SQLite 数据迁移、RAG 目录结构、状态检查、SSH 隧道和后续代码发布流程见[服务器部署与后续同步](项目文档/服务器部署与同步.md)。日常发布入口为：
 
 ~~~powershell
 .\scripts\deploy-server.ps1
 ~~~
 
-该脚本只发布代码和前端构建，不覆盖服务器数据库或上传文件。
+该脚本只发布代码和前端构建，不覆盖服务器数据库或上传文件；公共知识会从仓库批准清单显式同步到 `/var/lib/healthdoc/rag`，本地 100 份合成档案不会上传到生产数据库。
 
 如果终端出现 `Production startup requires an explicit JWT_SECRET_KEY`，说明使用的是旧启动脚本或直接调用了 Waitress。关闭失败进程后，从项目根目录重新运行 `.\scripts\start-full-prod.ps1`；新版脚本会在本机回环模式下自动初始化随机密钥。直接调用 Waitress 时则必须手工配置 `.env`。
 
@@ -193,7 +197,9 @@ LOCAL_DATABASE_URL=sqlite:///another-local.db
 - 普通用户的机构列表和详情页直接展示该封面；无图片或图片加载失败时显示中性占位，不影响机构资料与套餐访问。
 - 只有普通用户可以向健康 AI 提交档案 ID；两类管理员工作台不显示健康 AI。
 - AI 初始界面不加载档案；每次引用档案都要重新选择并单独同意，选择、同意和健康数据不会自动附加到后续无关消息。
+- AI 档案选择支持精确档案和 `record_scope=all_confirmed` 两种互斥模式；归属人必须是本人或当前仍授权的亲友。
 - AI 只接受本人或已授权亲友、状态为 `confirmed` 且至少有一项指标的档案；一次请求中的档案必须属于同一所有者，不设置用户可见数量上限。
+- Qdrant 只保存批准的公共语料片段及来源元数据，不保存用户 ID、档案 ID、指标值、问题正文或聊天内容。
 - AI 对话和分析结果不写入 SQLite；浏览器只在当前标签页 `sessionStorage` 中保存最多 40 条界面消息，发送给模型的历史最多 20 条并在本地确定性裁剪。
 - AI 面板在桌面端打开时按比例缩放主页面，最低缩放比例为 0.7；空间不足或移动端切换为遮罩对话框，不再挤压导航文字。
 - 关怀模式与 AI 面板共用同一画布尺寸计算：两者同时开启时会合并倍率并保持主页面恰好落在侧栏之外；公开门户导航项保持单行，窄屏自动回退而不产生横向滚动。
@@ -205,6 +211,7 @@ LOCAL_DATABASE_URL=sqlite:///another-local.db
 ~~~env
 OCR_USE_MOCK=1
 AI_USE_MOCK=1
+RAG_ENABLED=0
 ~~~
 
 真实 OCR 需配置华为云 Endpoint、AK、SK 和 Project ID。真实 AI 需在 backend/.env 中配置 DEEPSEEK_API_KEY；系统只提供指标科普和一般生活建议，不做诊断、处方或急症替代处理。
@@ -217,7 +224,7 @@ OCR 有两种入口：直接上传会创建 `parsed` 档案；从档案列表或
 
 OCR 只会映射当前指标字典已经配置的编码、名称和别名。未知项目会保留在“未作为指标/报告信息字段”中供人工检查，系统不会凭相似字符串猜成其他医疗指标。真实华为云 smoke 使用三份不含真实健康信息的合成报告，分别覆盖中文表格、中文列表和英文行式布局，准确映射 10、9、8 个已配置指标。
 
-AI 主要接口为 `GET /api/ai/records`、`POST /api/ai/chat/stream` 和 `POST /api/ai/analyze/stream`。SSE 事件固定为 `meta`、`status`、`delta`、`action`、`done`、`error`；Waitress 响应不发送 WSGI 禁止的 `Connection` hop-by-hop 头。完整契约见[AI 与 OCR 开发说明](项目文档/AI与OCR开发说明.md)。
+首次本地启用 RAG 时，在 `backend` 目录执行 `python scripts/rag_sync.py sync`，成功后再设置 `RAG_ENABLED=1`。应用启动和用户请求不会联网更新语料。AI 主要接口为 `GET /api/ai/records`、`POST /api/ai/chat/stream` 和 `POST /api/ai/analyze/stream`。SSE 增加 `status.stage=retrieving`，完成事件只公开检索状态和来源数量，不返回来源正文或 URL。完整契约见[AI 与 OCR 开发说明](项目文档/AI与OCR开发说明.md)。
 
 ## 验证
 
@@ -225,6 +232,8 @@ AI 主要接口为 `GET /api/ai/records`、`POST /api/ai/chat/stream` 和 `POST 
 Set-Location .\backend
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m pip check
+.\.venv\Scripts\python.exe -m pip_audit -r requirements.txt
+.\.venv\Scripts\python.exe scripts\evaluate_rag.py
 
 Set-Location ..\frontend
 npm test
@@ -234,10 +243,11 @@ npm audit --omit=dev
 
 当前验证结果：
 
-- 后端：143 passed。
-- 前端：19 个测试文件、109 个测试通过。
+- 后端：161 passed。
+- 前端：19 个测试文件、110 个测试通过。
 - 前端生产构建：通过。
-- 生产依赖审计：0 vulnerabilities。
+- Python 与 npm 依赖审计：0 vulnerabilities。
+- RAG 黄金查询：36/36 条可回答查询 Top-5 命中，热检索 p95 为 19.97 ms。
 - SQLite：user_version=2，外键检查无违规，integrity_check=ok。
 - GitHub Actions：使用 Python 3.12 与 Node.js 20，在 push/PR 到 `main` 时重复执行后端测试、前端测试和生产构建。
 

@@ -17,7 +17,7 @@ TimeoutStopSec=30
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/var/lib/healthdoc/uploads
+ReadWritePaths=/var/lib/healthdoc/uploads /var/lib/healthdoc/rag
 
 [Install]
 WantedBy=multi-user.target

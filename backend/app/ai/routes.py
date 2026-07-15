@@ -31,6 +31,12 @@ from app.ai.service import (
     needs_record_selection,
     parse_safety_completion,
 )
+from app.ai.rag import (
+    RetrievalResult,
+    allowed_grounding_ids,
+    format_knowledge_context,
+    get_knowledge_retriever,
+)
 from app.extensions import db
 from app.models import FriendRelation, HealthIndicator, HealthRecord, User
 
@@ -156,6 +162,25 @@ def _parse_record_ids(raw_ids):
     return parsed, None
 
 
+def _parse_record_scope(raw_scope):
+    if raw_scope is None:
+        return None, None
+    if not isinstance(raw_scope, dict):
+        return None, "record_scope must be an object"
+    if set(raw_scope) - {"owner_id", "mode"}:
+        return None, "record_scope contains unsupported fields"
+    owner_id = raw_scope.get("owner_id")
+    if isinstance(owner_id, bool):
+        return None, "record_scope owner_id must be a positive integer"
+    try:
+        owner_id = int(owner_id)
+    except (TypeError, ValueError):
+        return None, "record_scope owner_id must be a positive integer"
+    if owner_id <= 0 or raw_scope.get("mode") != "all_confirmed":
+        return None, "record_scope requires a positive owner_id and mode=all_confirmed"
+    return {"owner_id": owner_id, "mode": "all_confirmed"}, None
+
+
 def _authorized_owner_ids(user):
     friend_ids = (
         db.session.query(FriendRelation.friend_user_id)
@@ -229,6 +254,99 @@ def _load_selected_records(user, record_ids):
     return ordered_records, None
 
 
+def _load_record_scope(user, record_scope):
+    owner_id = record_scope["owner_id"]
+    if owner_id not in _authorized_owner_ids(user):
+        return None, _json_error(
+            "record scope is unavailable", "record_scope_unavailable", 404
+        )
+    records = (
+        HealthRecord.query.options(*_record_load_options())
+        .filter(
+            HealthRecord.owner_id == owner_id,
+            HealthRecord.status == "confirmed",
+            HealthRecord.indicators.any(),
+        )
+        .order_by(HealthRecord.exam_date.asc(), HealthRecord.id.asc())
+        .all()
+    )
+    if not records:
+        return None, _json_error(
+            "record scope is unavailable", "record_scope_unavailable", 404
+        )
+    return records, None
+
+
+def _indicator_codes_from_records(records):
+    return sorted(
+        {
+            item.indicator_dict.code
+            for record in records
+            for item in record.indicators
+            if item.indicator_dict is not None
+        }
+    )
+
+
+def _retrieve_knowledge(user, query, records, *, limit=None):
+    retriever = get_knowledge_retriever(current_app)
+    return retriever.retrieve(
+        query,
+        audience="authenticated"
+        if user is not None and user.role == "user"
+        else "public",
+        indicator_codes=_indicator_codes_from_records(records),
+        limit=limit,
+    )
+
+
+def _knowledge_context(result):
+    return format_knowledge_context(
+        result,
+        max_chars=int(current_app.config.get("RAG_MAX_CONTEXT_CHARS", 12000)),
+    )
+
+
+def _analysis_retrieval_query(facts):
+    ranked = []
+    for trend in facts.get("trends", []):
+        observations = trend.get("observations") or []
+        abnormal_count = sum(1 for item in observations if item.get("abnormal"))
+        latest_abnormal = bool(observations and observations[-1].get("abnormal"))
+        try:
+            percent_change = abs(float(trend.get("percent_change") or 0))
+        except (TypeError, ValueError):
+            percent_change = 0
+        if latest_abnormal or abnormal_count or percent_change >= 10:
+            ranked.append(
+                (
+                    latest_abnormal,
+                    abnormal_count,
+                    percent_change,
+                    f"{trend.get('name', '')} {trend.get('code', '')}",
+                )
+            )
+    ranked.sort(reverse=True)
+    prioritized = [item[-1] for item in ranked]
+    if not prioritized:
+        prioritized = [
+            f"{trend.get('name', '')} {trend.get('code', '')}"
+            for trend in facts.get("trends", [])
+        ]
+    if not prioritized:
+        for record in facts.get("records", []):
+            for item in record.get("indicators", []):
+                if item.get("status") == "异常":
+                    prioritized.append(f"{item.get('name', '')} {item.get('code', '')}")
+    if not prioritized:
+        prioritized = [
+            f"{item.get('name', '')} {item.get('code', '')}"
+            for record in facts.get("records", [])
+            for item in record.get("indicators", [])
+        ]
+    return "体检指标科普、参考范围与一般生活建议：" + "、".join(prioritized[:10])
+
+
 def _format_record_context(user, records):
     if not records:
         return ""
@@ -292,17 +410,27 @@ def _validate_chat_request(user, payload):
     record_ids, record_error = _parse_record_ids(payload.get("selected_record_ids"))
     if record_error:
         return None, _json_error(record_error, "invalid_record_ids", 400)
-    if user is None and record_ids:
+    record_scope, scope_error = _parse_record_scope(payload.get("record_scope"))
+    if scope_error:
+        return None, _json_error(scope_error, "invalid_record_scope", 400)
+    if record_scope and payload.get("selected_record_ids") is not None:
+        return None, _json_error(
+            "selected_record_ids and record_scope are mutually exclusive",
+            "record_scope_conflict",
+            400,
+        )
+    has_record_context = bool(record_ids or record_scope)
+    if user is None and has_record_context:
         return None, _json_error(
             "login is required to use health records", "login_required", 403
         )
-    if user is not None and user.role != "user" and record_ids:
+    if user is not None and user.role != "user" and has_record_context:
         return None, _json_error(
             "only regular users can use health records with AI",
             "regular_user_required",
             403,
         )
-    if record_ids and payload.get("consent") is not True:
+    if has_record_context and payload.get("consent") is not True:
         return None, _json_error(
             "explicit consent is required before sending record data",
             "record_consent_required",
@@ -314,6 +442,10 @@ def _validate_chat_request(user, payload):
         records, load_error = _load_selected_records(user, record_ids)
         if load_error:
             return None, load_error
+    elif record_scope:
+        records, load_error = _load_record_scope(user, record_scope)
+        if load_error:
+            return None, load_error
 
     model_history, updated_summary, compacted_count = _compact_history(history, summary)
     return {
@@ -322,7 +454,9 @@ def _validate_chat_request(user, payload):
         "summary": updated_summary,
         "compacted_count": compacted_count,
         "record_ids": record_ids,
+        "record_scope": record_scope,
         "records": records,
+        "retrieval": RetrievalResult(status="disabled"),
     }, None
 
 
@@ -341,7 +475,7 @@ def _resolve_chat_locally(user, chat_request):
     if (
         user is not None
         and user.role == "user"
-        and not chat_request["record_ids"]
+        and not chat_request["records"]
         and needs_record_selection(message)
     ):
         return {
@@ -368,6 +502,11 @@ def _resolve_chat(user, chat_request):
         return local_resolution
 
     message = chat_request["message"]
+    chat_request["retrieval"] = _retrieve_knowledge(
+        user, message, chat_request["records"]
+    )
+    retrieval = chat_request["retrieval"]
+    knowledge_context = _knowledge_context(retrieval)
     client = get_ai_client(current_app.config)
     support_phone = (current_app.config.get("AI_SUPPORT_PHONE") or "").strip()
     if user is None:
@@ -377,6 +516,7 @@ def _resolve_chat(user, chat_request):
             chat_request["history"],
             chat_request["summary"],
             support_phone,
+            knowledge_context,
         )
     else:
         result = answer_authenticated_question(
@@ -386,6 +526,8 @@ def _resolve_chat(user, chat_request):
             chat_request["summary"],
             _format_record_context(user, chat_request["records"]),
             support_phone,
+            knowledge_context,
+            allowed_grounding_ids(retrieval),
         )
     if result.get("decision") == "select_records":
         return {
@@ -409,7 +551,8 @@ def _chat_response_payload(user, chat_request, resolution):
         "summary": chat_request["summary"],
         "compacted_count": chat_request["compacted_count"],
         "mode": "authenticated" if user else "guest",
-        "selected_record_ids": chat_request["record_ids"],
+        "selected_record_ids": [record.id for record in chat_request["records"]],
+        "record_scope": chat_request["record_scope"],
         "model": (
             getattr(client, "model", None)
             or current_app.config.get("DEEPSEEK_MODEL")
@@ -417,6 +560,11 @@ def _chat_response_payload(user, chat_request, resolution):
         if source == "model"
         else None,
         "usage": result.get("usage") or {},
+        "rag_used": chat_request["retrieval"].used,
+        "retrieval_status": chat_request["retrieval"].status,
+        "knowledge_source_count": len(
+            {item.source_id for item in chat_request["retrieval"].hits}
+        ),
     }
     if payload["decision"] == "support":
         payload["support_phone"] = support_phone or None
@@ -488,12 +636,15 @@ def _stream_model_chat_resolution(user, chat_request):
     client = get_ai_client(current_app.config)
     support_phone = (current_app.config.get("AI_SUPPORT_PHONE") or "").strip()
     message = chat_request["message"]
+    retrieval = chat_request["retrieval"]
+    knowledge_context = _knowledge_context(retrieval)
     if user is None:
         messages = build_guest_messages(
             message,
             chat_request["history"],
             chat_request["summary"],
             support_phone,
+            knowledge_context,
         )
         completion = yield from _consume_provider_stream(
             client,
@@ -513,6 +664,7 @@ def _stream_model_chat_resolution(user, chat_request):
             chat_request["history"],
             chat_request["summary"],
             _format_record_context(user, chat_request["records"]),
+            knowledge_context,
         )
         completion = yield from _consume_provider_stream(
             client,
@@ -521,7 +673,9 @@ def _stream_model_chat_resolution(user, chat_request):
             max_tokens=1200,
             heartbeat_message="AI 正在进行安全判断…",
         )
-        result = parse_safety_completion(completion, support_phone)
+        result = parse_safety_completion(
+            completion, support_phone, allowed_grounding_ids(retrieval)
+        )
 
     if result.get("decision") == "select_records":
         return {
@@ -573,6 +727,7 @@ def _log_stream_completion(
     first_delta_at,
     status,
     usage,
+    retrieval,
 ):
     now = time.monotonic()
     log_data = {
@@ -587,6 +742,7 @@ def _log_stream_completion(
         "total_ms": round((now - started_at) * 1000),
         "status": status,
         "usage": usage or {},
+        "retrieval": retrieval.log_payload(),
     }
     logger.info("ai_request %s", json.dumps(log_data, ensure_ascii=True, separators=(",", ":")))
 
@@ -652,7 +808,26 @@ def analyzable_records():
                 "status": record.status,
             }
         )
-    return {"items": items}, 200
+    owners_by_id = {}
+    for item in items:
+        owner_id = item["owner_id"]
+        summary = owners_by_id.setdefault(
+            owner_id,
+            {
+                "owner_id": owner_id,
+                "owner": item["owner"],
+                "record_count": 0,
+                "date_range": {"first": item["exam_date"], "latest": item["exam_date"]},
+            },
+        )
+        summary["record_count"] += 1
+        summary["date_range"]["first"] = min(
+            summary["date_range"]["first"], item["exam_date"]
+        )
+        summary["date_range"]["latest"] = max(
+            summary["date_range"]["latest"], item["exam_date"]
+        )
+    return {"items": items, "owners": list(owners_by_id.values())}, 200
 
 
 @ai_bp.post("/chat")
@@ -699,6 +874,9 @@ def chat():
             "mode": "authenticated" if user else "guest",
             "selected_record_ids": [],
             "model": None,
+            "rag_used": False,
+            "retrieval_status": "disabled",
+            "knowledge_source_count": 0,
         }, 200
     return _chat_response_payload(user, chat_request, resolution), 200
 
@@ -751,6 +929,13 @@ def chat_stream():
         try:
             resolution = _resolve_chat_locally(user, chat_request)
             if resolution is None:
+                yield _sse(
+                    "status",
+                    {"stage": "retrieving", "message": "正在检索可用知识资料…"},
+                )
+                chat_request["retrieval"] = _retrieve_knowledge(
+                    user, chat_request["message"], chat_request["records"]
+                )
                 resolution = yield from _stream_model_chat_resolution(
                     user,
                     chat_request,
@@ -775,6 +960,9 @@ def chat_stream():
                             if resolution.get("client") is not None
                             else None
                         ),
+                        "rag_used": False,
+                        "retrieval_status": "disabled",
+                        "knowledge_source_count": 0,
                     },
                 )
                 final_status = "completed"
@@ -796,6 +984,9 @@ def chat_stream():
                 "source": response_payload["source"],
                 "summary": response_payload["summary"],
                 "model": response_payload["model"],
+                "rag_used": response_payload["rag_used"],
+                "retrieval_status": response_payload["retrieval_status"],
+                "knowledge_source_count": response_payload["knowledge_source_count"],
             }
             if response_payload.get("support_phone"):
                 done_payload["support_phone"] = response_payload["support_phone"]
@@ -828,6 +1019,7 @@ def chat_stream():
                 first_delta_at=first_delta_at,
                 status=final_status,
                 usage=usage,
+                retrieval=chat_request["retrieval"],
             )
 
     return _sse_response(generate())
@@ -858,7 +1050,16 @@ def analyze_stream():
     record_ids, record_error = _parse_record_ids(payload.get("selected_record_ids"))
     if record_error:
         return _json_error(record_error, "invalid_record_ids", 400)
-    if not record_ids:
+    record_scope, scope_error = _parse_record_scope(payload.get("record_scope"))
+    if scope_error:
+        return _json_error(scope_error, "invalid_record_scope", 400)
+    if record_scope and payload.get("selected_record_ids") is not None:
+        return _json_error(
+            "selected_record_ids and record_scope are mutually exclusive",
+            "record_scope_conflict",
+            400,
+        )
+    if not record_ids and not record_scope:
         return _json_error(
             "select at least one record", "records_required", 400
         )
@@ -868,7 +1069,10 @@ def analyze_stream():
             "record_consent_required",
             400,
         )
-    records, load_error = _load_selected_records(user, record_ids)
+    if record_scope:
+        records, load_error = _load_record_scope(user, record_scope)
+    else:
+        records, load_error = _load_selected_records(user, record_ids)
     if load_error:
         return load_error
 
@@ -884,6 +1088,7 @@ def analyze_stream():
         first_delta_at = None
         final_status = "cancelled"
         usage = {}
+        retrieval = RetrievalResult(status="disabled")
         yield _sse(
             "meta",
             {
@@ -897,8 +1102,18 @@ def analyze_stream():
             {"stage": "analyzing", "message": "档案已验证，正在计算指标与趋势…"},
         )
         try:
+            yield _sse(
+                "status",
+                {"stage": "retrieving", "message": "正在检索相关健康知识…"},
+            )
+            retrieval = _retrieve_knowledge(
+                user,
+                _analysis_retrieval_query(facts),
+                records,
+                limit=int(current_app.config.get("RAG_ANALYSIS_CONTEXT_K", 6)),
+            )
             client = get_ai_client(current_app.config)
-            messages = build_analysis_messages(facts)
+            messages = build_analysis_messages(facts, _knowledge_context(retrieval))
             completion = yield from _consume_provider_stream(
                 client,
                 messages,
@@ -906,7 +1121,9 @@ def analyze_stream():
                 max_tokens=2200,
                 heartbeat_message="AI 正在进行安全判断…",
             )
-            result = parse_safety_completion(completion, support_phone)
+            result = parse_safety_completion(
+                completion, support_phone, allowed_grounding_ids(retrieval)
+            )
             usage = result.get("usage") or {}
             yield _sse(
                 "status",
@@ -922,6 +1139,11 @@ def analyze_stream():
                 "source": "model",
                 "summary": "",
                 "model": getattr(client, "model", None) or configured_model,
+                "rag_used": retrieval.used,
+                "retrieval_status": retrieval.status,
+                "knowledge_source_count": len(
+                    {item.source_id for item in retrieval.hits}
+                ),
             }
             if result["decision"] == "support":
                 done_payload["support_phone"] = support_phone or None
@@ -954,6 +1176,7 @@ def analyze_stream():
                 first_delta_at=first_delta_at,
                 status=final_status,
                 usage=usage,
+                retrieval=retrieval,
             )
 
     return _sse_response(generate())

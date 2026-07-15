@@ -40,6 +40,12 @@ function readJson(storage, key, fallback) {
   }
 }
 
+function positiveIntegerOrNull(value) {
+  if (value === null || value === undefined || typeof value === "boolean") return null;
+  const normalized = Number(value);
+  return Number.isInteger(normalized) && normalized > 0 ? normalized : null;
+}
+
 function normalizeMessages(rawMessages) {
   if (!Array.isArray(rawMessages)) return [];
   return rawMessages
@@ -67,6 +73,13 @@ function normalizeMessages(rawMessages) {
                 Number.isInteger(record.id) && Number.isInteger(record.owner_id)
             )
         : [];
+      const contextOwnerId = positiveIntegerOrNull(message.contextOwnerId);
+      const persistedRetryOwnerId = positiveIntegerOrNull(message.retryOwnerId);
+      const retryOwnerId = persistedRetryOwnerId !== null
+        ? persistedRetryOwnerId
+        : interrupted && recordSensitive
+          ? contextOwnerId
+          : null;
       return {
         id: typeof message.id === "string" ? message.id : newMessageId(message.role),
         role: message.role,
@@ -88,6 +101,8 @@ function normalizeMessages(rawMessages) {
         contextRecordIds,
         retryRecordIds,
         retryRecords,
+        contextOwnerId,
+        retryOwnerId,
       };
     })
     .slice(-MAX_STORED_MESSAGES);
@@ -98,7 +113,7 @@ function recordMetadata(record) {
     id: Number(record.id),
     owner_id: Number(record.owner_id),
     owner_name: record.owner_name || record.owner?.username || "档案所有者",
-    owner_label: record.owner_label || "",
+    owner_label: record.owner_label || record.owner?.label || "",
     exam_date: record.exam_date || "",
     institution_name:
       record.institution_name || record.institution?.name || "未填写机构",
@@ -195,6 +210,9 @@ export const useAiChatStore = defineStore("ai-chat", {
     selectedRecordIds: [],
     consentGiven: false,
     availableRecords: [],
+    availableOwners: [],
+    recordSelectionMode: "records",
+    selectedOwnerId: null,
     recordsLoaded: false,
     recordsLoading: false,
     recordsError: "",
@@ -286,9 +304,25 @@ export const useAiChatStore = defineStore("ai-chat", {
 
       if (!sameSelection(this.selectedRecordIds, normalized)) {
         this.selectedRecordIds = normalized;
+        if (normalized.length) this.selectedOwnerId = null;
         this.consentGiven = false;
       }
       return true;
+    },
+
+    setRecordSelectionMode(mode) {
+      const normalized = mode === "owner" ? "owner" : "records";
+      if (this.recordSelectionMode === normalized) return;
+      this.recordSelectionMode = normalized;
+      this.selectedRecordIds = [];
+      this.selectedOwnerId = null;
+      this.consentGiven = false;
+    },
+
+    setSelectedOwnerId(ownerId) {
+      this.selectedOwnerId = positiveIntegerOrNull(ownerId);
+      if (this.selectedOwnerId !== null) this.selectedRecordIds = [];
+      this.consentGiven = false;
     },
 
     setConsentGiven(value) {
@@ -299,6 +333,7 @@ export const useAiChatStore = defineStore("ai-chat", {
     resetAvailableRecords() {
       this.recordsLoadSequence += 1;
       this.availableRecords = [];
+      this.availableOwners = [];
       this.recordsLoaded = false;
       this.recordsLoading = false;
       this.recordsError = "";
@@ -306,6 +341,8 @@ export const useAiChatStore = defineStore("ai-chat", {
 
     resetRecordContext({ keepPicker = false } = {}) {
       this.selectedRecordIds = [];
+      this.selectedOwnerId = null;
+      this.recordSelectionMode = "records";
       this.consentGiven = false;
       this.preparedAnalysis = null;
       this.pendingSensitiveHistoryAssistantId = "";
@@ -344,6 +381,29 @@ export const useAiChatStore = defineStore("ai-chat", {
           return;
         }
         this.availableRecords = (data.records || data.items || []).map(recordMetadata);
+        this.availableOwners = Array.isArray(data.owners)
+          ? data.owners.map((item) => ({
+              owner_id: Number(item.owner_id),
+              owner_name: item.owner?.username || "档案所有者",
+              owner_label: item.owner?.label || "",
+              record_count: Number(item.record_count) || 0,
+              date_range: item.date_range || {},
+            }))
+          : [...new Set(this.availableRecords.map((item) => item.owner_id))].map(
+              (ownerId) => {
+                const records = this.availableRecords.filter(
+                  (item) => item.owner_id === ownerId
+                );
+                const dates = records.map((item) => item.exam_date).filter(Boolean).sort();
+                return {
+                  owner_id: ownerId,
+                  owner_name: records[0]?.owner_name || "档案所有者",
+                  owner_label: records[0]?.owner_label || "",
+                  record_count: records.length,
+                  date_range: { first: dates[0] || "", latest: dates.at(-1) || "" },
+                };
+              }
+            );
         this.recordsLoaded = true;
         const validIds = new Set(this.availableRecords.map((record) => record.id));
         this.setSelectedRecordIds(this.selectedRecordIds.filter((id) => validIds.has(id)));
@@ -370,14 +430,23 @@ export const useAiChatStore = defineStore("ai-chat", {
       query = "",
       mode = "manual",
       preselectedIds = [],
+      preselectedOwnerId = null,
       historyAssistantId = "",
     } = {}) {
       if (this.isSending && mode !== "action") return false;
+      const normalizedPreselectedOwnerId = Number(preselectedOwnerId);
+      const hasPreselectedOwner =
+        preselectedOwnerId !== null &&
+        preselectedOwnerId !== undefined &&
+        Number.isInteger(normalizedPreselectedOwnerId) &&
+        normalizedPreselectedOwnerId > 0;
       this.preparedAnalysis = null;
       this.pendingSensitiveHistoryAssistantId = "";
       this.selectedRecordIds = [
         ...new Set(preselectedIds.map(Number).filter(Number.isInteger)),
       ];
+      this.recordSelectionMode = hasPreselectedOwner ? "owner" : "records";
+      this.selectedOwnerId = hasPreselectedOwner ? normalizedPreselectedOwnerId : null;
       this.consentGiven = false;
       this.pickerContext = { assistantId, query, mode, historyAssistantId };
       void this.loadAvailableRecords({ force: true });
@@ -389,7 +458,9 @@ export const useAiChatStore = defineStore("ai-chat", {
     },
 
     async confirmRecordPicker(authenticated) {
-      if (!this.pickerContext || this.selectedRecordIds.length === 0) return null;
+      const ownerScope =
+        this.recordSelectionMode === "owner" && Number.isInteger(this.selectedOwnerId);
+      if (!this.pickerContext || (!ownerScope && this.selectedRecordIds.length === 0)) return null;
       if (!this.consentGiven) {
         this.lastError = "请先确认所选指标将发送至 DeepSeek API 处理。";
         return null;
@@ -401,6 +472,7 @@ export const useAiChatStore = defineStore("ai-chat", {
       if (context.mode === "action" && context.assistantId) {
         return this.retryMessage(context.assistantId, authenticated, {
           selectedRecordIds: [...this.selectedRecordIds],
+          ownerId: ownerScope ? this.selectedOwnerId : null,
           consent: true,
           sensitiveHistoryAssistantId: context.historyAssistantId || "",
         });
@@ -408,7 +480,10 @@ export const useAiChatStore = defineStore("ai-chat", {
 
       // Manual references are intentionally kept for exactly the next message.
       this.pendingSensitiveHistoryAssistantId = context.historyAssistantId || "";
-      return { selectedRecordIds: [...this.selectedRecordIds] };
+      return {
+        selectedRecordIds: [...this.selectedRecordIds],
+        ownerId: ownerScope ? this.selectedOwnerId : null,
+      };
     },
 
     prepareRecordAnalysis(records) {
@@ -442,8 +517,14 @@ export const useAiChatStore = defineStore("ai-chat", {
       }
 
       const selectedRecordIds = authenticated ? [...this.selectedRecordIds] : [];
+      const selectedOwnerId =
+        authenticated && this.recordSelectionMode === "owner"
+          ? this.selectedOwnerId
+          : null;
+      const hasRecordContext =
+        selectedRecordIds.length > 0 || Number.isInteger(selectedOwnerId);
       const sensitiveHistoryAssistantId = this.pendingSensitiveHistoryAssistantId;
-      if (selectedRecordIds.length && !this.consentGiven) {
+      if (hasRecordContext && !this.consentGiven) {
         this.lastError = "请先确认所选指标将发送至 DeepSeek API 处理。";
         return null;
       }
@@ -453,8 +534,9 @@ export const useAiChatStore = defineStore("ai-chat", {
         role: "user",
         content: message,
         kind: "chat",
-        recordSensitive: selectedRecordIds.length > 0,
+        recordSensitive: hasRecordContext,
         contextRecordIds: [...selectedRecordIds],
+        contextOwnerId: selectedOwnerId,
       };
       const assistantMessage = {
         id: newMessageId("assistant"),
@@ -465,9 +547,11 @@ export const useAiChatStore = defineStore("ai-chat", {
         decision: "answer",
         supportPhone: "",
         source: "model",
-        recordSensitive: selectedRecordIds.length > 0,
+        recordSensitive: hasRecordContext,
         contextRecordIds: [...selectedRecordIds],
+        contextOwnerId: selectedOwnerId,
         retryRecordIds: [],
+        retryOwnerId: null,
       };
       const insertionIndex = this.messages.length;
       this.messages.push(userMessage, assistantMessage);
@@ -485,8 +569,13 @@ export const useAiChatStore = defineStore("ai-chat", {
             selectedRecordIds,
           }),
           summary: this.summary,
-          selected_record_ids: selectedRecordIds,
-          consent: selectedRecordIds.length > 0 && this.consentGiven,
+          selected_record_ids: Number.isInteger(selectedOwnerId)
+            ? undefined
+            : selectedRecordIds,
+          record_scope: Number.isInteger(selectedOwnerId)
+            ? { owner_id: selectedOwnerId, mode: "all_confirmed" }
+            : undefined,
+          consent: hasRecordContext && this.consentGiven,
         },
       });
       return reactiveAssistantMessage;
@@ -516,12 +605,16 @@ export const useAiChatStore = defineStore("ai-chat", {
       }
 
       const requiredRecordIds = assistantMessage.retryRecordIds || [];
-      if (requiredRecordIds.length > 0 && !requestContext) {
+      const requiredOwnerId = Number.isInteger(assistantMessage.retryOwnerId)
+        ? assistantMessage.retryOwnerId
+        : null;
+      if ((requiredRecordIds.length > 0 || requiredOwnerId !== null) && !requestContext) {
         this.showRecordPicker({
           assistantId: assistantMessage.id,
           query: userMessage.content,
           mode: "action",
           preselectedIds: requiredRecordIds,
+          preselectedOwnerId: requiredOwnerId,
         });
         return null;
       }
@@ -536,9 +629,13 @@ export const useAiChatStore = defineStore("ai-chat", {
               ),
             ]
           : [];
+      const selectedOwnerId =
+        authenticated && requestContext?.consent === true && Number.isInteger(requestContext.ownerId)
+          ? requestContext.ownerId
+          : null;
       const sensitiveHistoryAssistantId =
         requestContext?.sensitiveHistoryAssistantId || "";
-      if (requestContext && selectedRecordIds.length === 0) {
+      if (requestContext && selectedRecordIds.length === 0 && selectedOwnerId === null) {
         this.lastError = "请先确认所选指标将发送至 DeepSeek API 处理。";
         return null;
       }
@@ -551,12 +648,15 @@ export const useAiChatStore = defineStore("ai-chat", {
         errorMessage: "",
         action: "",
         errorCode: "",
-        recordSensitive: selectedRecordIds.length > 0,
+        recordSensitive: selectedRecordIds.length > 0 || selectedOwnerId !== null,
         contextRecordIds: [...selectedRecordIds],
+        contextOwnerId: selectedOwnerId,
         retryRecordIds: [],
+        retryOwnerId: null,
       });
-      userMessage.recordSensitive = selectedRecordIds.length > 0;
+      userMessage.recordSensitive = selectedRecordIds.length > 0 || selectedOwnerId !== null;
       userMessage.contextRecordIds = [...selectedRecordIds];
+      userMessage.contextOwnerId = selectedOwnerId;
       this.pickerContext = null;
       await this.runStream({
         assistantMessage,
@@ -569,8 +669,11 @@ export const useAiChatStore = defineStore("ai-chat", {
             selectedRecordIds,
           }),
           summary: this.summary,
-          selected_record_ids: selectedRecordIds,
-          consent: selectedRecordIds.length > 0 && this.consentGiven,
+          selected_record_ids: selectedOwnerId !== null ? undefined : selectedRecordIds,
+          record_scope: selectedOwnerId !== null
+            ? { owner_id: selectedOwnerId, mode: "all_confirmed" }
+            : undefined,
+          consent: (selectedRecordIds.length > 0 || selectedOwnerId !== null) && this.consentGiven,
         },
       });
       return assistantMessage;
@@ -723,6 +826,9 @@ export const useAiChatStore = defineStore("ai-chat", {
           assistantMessage.retryRecordIds = retryable
             ? [...(assistantMessage.contextRecordIds || [])]
             : [];
+          assistantMessage.retryOwnerId = retryable
+            ? assistantMessage.contextOwnerId || null
+            : null;
         }
         if (!assistantMessage.content) {
           assistantMessage.content = cancelled ? "本次生成已取消。" : "本次回复未完成。";
