@@ -33,7 +33,7 @@
       <template v-else>
         <el-card shadow="never" style="margin-bottom: 16px">
           <template #header>
-            <span>我添加的亲友（可代传）</span>
+            <span>我申请查看的亲友</span>
           </template>
 
           <el-table :data="outgoing" border empty-text="暂无亲友关系">
@@ -57,7 +57,7 @@
 
         <el-card shadow="never">
           <template #header>
-            <span>授权给我的关系（我可开关授权）</span>
+            <span>申请查看我的亲友（我可开关只读授权）</span>
           </template>
 
           <el-table :data="incoming" border empty-text="暂无被添加关系">

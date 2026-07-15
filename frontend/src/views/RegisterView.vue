@@ -12,7 +12,7 @@
         <div class="register-mode" role="radiogroup" aria-label="注册身份">
           <label :class="{ active: mode === 'user' }">
             <input v-model="mode" type="radio" value="user" />
-            <span><strong>普通用户</strong><small>登记体检、记录自测并查看趋势</small></span>
+            <span><strong>普通用户</strong><small>记录自测并查看自动归档的体检报告与趋势</small></span>
           </label>
           <label :class="{ active: mode === 'staff' }">
             <input v-model="mode" type="radio" value="staff" />

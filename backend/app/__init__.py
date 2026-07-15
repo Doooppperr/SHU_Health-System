@@ -52,12 +52,6 @@ def create_app(config_name="development"):
     app.register_blueprint(indicators_bp, url_prefix="/api/indicators")
     app.register_blueprint(comments_bp, url_prefix="/api/comments")
 
-    @app.cli.command("cleanup-expired-reports")
-    def cleanup_expired_reports_command():
-        from .services.reports import cleanup_expired_reports
-        deleted_ids = cleanup_expired_reports()
-        print(f"deleted {len(deleted_ids)} expired unmatched report(s)")
-
     @app.get("/api/health")
     def health_check():
         return {"status": "ok"}, 200
@@ -85,7 +79,5 @@ def create_app(config_name="development"):
         Path(app.config["UPLOAD_DIR"]).mkdir(parents=True, exist_ok=True)
         initialize_or_validate_schema()
         seed_core_data()
-        from .services.reports import cleanup_expired_reports
-        cleanup_expired_reports()
 
     return app

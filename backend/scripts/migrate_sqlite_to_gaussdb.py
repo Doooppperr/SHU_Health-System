@@ -128,7 +128,6 @@ def migrate(source_path: Path, target_url: str, replace: bool = False) -> dict[s
     source.row_factory = sqlite3.Row
     engine = create_engine(target_url, pool_pre_ping=True)
     expected_counts: dict[str, int] = {}
-    deferred_registration_links: list[dict[str, int]] = []
 
     try:
         integrity = source.execute("PRAGMA integrity_check").fetchone()[0]
@@ -163,27 +162,8 @@ def migrate(source_path: Path, target_url: str, replace: bool = False) -> dict[s
                         column.name: _adapt_value(column, row[column.name])
                         for column in table.columns
                     }
-                    # exam_registrations and institution_reports intentionally
-                    # reference each other after a successful match. Insert the
-                    # registration first without its reverse pointer, then restore
-                    # that pointer after every report exists in the destination.
-                    if table.name == "exam_registrations" and item["matched_report_id"] is not None:
-                        deferred_registration_links.append({
-                            "registration_id": int(item["id"]),
-                            "report_id": int(item["matched_report_id"]),
-                        })
-                        item["matched_report_id"] = None
                     payload.append(item)
                 target.execute(table.insert(), payload)
-
-            if deferred_registration_links:
-                registrations = db.metadata.tables["exam_registrations"]
-                for link in deferred_registration_links:
-                    target.execute(
-                        registrations.update()
-                        .where(registrations.c.id == link["registration_id"])
-                        .values(matched_report_id=link["report_id"])
-                    )
 
             _reset_sequences(target)
 

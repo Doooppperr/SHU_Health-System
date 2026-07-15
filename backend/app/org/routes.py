@@ -20,7 +20,7 @@ from app.services.institution_management import (
 from app.services.ocr import mapping_service
 from app.services.permissions import ROLE_INSTITUTION_ADMIN, roles_required
 from app.services.record_files import delete_report_urls
-from app.services.reports import cleanup_expired_reports, submit_report
+from app.services.reports import find_subject_user, submit_report
 
 
 UPLOAD_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp"}
@@ -92,11 +92,10 @@ def create_report_from_payload(payload, *, temporary_file_url=None, diagnostics=
 @org_bp.get("/dashboard")
 @roles_required(ROLE_INSTITUTION_ADMIN)
 def dashboard():
-    cleanup_expired_reports()
     institution, error = managed_institution()
     if error:
         return error
-    counts = {status: InstitutionReport.query.filter_by(institution_id=institution.id, status=status).count() for status in ("draft", "locked", "waiting_match", "published", "withdrawn")}
+    counts = {status: InstitutionReport.query.filter_by(institution_id=institution.id, status=status).count() for status in ("draft", "locked", "published", "withdrawn")}
     return {"summary": {"institution": institution_payload(institution), "report_status_counts": counts, "active_package_count": Package.query.filter_by(institution_id=institution.id, is_active=True).count()}}, 200
 
 
@@ -210,7 +209,6 @@ def delete_image(image_id):
 @org_bp.get("/reports")
 @roles_required(ROLE_INSTITUTION_ADMIN)
 def list_reports():
-    cleanup_expired_reports()
     institution, error = managed_institution()
     if error: return error
     query = InstitutionReport.query.filter_by(institution_id=institution.id)
@@ -339,6 +337,8 @@ def lock_report(report_id):
     if error: return error
     if report.status != "draft": return {"message": "only draft reports can be locked"}, 409
     if not report.indicators: return {"message": "at least one indicator is required"}, 400
+    if find_subject_user(report) is None:
+        return {"message": "registered user not found or identity does not match"}, 409
     temp_url = report.temporary_file_url
     report.status = "locked"; report.locked_at = datetime.now(timezone.utc); report.temporary_file_url = None
     if report.ocr_diagnostics: report.ocr_diagnostics = {key: value for key, value in report.ocr_diagnostics.items() if key not in {"raw_text", "fields", "provider_response"}}
@@ -349,14 +349,13 @@ def lock_report(report_id):
 @org_bp.post("/reports/<int:report_id>/submit")
 @roles_required(ROLE_INSTITUTION_ADMIN)
 def submit(report_id):
-    cleanup_expired_reports()
     report, error = scoped_report(report_id)
     if error: return error
-    try: matched = submit_report(report); db.session.commit()
+    try: submit_report(report); db.session.commit()
     except ValueError as exc: db.session.rollback(); return {"message": str(exc)}, 409
-    except (IntegrityError, RuntimeError): db.session.rollback(); return {"message": "report matching conflict; reload and retry"}, 409
+    except IntegrityError: db.session.rollback(); return {"message": "report publishing conflict; reload and retry"}, 409
     db.session.refresh(report)
-    return {"item": report.to_dict(include_indicators=True), "match_result": "matched" if matched else "not_found"}, 200
+    return {"item": report.to_dict(include_indicators=True), "match_result": "matched"}, 200
 
 
 @org_bp.post("/reports/<int:report_id>/withdraw")
@@ -364,8 +363,6 @@ def submit(report_id):
 def withdraw(report_id):
     report, error = scoped_report(report_id)
     if error: return error
-    if report.status not in {"locked", "waiting_match", "published"}: return {"message": "report cannot be withdrawn from its current status"}, 409
-    if report.registration:
-        report.registration.status = "awaiting_report"; report.registration.matched_report_id = None
+    if report.status not in {"locked", "published"}: return {"message": "report cannot be withdrawn from its current status"}, 409
     report.status = "withdrawn"; report.withdrawn_at = datetime.now(timezone.utc)
     db.session.commit(); return {"item": report.to_dict(include_indicators=True)}, 200

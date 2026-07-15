@@ -16,7 +16,6 @@ const routes = [
     { path: "/dashboard", name: "dashboard", component: () => import("../views/UserDashboardView.vue"), meta: { title: "健康总览" } },
     { path: "/timeline", name: "timeline", component: () => import("../views/HealthTimelineView.vue"), meta: { title: "健康时间线" } },
     { path: "/measurements", name: "measurements", component: () => import("../views/SelfMeasurementsView.vue"), meta: { title: "日常测量" } },
-    { path: "/registrations", name: "registrations", component: () => import("../views/ExamRegistrationView.vue"), meta: { title: "登记体检" } },
     { path: "/trends", name: "trends", component: () => import("../views/TrendView.vue"), meta: { title: "指标趋势" } },
     { path: "/reports", name: "reports", component: () => import("../views/ExamReportListView.vue"), meta: { title: "体检报告" } },
     { path: "/reports/:id", name: "report-detail", component: () => import("../views/RecordDetailView.vue"), meta: { title: "报告详情" } },

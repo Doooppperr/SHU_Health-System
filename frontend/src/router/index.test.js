@@ -5,7 +5,6 @@ import router from "./index";
 describe("three-role route isolation", () => {
   it.each([
     ["/dashboard", "user", "dashboard"],
-    ["/registrations", "user", "registrations"],
     ["/org/dashboard", "institution_admin", "org-dashboard"],
     ["/admin/dashboard", "admin", "admin-dashboard"],
   ])("resolves %s only for %s", (path, role, name) => {

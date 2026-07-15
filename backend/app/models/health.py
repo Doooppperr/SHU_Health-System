@@ -42,60 +42,11 @@ class SelfMeasurement(db.Model):
         }
 
 
-class ExamRegistration(db.Model):
-    __tablename__ = "exam_registrations"
-    __table_args__ = (
-        db.CheckConstraint(
-            "status in ('awaiting_report', 'matched', 'cancelled')",
-            name="ck_exam_registrations_status",
-        ),
-        db.Index(
-            "uq_exam_registrations_active_user_date",
-            "user_id",
-            "exam_date",
-            unique=True,
-            sqlite_where=db.text("status <> 'cancelled'"),
-            postgresql_where=db.text("status <> 'cancelled'"),
-        ),
-    )
-
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    institution_id = db.Column(db.Integer, db.ForeignKey("institutions.id"), nullable=False, index=True)
-    package_id = db.Column(db.Integer, db.ForeignKey("packages.id", ondelete="SET NULL"), nullable=True)
-    exam_date = db.Column(db.Date, nullable=False, index=True)
-    status = db.Column(db.String(24), nullable=False, default="awaiting_report")
-    matched_report_id = db.Column(db.Integer, db.ForeignKey("institution_reports.id", use_alter=True, ondelete="SET NULL"), nullable=True, unique=True)
-    created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utc_now)
-    cancelled_at = db.Column(db.DateTime(timezone=True), nullable=True)
-
-    user = db.relationship("User", foreign_keys=[user_id])
-    institution = db.relationship("Institution")
-    package = db.relationship("Package")
-    matched_report = db.relationship("InstitutionReport", foreign_keys=[matched_report_id], post_update=True)
-
-    def to_dict(self):
-        return {
-            "id": self.id,
-            "user_id": self.user_id,
-            "institution_id": self.institution_id,
-            "package_id": self.package_id,
-            "exam_date": self.exam_date.isoformat(),
-            "status": self.status,
-            "display_status": "机构未提交" if self.status == "awaiting_report" else ("机构已提交" if self.status == "matched" else "已取消"),
-            "matched_report_id": self.matched_report_id,
-            "institution": self.institution.to_dict() if self.institution else None,
-            "package": self.package.to_dict() if self.package else None,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "cancelled_at": self.cancelled_at.isoformat() if self.cancelled_at else None,
-        }
-
-
 class InstitutionReport(db.Model):
     __tablename__ = "institution_reports"
     __table_args__ = (
         db.CheckConstraint(
-            "status in ('draft', 'locked', 'waiting_match', 'published', 'withdrawn', 'expired')",
+            "status in ('draft', 'locked', 'published', 'withdrawn')",
             name="ck_institution_reports_status",
         ),
         db.CheckConstraint("length(trim(subject_name_snapshot)) > 0", name="ck_institution_reports_subject_name"),
@@ -104,8 +55,8 @@ class InstitutionReport(db.Model):
             "uq_institution_reports_active_subject_date",
             "institution_id", "subject_health_id", "exam_date",
             unique=True,
-            sqlite_where=db.text("status not in ('withdrawn', 'expired')"),
-            postgresql_where=db.text("status not in ('withdrawn', 'expired')"),
+            sqlite_where=db.text("status <> 'withdrawn'"),
+            postgresql_where=db.text("status <> 'withdrawn'"),
         ),
     )
 
@@ -118,13 +69,11 @@ class InstitutionReport(db.Model):
     exam_date = db.Column(db.Date, nullable=False, index=True)
     package_id = db.Column(db.Integer, db.ForeignKey("packages.id", ondelete="SET NULL"), nullable=True)
     matched_user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
-    exam_registration_id = db.Column(db.Integer, db.ForeignKey("exam_registrations.id", ondelete="SET NULL"), nullable=True, unique=True)
     status = db.Column(db.String(24), nullable=False, default="draft", index=True)
     ocr_diagnostics = db.Column(db.JSON, nullable=True)
     temporary_file_url = db.Column(db.String(255), nullable=True)
     locked_at = db.Column(db.DateTime(timezone=True), nullable=True)
     submitted_at = db.Column(db.DateTime(timezone=True), nullable=True)
-    expires_at = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
     published_at = db.Column(db.DateTime(timezone=True), nullable=True)
     withdrawn_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utc_now)
@@ -133,7 +82,6 @@ class InstitutionReport(db.Model):
     creator = db.relationship("User", foreign_keys=[created_by_user_id])
     owner = db.relationship("User", foreign_keys=[matched_user_id])
     package = db.relationship("Package")
-    registration = db.relationship("ExamRegistration", foreign_keys=[exam_registration_id])
     indicators = db.relationship("ReportIndicator", back_populates="report", cascade="all, delete-orphan", order_by="ReportIndicator.id.asc()")
 
     # Transitional internal aliases keep the mature AI fact builder usable while
@@ -160,7 +108,6 @@ class InstitutionReport(db.Model):
             "created_by_username_snapshot": self.created_by_username_snapshot,
             "locked_at": self.locked_at.isoformat() if self.locked_at else None,
             "submitted_at": self.submitted_at.isoformat() if self.submitted_at else None,
-            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
             "published_at": self.published_at.isoformat() if self.published_at else None,
             "withdrawn_at": self.withdrawn_at.isoformat() if self.withdrawn_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,

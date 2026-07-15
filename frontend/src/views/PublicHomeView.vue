@@ -104,7 +104,7 @@
           <p class="portal-kicker">PRIVACY BY DESIGN</p>
           <h2>数据属于你，开放范围由你决定</h2>
           <p>
-            机构只生产本机构报告，不能浏览用户登记列表或其他健康信息；亲友只有在明确授权后，
+            机构只生产本机构报告，不能浏览用户日常测量或其他健康信息；亲友只有在明确授权后，
             才能只读查看健康时间线。联系方式、健康身份码和个人资料始终隔离。
           </p>
         </div>
@@ -145,14 +145,14 @@ const router = useRouter();
 const authStore = useAuthStore();
 const chartBars = [34, 48, 42, 63, 56, 76, 68, 83, 74, 91];
 const features = [
-  { icon: "线", title: "健康时间线", description: "统一查看机构体检、登记状态和每一条日常测量。", note: "统一视图 · 来源清晰" },
-  { icon: "OCR", title: "机构报告生产", description: "机构通过 OCR 或手工录入，复核锁定后精确匹配给用户。", note: "机构负责 · 用户只读" },
+  { icon: "线", title: "健康时间线", description: "统一查看机构自动归档的体检报告和每一条日常测量。", note: "统一视图 · 来源清晰" },
+  { icon: "OCR", title: "机构报告生产", description: "机构通过 OCR 或手工录入，复核锁定后自动归档给注册用户。", note: "机构负责 · 用户只读" },
   { icon: "趋", title: "指标趋势", description: "同日机构指标优先，缺失时采用用户当天最后一次自测。", note: "确定规则 · 原始值保留" },
   { icon: "友", title: "亲友授权", description: "授权亲友只读查看健康数据，个人资料始终隐藏。", note: "可控授权 · 清晰边界" },
 ];
 const steps = [
-  { title: "登记体检", description: "选择体检机构、日期和可选套餐，等待机构提交报告。" },
-  { title: "机构提交报告", description: "机构复核标准指标并锁定，通过四项条件精确匹配。" },
+  { title: "机构提交报告", description: "机构录入注册用户的姓名、健康身份码、日期和标准化指标。" },
+  { title: "自动归档", description: "锁定报告提交后，系统按健康身份码和姓名自动归档到对应用户。" },
   { title: "记录并观察趋势", description: "记录日常自测，与机构数据一起形成每日有效趋势。" },
 ];
 

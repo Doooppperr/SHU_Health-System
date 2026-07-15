@@ -2,14 +2,15 @@ import sqlite3
 from datetime import datetime, timezone
 
 from app.extensions import db
-from app.models import ExamRegistration, InstitutionReport, ReportIndicator, SelfMeasurement, User
+from app.models import InstitutionReport, ReportIndicator, SelfMeasurement, User
 from app.schema import CURRENT_SCHEMA_VERSION
 
 
-def test_schema_v3_replaces_legacy_record_tables(app):
+def test_schema_v4_uses_direct_report_archiving(app):
     with app.app_context():
-        assert CURRENT_SCHEMA_VERSION == 3
-        assert {"self_measurements", "exam_registrations", "institution_reports", "report_indicators"} <= set(db.metadata.tables)
+        assert CURRENT_SCHEMA_VERSION == 4
+        assert {"self_measurements", "institution_reports", "report_indicators"} <= set(db.metadata.tables)
+        assert "exam_registrations" not in db.metadata.tables
         assert "health_records" not in db.metadata.tables
         assert "health_indicators" not in db.metadata.tables
         connection = db.session.connection()
@@ -28,7 +29,7 @@ def test_rebuild_preserves_only_admin_identity_and_password(tmp_path):
     backup = rebuild_database(path)
     assert backup and backup.exists()
     connection = sqlite3.connect(path)
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
     assert connection.execute("SELECT id, username, password_hash FROM users").fetchall() == [(7, "admin", "unchanged-hash")]
     assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     connection.close()
@@ -57,9 +58,8 @@ def test_demo_seed_has_rich_timelines_and_complete_role_matrix(app):
         assert User.query.filter_by(role="institution_admin").count() == 6
         assert User.query.filter_by(username="demo_admin", role="admin").count() == 1
         assert SelfMeasurement.query.count() == 138
-        assert ExamRegistration.query.count() == 20
-        assert InstitutionReport.query.count() == 12
-        assert ReportIndicator.query.count() == 72
+        assert InstitutionReport.query.count() == 11
+        assert ReportIndicator.query.count() == 71
         for user in people:
             assert SelfMeasurement.query.filter_by(user_id=user.id).count() >= 27
             assert InstitutionReport.query.filter_by(
@@ -67,7 +67,7 @@ def test_demo_seed_has_rich_timelines_and_complete_role_matrix(app):
             ).count() >= 2
 
 
-def test_full_snapshot_migration_restores_bidirectional_report_links(app, tmp_path):
+def test_full_snapshot_migration_preserves_direct_report_ownership(app, tmp_path):
     from scripts.migrate_sqlite_to_gaussdb import migrate
 
     source_path = tmp_path / "source.db"
@@ -86,19 +86,17 @@ def test_full_snapshot_migration_restores_bidirectional_report_links(app, tmp_pa
         f"sqlite:///{target_path.as_posix()}",
         replace=True,
     )
-    assert counts["exam_registrations"] == 20
-    assert counts["institution_reports"] == 12
+    assert "exam_registrations" not in counts
+    assert counts["institution_reports"] == 11
 
     connection = sqlite3.connect(target_path)
     try:
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
-        broken_links = connection.execute(
-            "SELECT COUNT(*) FROM exam_registrations AS registration "
-            "JOIN institution_reports AS report "
-            "ON report.id = registration.matched_report_id "
-            "WHERE report.exam_registration_id <> registration.id"
+        published_without_owner = connection.execute(
+            "SELECT COUNT(*) FROM institution_reports "
+            "WHERE status = 'published' AND matched_user_id IS NULL"
         ).fetchone()[0]
-        assert broken_links == 0
+        assert published_without_owner == 0
     finally:
         connection.close()
 

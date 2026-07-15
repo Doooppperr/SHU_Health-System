@@ -1,6 +1,6 @@
 # 康康健健 HealthDoc AI 与 OCR 开发说明
 
-> 适用版本：当前 schema v3 与本地双通道 RAG，更新于 2026-07-16。本文只描述当前接口和运行边界。
+> 适用版本：当前 schema v4 与本地双通道 RAG，更新于 2026-07-16。本文只描述当前接口和运行边界。
 
 本文说明 AI 流式交互、健康报告分析、OCR 解析和机构报告草稿的当前契约。通用角色与数据库约束分别见《项目需求与技术方案》和《数据库设计说明》。
 
@@ -274,6 +274,7 @@ OCR 上传成功后：
 
 - 仅草稿可锁定；
 - 至少需要一项指标；
+- 受检者姓名和健康身份码必须对应启用注册用户；
 - 设置 `status=locked` 与 `locked_at`；
 - 清空 `temporary_file_url`；
 - 从诊断中移除原始文本、字段和 provider response 等大块敏感内容；
@@ -281,21 +282,19 @@ OCR 上传成功后：
 
 锁定后所有报告与指标写接口返回 409。用户、亲友和系统管理员都没有原文件读取接口；公共 `/uploads/reports/...` 返回 404。
 
-## 9. 锁定后的提交与匹配
+## 9. 锁定后的提交与自动归档
 
 `POST /api/org/reports/{id}/submit`：
 
-- 清理到期未匹配报告；
-- 仅接受可提交状态；
-- 按受检者姓名、健康身份码、体检日期、当前机构精确匹配；
-- 匹配成功返回 `match_result=matched` 并进入 `published`；
-- 未找到返回 `match_result=not_found` 并进入 `waiting_match`，保留 60 天；
+- 仅接受 `locked` 状态；
+- 按受检者姓名与健康身份码查找唯一启用注册普通用户；
+- 匹配成功返回 `match_result=matched`、写入归属人并进入 `published`；
+- 提交时账号不再启用则返回 409，报告保持 `locked`；
 - 不返回候选用户或近似匹配详情。
 
 `POST /api/org/reports/{id}/withdraw`：
 
-- 允许从 `locked/waiting_match/published` 撤下；
-- 已匹配登记恢复为 `awaiting_report` 并解除双向关联；
+- 允许从 `locked/published` 撤下；
 - 报告进入 `withdrawn`，报告正文不再提供；用户和亲友时间线仅保留撤下状态事件，趋势和 AI 排除报告指标。
 
 ## 10. 前端集成要求

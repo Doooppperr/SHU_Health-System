@@ -1,6 +1,6 @@
 from .comment import Comment
 from .friend import FriendRelation
-from .health import ExamRegistration, InstitutionReport, ReportIndicator, SelfMeasurement
+from .health import InstitutionReport, ReportIndicator, SelfMeasurement
 from .indicator import IndicatorCategory, IndicatorDict
 from .institution import Institution, Package
 from .institution_image import InstitutionImage
@@ -15,6 +15,6 @@ HealthIndicator = ReportIndicator
 __all__ = [
     "User", "Comment", "FriendRelation", "Institution", "InstitutionImage",
     "InstitutionInvite", "Package", "IndicatorCategory", "IndicatorDict",
-    "SelfMeasurement", "ExamRegistration", "InstitutionReport", "ReportIndicator",
+    "SelfMeasurement", "InstitutionReport", "ReportIndicator",
     "HealthRecord", "HealthIndicator",
 ]

@@ -3,9 +3,8 @@ from io import BytesIO
 
 from app.extensions import db
 from app.ai.rag import RetrievalResult
-from app.models import ExamRegistration, IndicatorDict, Institution, InstitutionReport, SelfMeasurement, User
+from app.models import IndicatorDict, Institution, InstitutionReport, SelfMeasurement, User
 from app.services.record_files import report_file_path
-from app.services.reports import cleanup_expired_reports
 
 
 PASSWORD = "Shuhealthdoc！"
@@ -54,40 +53,45 @@ def test_health_identity_profile_and_multi_institution_accounts(app, client):
     with app.app_context(): assert User.query.filter_by(managed_institution_id=institution_id, role="institution_admin").count() == 3
 
 
-def test_both_matching_directions_lock_and_scope(app, client):
+def test_institution_submission_auto_archives_to_registered_user(app, client):
     name, health_id, institution_id, indicator_id = report_fixture(app)
     user = login(client, "test3"); org = login(client, "institution1_staff1"); other_org = login(client, "institution2_staff1")
     first_day = date.today() + timedelta(days=7)
-    registration = client.post("/api/exam-registrations", headers=user, json={"institution_id": institution_id, "exam_date": first_day.isoformat()})
-    assert registration.status_code == 201 and registration.get_json()["match_result"] == "not_found"
     report_id = create_locked_report(client, org, name, health_id, institution_id, indicator_id, first_day)
     assert client.put(f"/api/org/reports/{report_id}", headers=org, json={"exam_date": date.today().isoformat()}).status_code == 409
     submitted = client.post(f"/api/org/reports/{report_id}/submit", headers=org)
     assert submitted.status_code == 200 and submitted.get_json()["match_result"] == "matched"
     assert client.get(f"/api/org/reports/{report_id}", headers=other_org).status_code == 404
-
-    second_day = first_day + timedelta(days=1)
-    second_id = create_locked_report(client, org, name, health_id, institution_id, indicator_id, second_day)
-    assert client.post(f"/api/org/reports/{second_id}/submit", headers=org).get_json()["match_result"] == "not_found"
-    reverse = client.post("/api/exam-registrations", headers=user, json={"institution_id": institution_id, "exam_date": second_day.isoformat()})
-    assert reverse.status_code == 201 and reverse.get_json()["match_result"] == "matched"
-    assert len(client.get("/api/exam-reports", headers=user).get_json()["items"]) >= 2
+    assert any(item["id"] == report_id for item in client.get("/api/exam-reports", headers=user).get_json()["items"])
+    assert client.get("/api/exam-registrations", headers=user).status_code == 404
     assert client.get("/api/records", headers=user).status_code == 404
     assert client.get("/api/admin/records", headers=login(client, "admin", "admin123")).status_code == 404
 
 
-def test_registration_uniqueness_expiry_and_cancel_rules(app, client):
-    user = login(client, "test3")
-    with app.app_context(): ids = [item.id for item in Institution.query.order_by(Institution.id).limit(2)]
+def test_report_lock_rejects_unknown_identity_and_submit_rechecks_active_user(app, client):
+    name, health_id, institution_id, indicator_id = report_fixture(app)
+    org = login(client, "institution1_staff1")
     day = date.today() + timedelta(days=20)
-    assert client.post("/api/exam-registrations", headers=user, json={"institution_id": ids[0], "exam_date": day.isoformat()}).status_code == 201
-    assert client.post("/api/exam-registrations", headers=user, json={"institution_id": ids[1], "exam_date": day.isoformat()}).status_code == 409
+    draft = client.post("/api/org/reports", headers=org, json={"subject_name": "不存在用户", "subject_health_id": "HID-UNKNOWN1", "exam_date": day.isoformat()})
+    report_id = draft.get_json()["item"]["id"]
+    assert client.post(f"/api/org/reports/{report_id}/indicators", headers=org, json={"indicator_dict_id": indicator_id, "value": "73"}).status_code == 201
+    rejected_lock = client.post(f"/api/org/reports/{report_id}/lock", headers=org)
+    assert rejected_lock.status_code == 409
+    assert "registered user not found" in rejected_lock.get_json()["message"]
+
+    locked_id = create_locked_report(client, org, name, health_id, institution_id, indicator_id, day + timedelta(days=1))
     with app.app_context():
-        waiting = InstitutionReport.query.filter_by(status="waiting_match").first()
-        waiting.expires_at = datetime.now(timezone.utc) - timedelta(microseconds=1)
-        waiting_id = waiting.id; db.session.commit()
-        assert waiting_id in cleanup_expired_reports()
-        assert db.session.get(InstitutionReport, waiting_id) is None
+        user = User.query.filter_by(health_id=health_id).first()
+        user.is_active = False
+        db.session.commit()
+    response = client.post(f"/api/org/reports/{locked_id}/submit", headers=org)
+    assert response.status_code == 409
+    assert "registered user not found" in response.get_json()["message"]
+    with app.app_context():
+        report = db.session.get(InstitutionReport, locked_id)
+        assert report.status == "locked"
+        assert report.matched_user_id is None
+        assert {item.status for item in InstitutionReport.query.all()} <= {"draft", "locked", "published", "withdrawn"}
 
 
 def test_self_measurement_trend_priority_withdraw_fallback(app, client):
@@ -121,6 +125,8 @@ def test_friend_read_only_privacy_and_role_isolation(app, client):
     serialized = str(timeline.get_json())
     assert "health_id" not in serialized and "allergy_history" not in serialized and "subject_name_snapshot" not in serialized
     assert owner_name not in serialized
+    friends = client.get("/api/friends", headers=viewer).get_json()
+    assert "manageable" not in friends
     assert client.post("/api/self-measurements", headers=login(client, "institution1_staff1"), json={}).status_code == 403
     assert client.get("/api/health/timeline", headers=login(client, "admin", "admin123")).status_code == 403
 
@@ -165,17 +171,14 @@ def test_admin_cascade_deletes_regular_user_business_data(app, client):
     admin = login(client, "admin", "admin123")
     with app.app_context():
         user = User.query.filter_by(username="test3").first()
-        institution = Institution.query.first()
         indicator = IndicatorDict.query.filter_by(code="HR").first()
         user_id = user.id
         db.session.add(SelfMeasurement(user_id=user.id, indicator_dict_id=indicator.id, value=70, measured_at=datetime.now(timezone.utc)))
-        db.session.add(ExamRegistration(user_id=user.id, institution_id=institution.id, exam_date=date.today() + timedelta(days=55)))
         db.session.commit()
     assert client.delete(f"/api/users/{user_id}", headers=admin, json={"confirm": True}).status_code == 200
     with app.app_context():
         assert db.session.get(User, user_id) is None
         assert SelfMeasurement.query.filter_by(user_id=user_id).count() == 0
-        assert ExamRegistration.query.filter_by(user_id=user_id).count() == 0
 
 
 def test_ai_emergency_skips_public_knowledge_retrieval(app, client):

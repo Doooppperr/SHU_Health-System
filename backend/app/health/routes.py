@@ -2,16 +2,12 @@ from collections import defaultdict
 from datetime import date, datetime, time, timezone
 
 from flask import g, request
-from sqlalchemy.exc import IntegrityError
-
 from app.extensions import db
 from app.health import health_bp
 from app.models import (
-    ExamRegistration, FriendRelation, IndicatorDict, Institution, InstitutionReport,
-    Package, ReportIndicator, SelfMeasurement, User,
+    FriendRelation, IndicatorDict, InstitutionReport, ReportIndicator, SelfMeasurement, User,
 )
 from app.services.permissions import ROLE_USER, roles_required
-from app.services.reports import cleanup_expired_reports, try_match_registration
 
 
 def parse_datetime(value):
@@ -97,46 +93,6 @@ def delete_measurement(measurement_id):
     db.session.delete(row); db.session.commit(); return {"message": "measurement deleted"}, 200
 
 
-@health_bp.get("/exam-registrations")
-@roles_required(ROLE_USER)
-def list_registrations():
-    cleanup_expired_reports()
-    rows = ExamRegistration.query.filter_by(user_id=g.current_user.id).order_by(ExamRegistration.exam_date.desc(), ExamRegistration.id.desc()).all()
-    return {"items": [row.to_dict() for row in rows], "retention_notice": "机构未匹配的体检数据只保留 60 天，超过期限后无法匹配。"}, 200
-
-
-@health_bp.post("/exam-registrations")
-@roles_required(ROLE_USER)
-def create_registration():
-    cleanup_expired_reports()
-    payload = request.get_json(silent=True) or {}
-    try: exam_date = date.fromisoformat(str(payload.get("exam_date")))
-    except (TypeError, ValueError): return {"message": "exam_date must be YYYY-MM-DD"}, 400
-    institution = db.session.get(Institution, payload.get("institution_id"))
-    if not institution or not institution.is_active: return {"message": "institution not found or inactive"}, 404
-    package = None
-    if payload.get("package_id") not in {None, ""}:
-        package = Package.query.filter_by(id=payload.get("package_id"), institution_id=institution.id, is_active=True).first()
-        if not package: return {"message": "package not found"}, 404
-    registration = ExamRegistration(user_id=g.current_user.id, institution_id=institution.id, package_id=package.id if package else None, exam_date=exam_date)
-    try:
-        db.session.add(registration); db.session.flush(); matched = try_match_registration(registration); db.session.commit()
-    except (IntegrityError, RuntimeError):
-        db.session.rollback(); return {"message": "an active registration already exists for this date"}, 409
-    db.session.refresh(registration)
-    return {"item": registration.to_dict(), "match_result": "matched" if matched else "not_found", "retention_notice": "机构未匹配的体检数据只保留 60 天，超过期限后无法匹配。"}, 201
-
-
-@health_bp.delete("/exam-registrations/<int:registration_id>")
-@roles_required(ROLE_USER)
-def cancel_registration(registration_id):
-    row = ExamRegistration.query.filter_by(id=registration_id, user_id=g.current_user.id).first()
-    if not row: return {"message": "registration not found"}, 404
-    if row.status != "awaiting_report": return {"message": "matched registrations cannot be cancelled"}, 409
-    row.status = "cancelled"; row.cancelled_at = datetime.now(timezone.utc); db.session.commit()
-    return {"item": row.to_dict()}, 200
-
-
 def effective_points(owner_id, indicator_id, start_date=None, end_date=None):
     report_query = db.session.query(ReportIndicator, InstitutionReport).join(InstitutionReport, ReportIndicator.report_id == InstitutionReport.id).filter(
         InstitutionReport.matched_user_id == owner_id, InstitutionReport.status == "published", ReportIndicator.indicator_dict_id == indicator_id
@@ -176,7 +132,6 @@ def trend(indicator_id):
 @health_bp.get("/health/timeline")
 @roles_required(ROLE_USER)
 def timeline():
-    cleanup_expired_reports()
     owner, error = requested_owner()
     if error: return error
     events = []
@@ -185,10 +140,6 @@ def timeline():
         payload = row.to_dict()
         if friend_view: payload.pop("user_id", None)
         events.append({"type": "self_measurement", "occurred_at": row.measured_at.isoformat(), "title": f"自测{row.indicator_dict.name}", "item": payload})
-    for row in ExamRegistration.query.filter(ExamRegistration.user_id == owner.id, ExamRegistration.status != "cancelled").all():
-        payload = row.to_dict()
-        if friend_view: payload.pop("user_id", None)
-        events.append({"type": "exam_registration", "occurred_at": datetime.combine(row.exam_date, time.min).isoformat(), "title": f"{row.institution.name} 体检登记 · {payload['display_status']}", "item": payload, "expandable": row.status == "matched"})
     for row in InstitutionReport.query.filter(InstitutionReport.matched_user_id == owner.id, InstitutionReport.status.in_(["published", "withdrawn"])).all():
         suffix = "机构已提交" if row.status == "published" else "机构已撤下"
         occurred = row.published_at if row.status == "published" else row.withdrawn_at

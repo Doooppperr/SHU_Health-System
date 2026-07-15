@@ -6,7 +6,7 @@ from flask import current_app
 
 from app.extensions import db
 from app.models import (
-    ExamRegistration, FriendRelation, IndicatorCategory, IndicatorDict,
+    FriendRelation, IndicatorCategory, IndicatorDict,
     Institution, InstitutionReport, Package, ReportIndicator, SelfMeasurement, User,
 )
 
@@ -344,15 +344,6 @@ def _seed_published_report(
     *, user, institution, staff_user, package, exam_day, indicators, now, index,
     weight_value=None,
 ):
-    registration = ExamRegistration(
-        user_id=user.id,
-        institution_id=institution.id,
-        package_id=package.id,
-        exam_date=exam_day,
-        status="matched",
-    )
-    db.session.add(registration)
-    db.session.flush()
     report = InstitutionReport(
         institution_id=institution.id,
         created_by_user_id=staff_user.id,
@@ -362,7 +353,6 @@ def _seed_published_report(
         exam_date=exam_day,
         package_id=package.id,
         matched_user_id=user.id,
-        exam_registration_id=registration.id,
         status="published",
         locked_at=datetime.combine(exam_day, datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=11),
         submitted_at=datetime.combine(exam_day, datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=12),
@@ -371,7 +361,6 @@ def _seed_published_report(
     )
     db.session.add(report)
     db.session.flush()
-    registration.matched_report_id = report.id
 
     values = {
         "WEIGHT": weight_value or f"{62 + index * 4 + (exam_day.toordinal() % 3) / 10:.1f}",
@@ -494,26 +483,6 @@ def seed_demo_data():
                 index=index,
             )
 
-        pending_institution = institutions[(index + 1) % len(institutions)]
-        db.session.add(ExamRegistration(
-            user_id=person.id,
-            institution_id=pending_institution.id,
-            package_id=pending_institution.packages[index % len(pending_institution.packages)].id,
-            exam_date=today - timedelta(days=index),
-            status="awaiting_report",
-            created_at=now - timedelta(days=index + 3),
-        ))
-        cancelled_institution = institutions[(index + 2) % len(institutions)]
-        db.session.add(ExamRegistration(
-            user_id=person.id,
-            institution_id=cancelled_institution.id,
-            package_id=None,
-            exam_date=today - timedelta(days=25 + index),
-            status="cancelled",
-            created_at=now - timedelta(days=35 + index),
-            cancelled_at=now - timedelta(days=30 + index),
-        ))
-
     # Fixed test1 report retains the exact trend-priority fixture used by the tests.
     exam_day = today - timedelta(days=4)
     _seed_published_report(
@@ -541,28 +510,7 @@ def seed_demo_data():
         measured_at=datetime.combine(exam_day, datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=21),
     ))
 
-    waiting_day = today - timedelta(days=2)
     waiting_staff = staff_by_institution[1][0]
-    waiting = InstitutionReport(
-        institution_id=institutions[1].id,
-        created_by_user_id=waiting_staff.id,
-        created_by_username_snapshot=waiting_staff.username,
-        subject_name_snapshot="尚未登记用户",
-        subject_health_id="HID-WAIT0001",
-        exam_date=waiting_day,
-        status="waiting_match",
-        locked_at=now - timedelta(days=2),
-        submitted_at=now - timedelta(days=2),
-        expires_at=now + timedelta(days=58),
-    )
-    db.session.add(waiting)
-    db.session.flush()
-    waiting.indicators.append(ReportIndicator(
-        indicator_dict_id=indicators["HR"].id,
-        value="74",
-        input_source="manual",
-    ))
-
     withdrawn = InstitutionReport(
         institution_id=institutions[1].id,
         created_by_user_id=waiting_staff.id,

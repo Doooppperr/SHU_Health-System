@@ -2,7 +2,7 @@ from flask import request
 
 from app.extensions import db
 from app.models import (
-    Comment, ExamRegistration, FriendRelation, InstitutionReport,
+    Comment, FriendRelation, InstitutionReport,
     SelfMeasurement, User,
 )
 from app.services.permissions import ROLE_ADMIN, roles_required
@@ -70,7 +70,6 @@ def delete_user(user_id):
 
     report_urls = [row.temporary_file_url for row in InstitutionReport.query.filter_by(matched_user_id=user.id).all()]
     InstitutionReport.query.filter_by(matched_user_id=user.id).delete(synchronize_session=False)
-    ExamRegistration.query.filter_by(user_id=user.id).delete(synchronize_session=False)
     SelfMeasurement.query.filter_by(user_id=user.id).delete(synchronize_session=False)
     FriendRelation.query.filter(
         (FriendRelation.user_id == user.id) | (FriendRelation.friend_user_id == user.id)

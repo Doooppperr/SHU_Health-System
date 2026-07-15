@@ -7,7 +7,6 @@
           <MainNavActions>
             <template #prefix>
               <el-button plain @click="goBack">返回列表</el-button>
-              <el-button type="primary" @click="goRegistration">登记体检</el-button>
             </template>
           </MainNavActions>
         </div>
@@ -177,9 +176,6 @@ const goBack = () => {
   router.push({ name: "institutions" });
 };
 
-const goRegistration = () => {
-  router.push({ name: "registrations", query: { institution_id: route.params.id } });
-};
 
 watch(
   () => route.params.id,

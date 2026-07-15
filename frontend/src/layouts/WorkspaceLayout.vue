@@ -102,7 +102,6 @@ const menus = {
     { name: "dashboard", label: "健康总览", icon: "总" },
     { name: "timeline", label: "健康时间线", icon: "线" },
     { name: "measurements", label: "日常测量", icon: "测" },
-    { name: "registrations", label: "登记体检", icon: "登" },
     { name: "trends", label: "指标趋势", icon: "趋" },
     { name: "friends", label: "亲友授权", icon: "友" },
     { name: "institutions", label: "体检机构", icon: "院" },

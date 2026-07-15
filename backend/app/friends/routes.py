@@ -64,11 +64,9 @@ def list_friends():
         .all()
     )
 
-    manageable = [item.to_dict() for item in outgoing if item.auth_status]
     return {
         "outgoing": [item.to_dict() for item in outgoing],
         "incoming": [item.to_dict() for item in incoming],
-        "manageable": manageable,
     }, 200
 
 
