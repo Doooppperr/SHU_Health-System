@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import argparse
-import gc
 import hashlib
 import ipaddress
 import json
 import shutil
 import socket
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
@@ -19,7 +20,7 @@ import requests
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_DIR))
 
-from app.ai.ingestion import ExtractedSection, chunk_sections, normalize_text  # noqa: E402
+from app.ai.ingestion import ExtractedSection, chunk_sections  # noqa: E402
 from app.config import Config  # noqa: E402
 
 
@@ -107,29 +108,32 @@ def _extract_pdf(data: bytes) -> list[ExtractedSection]:
         text = page.get_text("text").strip()
         if text:
             sections.append(ExtractedSection(locator=f"第 {index + 1} 页", text=text))
+    document.close()
     if not sections:
         # Some approved NHC standards are image-only scans. This fallback is
-        # confined to the explicit sync command and never runs on app startup
-        # or during a user request.
-        from rapidocr import RapidOCR
-
-        ocr = RapidOCR(
-            params={
-                "EngineConfig.onnxruntime.intra_op_num_threads": Config.RAG_EMBEDDING_THREADS,
-                "EngineConfig.onnxruntime.inter_op_num_threads": 1,
-            }
-        )
-        for index, page in enumerate(document):
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(1, 1), alpha=False)
-            result = ocr(pixmap.tobytes("png"))
-            text = normalize_text("\n".join(result.txts or ()))
-            if text:
-                sections.append(
-                    ExtractedSection(locator=f"第 {index + 1} 页（OCR）", text=text)
-                )
-            del result, pixmap
-            gc.collect()
-    document.close()
+        # confined to the explicit sync command.  A separate process ensures
+        # native ONNX allocations are returned before the next source starts.
+        RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="rag-ocr-", dir=RUNTIME_DIR) as temporary:
+            temporary_path = Path(temporary)
+            input_path = temporary_path / "source.pdf"
+            output_path = temporary_path / "sections.json"
+            input_path.write_bytes(data)
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(BACKEND_DIR / "scripts" / "rag_ocr_worker.py"),
+                    str(input_path),
+                    str(output_path),
+                    str(Config.RAG_EMBEDDING_THREADS),
+                ],
+                check=True,
+                timeout=900,
+            )
+            sections = [
+                ExtractedSection(locator=item["locator"], text=item["text"])
+                for item in _json(output_path, [])
+            ]
     if not sections:
         raise ValueError("PDF contains no extractable text after local OCR")
     return sections
@@ -236,6 +240,7 @@ def _index(chunks, state):
                 model_name=Config.RAG_EMBEDDING_MODEL,
                 cache_dir=Config.RAG_MODEL_CACHE_PATH,
                 threads=Config.RAG_EMBEDDING_THREADS,
+                enable_cpu_mem_arena=False,
                 local_files_only=True,
             )
         except Exception:
@@ -244,6 +249,7 @@ def _index(chunks, state):
                 model_name=Config.RAG_EMBEDDING_MODEL,
                 cache_dir=Config.RAG_MODEL_CACHE_PATH,
                 threads=Config.RAG_EMBEDDING_THREADS,
+                enable_cpu_mem_arena=False,
             )
         texts = [chunk.content for _source, _url, chunk in chunks]
         vectors = list(embedder.passage_embed(texts))

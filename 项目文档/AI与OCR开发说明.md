@@ -311,7 +311,7 @@ OCR 上传成功后：
 ## 11. 本地双通道 RAG
 
 - 私人档案继续从 SQLite/GaussDB 按请求权限读取，趋势和异常由确定性代码计算；档案值、用户问题、聊天、OCR 原文和用户 ID 不进入 Qdrant。
-- 公共知识使用 `BAAI/bge-small-zh-v1.5` 的 512 维本地向量和 Qdrant Local。`RAG_EMBEDDING_THREADS` 默认 `1`，同时约束 FastEmbed 与扫描 PDF 的 RapidOCR/ONNX 线程，避免在 4GB 服务器上因并行线程过多产生内存交换；资源充足时可显式调高。访客过滤为 `public`，登录普通用户可额外检索 `authenticated` 医学白名单；管理员不能附带健康档案。
+- 公共知识使用 `BAAI/bge-small-zh-v1.5` 的 512 维本地向量和 Qdrant Local。`RAG_EMBEDDING_THREADS` 默认 `1`，同时约束 FastEmbed 与扫描 PDF 的 RapidOCR/ONNX 线程；FastEmbed 关闭 ONNX CPU 内存池，每份扫描 PDF 在独立子进程完成 OCR并在结束后由操作系统回收模型内存，避免 4GB 服务器因连续处理产生内存交换。资源充足时可显式调高线程数。访客过滤为 `public`，登录普通用户可额外检索 `authenticated` 医学白名单；管理员不能附带健康档案。
 - 固定顺序为急症规则、选档/FAQ、同意与鉴权、档案事实、知识检索、DeepSeek 安全决策。无命中、索引缺失或模型失败会以 `no_match`、`unavailable` 或 `disabled` 降级。
 - 语料在 prompt 中作为不可信 user 数据，模型返回的 grounding ID 只接受本次检索集合内编号。日志仅记录耗时、数量、稳定 source ID、分数和状态。
 - `backend/rag_sources/manifest.json` 是精确 URL 与批准 SHA-256 清单。应用启动和请求不联网，只有 `scripts/rag_sync.py sync` 抓取；扫描 PDF 的本地 OCR 也只在该命令运行。

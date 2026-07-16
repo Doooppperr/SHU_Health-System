@@ -132,6 +132,7 @@ class QdrantKnowledgeRetriever(KnowledgeRetriever):
                 model_name=self.config["RAG_EMBEDDING_MODEL"],
                 cache_dir=str(model_cache),
                 threads=self.config["RAG_EMBEDDING_THREADS"],
+                enable_cpu_mem_arena=False,
                 local_files_only=True,
             )
             url = self.config.get("RAG_QDRANT_URL")
