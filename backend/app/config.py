@@ -53,6 +53,7 @@ class Config:
     RAG_ENABLED = os.getenv("RAG_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
     RAG_USE_MOCK = os.getenv("RAG_USE_MOCK", "0").strip().lower() in {"1", "true", "yes", "on"}
     RAG_EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
+    RAG_EMBEDDING_THREADS = max(1, int(os.getenv("RAG_EMBEDDING_THREADS", "1")))
     RAG_VECTOR_SIZE = int(os.getenv("RAG_VECTOR_SIZE", "512"))
     RAG_QDRANT_URL = os.getenv("RAG_QDRANT_URL", "").strip()
     RAG_QDRANT_API_KEY = os.getenv("RAG_QDRANT_API_KEY", "").strip()

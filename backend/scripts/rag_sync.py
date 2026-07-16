@@ -230,6 +230,7 @@ def _index(chunks, state):
             embedder = TextEmbedding(
                 model_name=Config.RAG_EMBEDDING_MODEL,
                 cache_dir=Config.RAG_MODEL_CACHE_PATH,
+                threads=Config.RAG_EMBEDDING_THREADS,
                 local_files_only=True,
             )
         except Exception:
@@ -237,6 +238,7 @@ def _index(chunks, state):
             embedder = TextEmbedding(
                 model_name=Config.RAG_EMBEDDING_MODEL,
                 cache_dir=Config.RAG_MODEL_CACHE_PATH,
+                threads=Config.RAG_EMBEDDING_THREADS,
             )
         texts = [chunk.content for _source, _url, chunk in chunks]
         vectors = list(embedder.passage_embed(texts))
