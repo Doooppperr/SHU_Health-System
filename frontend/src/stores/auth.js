@@ -20,7 +20,17 @@ export const useAuthStore = defineStore("auth", {
         return;
       }
 
-      const raw = localStorage.getItem(STORAGE_KEY);
+      let raw = sessionStorage.getItem(STORAGE_KEY);
+      if (!raw) {
+        // One-time migration from the former cross-tab storage. The legacy
+        // value cannot represent different accounts, so claim it for the
+        // first hydrated tab and remove the shared copy immediately.
+        raw = localStorage.getItem(STORAGE_KEY);
+        if (raw) {
+          sessionStorage.setItem(STORAGE_KEY, raw);
+          localStorage.removeItem(STORAGE_KEY);
+        }
+      }
       if (raw) {
         try {
           const parsed = JSON.parse(raw);
@@ -28,6 +38,7 @@ export const useAuthStore = defineStore("auth", {
           this.refreshToken = parsed.refreshToken || "";
           this.user = parsed.user || null;
         } catch {
+          sessionStorage.removeItem(STORAGE_KEY);
           localStorage.removeItem(STORAGE_KEY);
         }
       }
@@ -36,7 +47,12 @@ export const useAuthStore = defineStore("auth", {
     },
 
     persist() {
-      localStorage.setItem(
+      localStorage.removeItem(STORAGE_KEY);
+      if (!this.accessToken && !this.refreshToken && !this.user) {
+        sessionStorage.removeItem(STORAGE_KEY);
+        return;
+      }
+      sessionStorage.setItem(
         STORAGE_KEY,
         JSON.stringify({
           accessToken: this.accessToken,
