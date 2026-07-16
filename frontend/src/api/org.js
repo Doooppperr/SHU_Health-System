@@ -53,7 +53,6 @@ export const updateOrgReportIndicator = (id, indicatorId, payload) => http.put(`
 export const deleteOrgReportIndicator = (id, indicatorId) => http.delete(`/org/reports/${id}/indicators/${indicatorId}`);
 export const lockOrgReport = (id) => http.post(`/org/reports/${id}/lock`);
 export const submitOrgReport = (id) => http.post(`/org/reports/${id}/submit`);
-export const withdrawOrgReport = (id) => http.post(`/org/reports/${id}/withdraw`);
 export function uploadOrgReportOcr(file, fields) {
   const form = new FormData(); form.append("file", file);
   Object.entries(fields).forEach(([key, value]) => { if (value !== null && value !== "") form.append(key, value); });

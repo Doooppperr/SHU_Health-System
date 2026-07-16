@@ -13,7 +13,7 @@
 <script setup>
 import { computed, onMounted, ref } from "vue"; import { useRouter } from "vue-router"; import { fetchTimeline } from "../api/health";
 const router=useRouter(),loading=ref(false),errorMessage=ref(""),events=ref([]);
-const metrics=computed(()=>{const counts={self_measurement:0,institution_report:0,report_withdrawn:0};events.value.forEach(e=>{if(counts[e.type]!==undefined)counts[e.type]++});return[{label:"时间线事件",value:events.value.length,icon:"线",note:"统一健康记录"},{label:"日常测量",value:counts.self_measurement,icon:"测",note:"保留全部原始值"},{label:"机构报告",value:counts.institution_report,icon:"报",note:"机构提交后自动归档"},{label:"已撤下报告",value:counts.report_withdrawn,icon:"撤",note:"保留审计时间线"}]});
+const metrics=computed(()=>{const counts={self_measurement:0,institution_report:0};events.value.forEach(e=>{if(counts[e.type]!==undefined)counts[e.type]++});return[{label:"时间线事件",value:events.value.length,icon:"线",note:"统一健康记录"},{label:"日常测量",value:counts.self_measurement,icon:"测",note:"保留全部原始值"},{label:"机构报告",value:counts.institution_report,icon:"报",note:"机构提交后永久归档"}]});
 const formatTime=v=>v?new Date(v).toLocaleString("zh-CN",{hour12:false}):"-";
 onMounted(async()=>{loading.value=true;try{const{data}=await fetchTimeline();events.value=(data.items||[]).slice(0,8)}catch(e){errorMessage.value=e?.response?.data?.message||"健康总览加载失败"}finally{loading.value=false}});
 </script>

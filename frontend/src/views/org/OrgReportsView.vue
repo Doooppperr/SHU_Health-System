@@ -4,7 +4,7 @@
       <div>
         <p>机构数据生产</p>
         <h2>体检报告</h2>
-        <span>草稿可编辑；确认锁定后内容不可再修改。</span>
+        <span>草稿可编辑；确认锁定后内容不可再修改，提交归档后不可撤回。</span>
       </div>
       <div>
         <el-button @click="ocrVisible = true">OCR 录入</el-button>
@@ -13,7 +13,7 @@
     </section>
 
     <el-alert
-      title="报告机构由当前账号的服务端绑定关系确定；提交后按健康身份码和姓名自动归档给注册用户。"
+      title="报告机构由当前账号的服务端绑定关系确定；提交后按健康身份码和姓名永久归档给注册用户，不可撤下。"
       type="info"
       show-icon
       :closable="false"
@@ -38,7 +38,6 @@
             <el-button link @click="openDetail(scope.row)">查看</el-button>
             <el-button v-if="scope.row.status === 'draft'" link type="success" @click="lock(scope.row)">确认锁定</el-button>
             <el-button v-if="scope.row.status === 'locked'" link type="primary" @click="submit(scope.row)">提交并归档</el-button>
-            <el-button v-if="['locked', 'published'].includes(scope.row.status)" link type="danger" @click="withdraw(scope.row)">撤下</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -100,7 +99,6 @@ import { fetchIndicatorDicts } from "../../api/indicators";
 import {
   addOrgReportIndicator, createOrgReport, deleteOrgReportIndicator, fetchOrgPackages,
   fetchOrgReport, fetchOrgReports, lockOrgReport, submitOrgReport, uploadOrgReportOcr,
-  withdrawOrgReport,
 } from "../../api/org";
 
 const ReportIdentityForm = defineComponent({
@@ -120,7 +118,6 @@ const statuses = [
   { value: "draft", label: "草稿" },
   { value: "locked", label: "已锁定" },
   { value: "published", label: "已归档" },
-  { value: "withdrawn", label: "已撤下" },
 ];
 const label = (value) => statuses.find((item) => item.value === value)?.label || value;
 const items = ref([]);
@@ -172,12 +169,11 @@ async function lock(report) {
   catch (error) { if (error !== "cancel" && error !== "close") ElMessage.error(error?.response?.data?.message || "锁定失败"); }
 }
 async function submit(report) {
-  try { await submitOrgReport(report.id); ElMessage.success("报告已自动归档到对应用户"); await load(); }
-  catch (error) { ElMessage.error(error?.response?.data?.message || "未找到身份信息完全匹配的注册用户"); }
-}
-async function withdraw(report) {
-  try { await ElMessageBox.confirm("撤下后该报告不再参与趋势聚合。", "撤下报告", { type: "warning" }); await withdrawOrgReport(report.id); await load(); }
-  catch (error) { if (error !== "cancel" && error !== "close") ElMessage.error(error?.response?.data?.message || "撤下失败"); }
+  try {
+    await ElMessageBox.confirm("提交后报告将永久归档到对应用户，不可修改或撤下。确认提交？", "提交并归档", { type: "warning", confirmButtonText: "确认提交" });
+    await submitOrgReport(report.id); ElMessage.success("报告已自动归档到对应用户"); await load();
+  }
+  catch (error) { if (error !== "cancel" && error !== "close") ElMessage.error(error?.response?.data?.message || "未找到身份信息完全匹配的注册用户"); }
 }
 
 onMounted(async () => {

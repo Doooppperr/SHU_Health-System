@@ -510,24 +510,23 @@ def seed_demo_data():
         measured_at=datetime.combine(exam_day, datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=21),
     ))
 
-    waiting_staff = staff_by_institution[1][0]
-    withdrawn = InstitutionReport(
+    additional_staff = staff_by_institution[1][0]
+    additional_report = InstitutionReport(
         institution_id=institutions[1].id,
-        created_by_user_id=waiting_staff.id,
-        created_by_username_snapshot=waiting_staff.username,
+        created_by_user_id=additional_staff.id,
+        created_by_username_snapshot=additional_staff.username,
         subject_name_snapshot=people[1].real_name,
         subject_health_id=people[1].health_id,
         exam_date=today - timedelta(days=20),
         matched_user_id=people[1].id,
-        status="withdrawn",
+        status="published",
         locked_at=now - timedelta(days=20),
         submitted_at=now - timedelta(days=20),
         published_at=now - timedelta(days=20),
-        withdrawn_at=now - timedelta(days=10),
     )
-    db.session.add(withdrawn)
+    db.session.add(additional_report)
     db.session.flush()
-    withdrawn.indicators.append(ReportIndicator(
+    additional_report.indicators.append(ReportIndicator(
         indicator_dict_id=indicators["FBG"].id,
         value="5.8",
         input_source="manual",

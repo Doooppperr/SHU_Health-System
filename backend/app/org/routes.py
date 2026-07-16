@@ -95,7 +95,7 @@ def dashboard():
     institution, error = managed_institution()
     if error:
         return error
-    counts = {status: InstitutionReport.query.filter_by(institution_id=institution.id, status=status).count() for status in ("draft", "locked", "published", "withdrawn")}
+    counts = {status: InstitutionReport.query.filter_by(institution_id=institution.id, status=status).count() for status in ("draft", "locked", "published")}
     return {"summary": {"institution": institution_payload(institution), "report_status_counts": counts, "active_package_count": Package.query.filter_by(institution_id=institution.id, is_active=True).count()}}, 200
 
 
@@ -356,13 +356,3 @@ def submit(report_id):
     except IntegrityError: db.session.rollback(); return {"message": "report publishing conflict; reload and retry"}, 409
     db.session.refresh(report)
     return {"item": report.to_dict(include_indicators=True), "match_result": "matched"}, 200
-
-
-@org_bp.post("/reports/<int:report_id>/withdraw")
-@roles_required(ROLE_INSTITUTION_ADMIN)
-def withdraw(report_id):
-    report, error = scoped_report(report_id)
-    if error: return error
-    if report.status not in {"locked", "published"}: return {"message": "report cannot be withdrawn from its current status"}, 409
-    report.status = "withdrawn"; report.withdrawn_at = datetime.now(timezone.utc)
-    db.session.commit(); return {"item": report.to_dict(include_indicators=True)}, 200

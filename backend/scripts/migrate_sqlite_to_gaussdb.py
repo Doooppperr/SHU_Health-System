@@ -179,10 +179,16 @@ def migrate(source_path: Path, target_url: str, replace: bool = False) -> dict[s
                     continue
                 payload = []
                 for row in rows:
-                    item = {
-                        column.name: _adapt_value(column, row[column.name])
-                        for column in table.columns
-                    }
+                    item = {}
+                    for column in table.columns:
+                        value = row[column.name]
+                        if (
+                            table.name == "institution_reports"
+                            and column.name == "status"
+                            and value == "withdrawn"
+                        ):
+                            value = "published"
+                        item[column.name] = _adapt_value(column, value)
                     payload.append(item)
                 target.execute(table.insert(), payload)
 

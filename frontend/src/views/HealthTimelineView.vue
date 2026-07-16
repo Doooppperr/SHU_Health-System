@@ -45,7 +45,7 @@
           v-for="event in items"
           :key="`${event.type}-${event.occurred_at}-${event.item?.id}`"
           :timestamp="format(event.occurred_at)"
-          :type="event.type === 'institution_report' ? 'success' : event.type === 'report_withdrawn' ? 'danger' : 'primary'"
+          :type="event.type === 'institution_report' ? 'success' : 'primary'"
         >
           <h3>{{ event.title }}</h3>
           <el-button

@@ -62,6 +62,7 @@ def test_institution_submission_auto_archives_to_registered_user(app, client):
     assert client.put(f"/api/org/reports/{report_id}", headers=org, json={"exam_date": date.today().isoformat()}).status_code == 409
     submitted = client.post(f"/api/org/reports/{report_id}/submit", headers=org)
     assert submitted.status_code == 200 and submitted.get_json()["match_result"] == "matched"
+    assert client.post(f"/api/org/reports/{report_id}/withdraw", headers=org).status_code == 404
     assert client.get(f"/api/org/reports/{report_id}", headers=other_org).status_code == 404
     assert any(item["id"] == report_id for item in client.get("/api/exam-reports", headers=user).get_json()["items"])
     assert client.get("/api/exam-registrations", headers=user).status_code == 404
@@ -92,10 +93,10 @@ def test_report_lock_rejects_unknown_identity_and_submit_rechecks_active_user(ap
         report = db.session.get(InstitutionReport, locked_id)
         assert report.status == "locked"
         assert report.matched_user_id is None
-        assert {item.status for item in InstitutionReport.query.all()} <= {"draft", "locked", "published", "withdrawn"}
+        assert {item.status for item in InstitutionReport.query.all()} <= {"draft", "locked", "published"}
 
 
-def test_self_measurement_trend_priority_withdraw_fallback(app, client):
+def test_self_measurement_trend_keeps_published_report_priority(app, client):
     assert as_calendar_date(datetime(2026, 7, 16, 8, 30)) == date(2026, 7, 16)
     assert as_calendar_date(date(2026, 7, 16)) == date(2026, 7, 16)
     headers = login(client, "test1")
@@ -110,12 +111,6 @@ def test_self_measurement_trend_priority_withdraw_fallback(app, client):
     trend = client.get(f"/api/health/trends/{weight_id}", headers=headers).get_json()["points"]
     point = next(item for item in trend if item["date"] == day.isoformat())
     assert point["source"] == "institution_report" and point["value"] == 71.9
-    with app.app_context():
-        report = InstitutionReport.query.filter_by(matched_user_id=User.query.filter_by(username="test1").first().id, exam_date=day, status="published").first()
-        report.status = "withdrawn"; report.withdrawn_at = datetime.now(timezone.utc); db.session.commit()
-    fallback = client.get(f"/api/health/trends/{weight_id}", headers=headers).get_json()["points"]
-    point = next(item for item in fallback if item["date"] == day.isoformat())
-    assert point["source"] == "self_measurement" and point["value"] == 70.8
 
 
 def test_friend_read_only_privacy_and_role_isolation(app, client):

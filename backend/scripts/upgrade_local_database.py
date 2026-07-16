@@ -1,9 +1,8 @@
-"""Deterministically rebuild the local SQLite database as HealthDoc schema v4.
+"""Upgrade the local SQLite database to HealthDoc schema v5.
 
-Version 4 intentionally does not migrate legacy business data.  It preserves
-only the current system administrator's primary key and password hash, creates
-the new schema in a neighbouring file, verifies it, backs up the old file, and
-atomically replaces it.  Normal application startup then creates v4 demo data.
+The v4-to-v5 path preserves all current business data and converts the retired
+``withdrawn`` report state back to ``published``. Older unsupported schemas
+retain only the current system administrator identity before rebuilding.
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ from sqlalchemy import create_engine
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_DATABASE = BACKEND_DIR / "instance" / "health_system.db"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 sys.path.insert(0, str(BACKEND_DIR))
 
 from app import models as _models  # noqa: E402,F401
@@ -44,7 +43,7 @@ class SchemaReport:
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Rebuild the local SQLite database as schema v4.")
+    parser = argparse.ArgumentParser(description="Upgrade the local SQLite database to schema v5.")
     parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE)
     parser.add_argument("--check-only", action="store_true")
     return parser.parse_args()
@@ -78,7 +77,7 @@ def validate(connection):
         raise RuntimeError(f"SQLite foreign_key_check found {len(violations)} violation(s)")
     report = inspect_schema(connection)
     if not report.is_current:
-        raise RuntimeError(f"schema v4 validation failed: {report}")
+        raise RuntimeError(f"schema v5 validation failed: {report}")
 
 
 def read_admin(connection):
@@ -97,7 +96,7 @@ def read_admin(connection):
 
 def backup_path(database):
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return database.with_name(f"{database.stem}.before-schema-v4-{stamp}-{uuid.uuid4().hex[:6]}.db")
+    return database.with_name(f"{database.stem}.before-schema-v5-{stamp}-{uuid.uuid4().hex[:6]}.db")
 
 
 def rebuild_database(database_path):
@@ -112,8 +111,28 @@ def rebuild_database(database_path):
             validate(source)
             return None
         admin = read_admin(source)
+        available_tables = table_names(source)
 
-    temporary = database_path.with_name(f".{database_path.stem}.v4-{uuid.uuid4().hex}.db")
+    if report.version == 4 and set(db.metadata.tables) <= available_tables:
+        from scripts.migrate_sqlite_to_gaussdb import migrate
+
+        temporary = database_path.with_name(f".{database_path.stem}.v5-{uuid.uuid4().hex}.db")
+        backup = backup_path(database_path)
+        try:
+            migrate(database_path, f"sqlite:///{temporary.as_posix()}", replace=True)
+            with closing(sqlite3.connect(temporary)) as target:
+                target.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                target.commit()
+                validate(target)
+            shutil.copy2(database_path, backup)
+            os.replace(temporary, database_path)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            backup.unlink(missing_ok=True)
+            raise
+        return backup
+
+    temporary = database_path.with_name(f".{database_path.stem}.v5-{uuid.uuid4().hex}.db")
     backup = backup_path(database_path)
     engine = create_engine(f"sqlite:///{temporary.as_posix()}")
     try:

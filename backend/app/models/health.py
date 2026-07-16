@@ -46,17 +46,14 @@ class InstitutionReport(db.Model):
     __tablename__ = "institution_reports"
     __table_args__ = (
         db.CheckConstraint(
-            "status in ('draft', 'locked', 'published', 'withdrawn')",
+            "status in ('draft', 'locked', 'published')",
             name="ck_institution_reports_status",
         ),
         db.CheckConstraint("length(trim(subject_name_snapshot)) > 0", name="ck_institution_reports_subject_name"),
         db.CheckConstraint("length(trim(subject_health_id)) > 0", name="ck_institution_reports_subject_health_id"),
-        db.Index(
-            "uq_institution_reports_active_subject_date",
+        db.UniqueConstraint(
             "institution_id", "subject_health_id", "exam_date",
-            unique=True,
-            sqlite_where=db.text("status <> 'withdrawn'"),
-            postgresql_where=db.text("status <> 'withdrawn'"),
+            name="uq_institution_reports_subject_date",
         ),
     )
 
@@ -75,7 +72,6 @@ class InstitutionReport(db.Model):
     locked_at = db.Column(db.DateTime(timezone=True), nullable=True)
     submitted_at = db.Column(db.DateTime(timezone=True), nullable=True)
     published_at = db.Column(db.DateTime(timezone=True), nullable=True)
-    withdrawn_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utc_now)
 
     institution = db.relationship("Institution")
@@ -109,7 +105,6 @@ class InstitutionReport(db.Model):
             "locked_at": self.locked_at.isoformat() if self.locked_at else None,
             "submitted_at": self.submitted_at.isoformat() if self.submitted_at else None,
             "published_at": self.published_at.isoformat() if self.published_at else None,
-            "withdrawn_at": self.withdrawn_at.isoformat() if self.withdrawn_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "institution": {"id": self.institution.id, "name": self.institution.name, "branch_name": self.institution.branch_name} if self.institution else None,
             "package": {"id": self.package.id, "name": self.package.name} if self.package else None,

@@ -1,20 +1,29 @@
 import sqlite3
+import shutil
 from datetime import datetime, timezone
+from pathlib import Path
 
 from app.extensions import db
 from app.models import InstitutionReport, ReportIndicator, SelfMeasurement, User
 from app.schema import CURRENT_SCHEMA_VERSION
 
 
-def test_schema_v4_uses_direct_report_archiving(app):
+def test_schema_v5_uses_permanent_report_archiving(app):
     with app.app_context():
-        assert CURRENT_SCHEMA_VERSION == 4
+        assert CURRENT_SCHEMA_VERSION == 5
         assert {"self_measurements", "institution_reports", "report_indicators"} <= set(db.metadata.tables)
         assert "exam_registrations" not in db.metadata.tables
         assert "health_records" not in db.metadata.tables
         assert "health_indicators" not in db.metadata.tables
         connection = db.session.connection()
         assert connection.exec_driver_sql("PRAGMA foreign_key_check").fetchall() == []
+        assert "withdrawn_at" not in InstitutionReport.__table__.columns
+        allowed_statuses = str(next(
+            constraint.sqltext
+            for constraint in InstitutionReport.__table__.constraints
+            if constraint.name == "ck_institution_reports_status"
+        ))
+        assert "withdrawn" not in allowed_statuses
 
 
 def test_rebuild_preserves_only_admin_identity_and_password(tmp_path):
@@ -29,7 +38,7 @@ def test_rebuild_preserves_only_admin_identity_and_password(tmp_path):
     backup = rebuild_database(path)
     assert backup and backup.exists()
     connection = sqlite3.connect(path)
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
     assert connection.execute("SELECT id, username, password_hash FROM users").fetchall() == [(7, "admin", "unchanged-hash")]
     assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     connection.close()
@@ -59,12 +68,41 @@ def test_demo_seed_has_rich_timelines_and_complete_role_matrix(app):
         assert User.query.filter_by(username="demo_admin", role="admin").count() == 1
         assert SelfMeasurement.query.count() == 138
         assert InstitutionReport.query.count() == 11
+        assert InstitutionReport.query.filter_by(status="published").count() == 11
         assert ReportIndicator.query.count() == 71
         for user in people:
             assert SelfMeasurement.query.filter_by(user_id=user.id).count() >= 27
             assert InstitutionReport.query.filter_by(
                 matched_user_id=user.id, status="published"
             ).count() >= 2
+
+
+def test_v4_upgrade_preserves_all_current_data(tmp_path):
+    from scripts.upgrade_local_database import rebuild_database
+
+    path = tmp_path / "schema-v4.db"
+    source = Path(__file__).resolve().parents[1] / "instance" / "health_system.db"
+    shutil.copy2(source, path)
+    connection = sqlite3.connect(path)
+    connection.execute("PRAGMA user_version=4")
+    connection.commit()
+    connection.close()
+
+    backup = rebuild_database(path)
+
+    assert backup and backup.exists()
+    connection = sqlite3.connect(path)
+    try:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert connection.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 13
+        assert connection.execute("SELECT COUNT(*) FROM institution_reports").fetchone()[0] == 11
+        assert connection.execute("SELECT COUNT(*) FROM institution_reports WHERE status='published'").fetchone()[0] == 11
+        assert "withdrawn_at" not in {
+            row[1] for row in connection.execute("PRAGMA table_info('institution_reports')")
+        }
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        connection.close()
 
 
 def test_full_snapshot_migration_preserves_direct_report_ownership(app, tmp_path):

@@ -146,13 +146,11 @@ def timeline():
         payload = row.to_dict()
         if friend_view: payload.pop("user_id", None)
         events.append({"type": "self_measurement", "occurred_at": row.measured_at.isoformat(), "title": f"自测{row.indicator_dict.name}", "item": payload})
-    for row in InstitutionReport.query.filter(InstitutionReport.matched_user_id == owner.id, InstitutionReport.status.in_(["published", "withdrawn"])).all():
-        suffix = "机构已提交" if row.status == "published" else "机构已撤下"
-        occurred = row.published_at if row.status == "published" else row.withdrawn_at
-        payload = row.to_dict(include_indicators=row.status == "published", user_view=True)
+    for row in InstitutionReport.query.filter_by(matched_user_id=owner.id, status="published").all():
+        payload = row.to_dict(include_indicators=True, user_view=True)
         if friend_view:
             payload.pop("subject_name_snapshot", None)
             payload.pop("matched_user_id", None)
-        events.append({"type": "institution_report" if row.status == "published" else "report_withdrawn", "occurred_at": (occurred or datetime.combine(row.exam_date, time.min)).isoformat(), "title": f"{row.institution.name} 体检报告 · {suffix}", "item": payload})
+        events.append({"type": "institution_report", "occurred_at": (row.published_at or datetime.combine(row.exam_date, time.min)).isoformat(), "title": f"{row.institution.name} 体检报告 · 机构已提交", "item": payload})
     events.sort(key=lambda item: item["occurred_at"], reverse=True)
     return {"owner": owner.friend_identity_dict(), "items": events}, 200
