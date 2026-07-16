@@ -10,6 +10,15 @@ from app.models import (
 from app.services.permissions import ROLE_USER, roles_required
 
 
+APPOINTMENT_TIMELINE_STATUS = {
+    "unfulfilled": ("未履约", "预约成功，请按预约日期前往机构体检"),
+    "awaiting_report": ("待上传报告", "已确认到检，等待机构上传体检报告"),
+    "fulfilled": ("已履约", "体检报告已由机构提交并归档"),
+    "invalidated": ("已失效", "该预约已失效，请重新预约或联系机构"),
+    "cancelled": ("已取消", "该预约已取消"),
+}
+
+
 def parse_datetime(value):
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
@@ -152,21 +161,17 @@ def timeline():
             payload.pop("subject_name_snapshot", None)
             payload.pop("matched_user_id", None)
         events.append({"type": "institution_report", "occurred_at": (row.published_at or datetime.combine(row.exam_date, time.min)).isoformat(), "title": f"{row.institution.name} 体检报告 · 机构已提交", "item": payload})
-    for row in Appointment.query.filter_by(user_id=owner.id, status="invalidated").all():
+    for row in Appointment.query.filter_by(user_id=owner.id).all():
+        status_label, status_message = APPOINTMENT_TIMELINE_STATUS[row.status]
+        payload = row.to_dict()
         events.append({
-            "type": "appointment_invalidated",
+            "type": "appointment",
             "occurred_at": datetime.combine(row.appointment_date, time.min).isoformat(),
-            "title": "该预约已失效，请重新预约或联系机构",
+            "title": f"{row.institution.name if row.institution else '体检机构'} 体检预约 · {status_label}",
             "item": {
-                "id": row.id,
-                "appointment_date": row.appointment_date.isoformat(),
-                "status": row.status,
-                "institution": {
-                    "id": row.institution.id,
-                    "name": row.institution.name,
-                    "branch_name": row.institution.branch_name,
-                } if row.institution else None,
-                "package_name": row.package_name_snapshot,
+                **payload,
+                "status_label": status_label,
+                "status_message": status_message,
             },
         })
     events.sort(key=lambda item: item["occurred_at"], reverse=True)

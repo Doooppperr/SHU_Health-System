@@ -4,7 +4,7 @@
       <div>
         <p>统一健康事件</p>
         <h2>健康时间线</h2>
-        <span>查看本人或已授权亲友的机构体检报告与日常测量。</span>
+        <span>查看本人或已授权亲友的体检预约、机构报告与日常测量。</span>
       </div>
     </section>
 
@@ -45,9 +45,19 @@
           v-for="event in items"
           :key="`${event.type}-${event.occurred_at}-${event.item?.id}`"
           :timestamp="format(event.occurred_at)"
-          :type="event.type === 'institution_report' ? 'success' : 'primary'"
+          :type="timelineType(event)"
         >
           <h3>{{ event.title }}</h3>
+          <div v-if="event.type === 'appointment'" class="appointment-event-details">
+            <p>
+              {{ institutionLabel(event.item) }} · {{ event.item.package_name }} ·
+              预约日期 {{ event.item.appointment_date }}
+            </p>
+            <el-tag :type="appointmentTagType(event.item.status)">
+              {{ event.item.status_label }}
+            </el-tag>
+            <span>{{ event.item.status_message }}</span>
+          </div>
           <el-button
             v-if="event.type === 'institution_report'"
             link
@@ -127,6 +137,32 @@ const loadTimeline = async () => {
 const format = (value) =>
   new Date(value).toLocaleString("zh-CN", { hour12: false });
 
+const appointmentTagType = (status) =>
+  ({
+    unfulfilled: "primary",
+    awaiting_report: "warning",
+    fulfilled: "success",
+    invalidated: "danger",
+    cancelled: "info",
+  })[status] || "info";
+
+const timelineType = (event) => {
+  if (event.type === "institution_report") return "success";
+  if (event.type !== "appointment") return "primary";
+  return ({
+    unfulfilled: "primary",
+    awaiting_report: "warning",
+    fulfilled: "success",
+    invalidated: "danger",
+    cancelled: "info",
+  })[event.item?.status] || "primary";
+};
+
+const institutionLabel = (item) =>
+  [item?.institution?.name, item?.institution?.branch_name]
+    .filter(Boolean)
+    .join(" · ") || "体检机构";
+
 watch(ownerValue, loadTimeline);
 
 onMounted(async () => {
@@ -138,3 +174,19 @@ onMounted(async () => {
   await loadTimeline();
 });
 </script>
+
+<style scoped>
+.appointment-event-details {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+  color: var(--el-text-color-secondary);
+}
+
+.appointment-event-details p {
+  flex-basis: 100%;
+  margin: 0;
+}
+</style>

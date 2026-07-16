@@ -59,16 +59,24 @@ def test_institution_invalidation_is_final_and_visible_in_friend_timeline(app, c
     day = date.today() + timedelta(days=5)
     created = client.post("/api/appointments", headers=owner, json={"institution_id": institution_id, "package_id": package_id, "appointment_date": day.isoformat()})
     appointment_id = created.get_json()["item"]["id"]
+    with app.app_context():
+        owner_id = User.query.filter_by(username="test2").first().id
+    before_invalidation = client.get(f"/api/health/timeline?owner_id={owner_id}", headers=viewer).get_json()["items"]
+    booked_event = next(item for item in before_invalidation if item["type"] == "appointment" and item["item"]["id"] == appointment_id)
+    assert booked_event["item"]["status"] == "unfulfilled"
+    assert booked_event["item"]["status_label"] == "未履约"
+    assert booked_event["item"]["package_name"]
+
     invalidated = client.post(f"/api/org/appointments/{appointment_id}/invalidate", headers=org)
     assert invalidated.status_code == 200 and invalidated.get_json()["item"]["status"] == "invalidated"
     assert client.post(f"/api/org/appointments/{appointment_id}/attend", headers=org).status_code == 409
     assert client.post("/api/org/reports", headers=org, json={"appointment_id": appointment_id}).status_code == 409
-    with app.app_context():
-        owner_id = User.query.filter_by(username="test2").first().id
     timeline = client.get(f"/api/health/timeline?owner_id={owner_id}", headers=viewer).get_json()["items"]
-    event = next(item for item in timeline if item["type"] == "appointment_invalidated" and item["item"]["id"] == appointment_id)
+    event = next(item for item in timeline if item["type"] == "appointment" and item["item"]["id"] == appointment_id)
     assert event["item"]["appointment_date"] == day.isoformat()
-    assert "请重新预约或联系机构" in event["title"]
+    assert event["item"]["status"] == "invalidated"
+    assert event["item"]["status_label"] == "已失效"
+    assert "请重新预约或联系机构" in event["item"]["status_message"]
 
 
 def test_package_changes_require_admin_review_and_support_withdrawal(app, client):
