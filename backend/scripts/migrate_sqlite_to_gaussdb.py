@@ -87,6 +87,27 @@ def _ensure_empty_destination(connection) -> None:
         )
 
 
+def _drop_destination_schema(connection) -> None:
+    """Remove current and legacy application tables for an explicit replacement."""
+    table_names = inspect(connection).get_table_names()
+    quote = connection.dialect.identifier_preparer.quote
+
+    if connection.dialect.name == "sqlite":
+        known_tables = set(db.metadata.tables)
+        for table_name in reversed(table_names):
+            if table_name not in known_tables:
+                connection.exec_driver_sql(
+                    f"DROP TABLE IF EXISTS {quote(table_name)}"
+                )
+        db.metadata.drop_all(bind=connection)
+        return
+
+    for table_name in reversed(table_names):
+        connection.exec_driver_sql(
+            f"DROP TABLE IF EXISTS {quote(table_name)} CASCADE"
+        )
+
+
 def _reset_sequences(connection) -> None:
     if connection.dialect.name == "sqlite":
         return
@@ -147,7 +168,7 @@ def migrate(source_path: Path, target_url: str, replace: bool = False) -> dict[s
 
         with engine.begin() as target:
             if replace:
-                db.metadata.drop_all(bind=target)
+                _drop_destination_schema(target)
             db.metadata.create_all(bind=target)
             _ensure_empty_destination(target)
 

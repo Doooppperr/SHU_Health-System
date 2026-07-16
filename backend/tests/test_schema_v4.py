@@ -72,6 +72,15 @@ def test_full_snapshot_migration_preserves_direct_report_ownership(app, tmp_path
 
     source_path = tmp_path / "source.db"
     target_path = tmp_path / "target.db"
+    legacy_target = sqlite3.connect(target_path)
+    legacy_target.execute(
+        "CREATE TABLE health_records (id INTEGER PRIMARY KEY, legacy_value TEXT)"
+    )
+    legacy_target.execute(
+        "INSERT INTO health_records (legacy_value) VALUES ('must be replaced')"
+    )
+    legacy_target.commit()
+    legacy_target.close()
     with app.app_context():
         source = sqlite3.connect(source_path)
         raw_connection = db.engine.raw_connection()
@@ -91,6 +100,10 @@ def test_full_snapshot_migration_preserves_direct_report_ownership(app, tmp_path
 
     connection = sqlite3.connect(target_path)
     try:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'health_records'"
+        ).fetchone()[0] == 0
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         published_without_owner = connection.execute(
             "SELECT COUNT(*) FROM institution_reports "
