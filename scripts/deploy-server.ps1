@@ -71,14 +71,18 @@ try {
     Push-Location $projectRoot
     try {
         tar -czf $archivePath `
-            --exclude="backend/.venv" `
-            --exclude="backend/.env" `
-            --exclude="backend/instance" `
-            --exclude="backend/uploads" `
-            --exclude="backend/.pytest_cache" `
             --exclude="*/__pycache__" `
             --exclude="*.pyc" `
-            backend deploy `
+            backend/app `
+            backend/migrations `
+            backend/rag_sources `
+            backend/scripts `
+            backend/.env.example `
+            backend/README.md `
+            backend/requirements.txt `
+            backend/run.py `
+            backend/wsgi.py `
+            deploy `
             -C $releaseStageRoot frontend/dist
         Assert-LastExitCode "Release packaging"
     }
