@@ -9,6 +9,7 @@ from app.models import (
     Package, PackageChangeRequest, PackageVersion, ReportAsset, ReportIndicator,
     ReportTextResult, SelfMeasurement, User, WaitlistSubscription,
 )
+from app import schema as schema_module
 from app.schema import CURRENT_SCHEMA_VERSION
 
 
@@ -28,6 +29,58 @@ def test_schema_v7_uses_domains_booking_groups_and_private_health_assets(app):
             if constraint.name == "ck_institution_reports_status"
         ))
         assert "withdrawn" not in allowed_statuses
+
+
+def test_non_sqlite_schema_validation_uses_reflection_instead_of_sqlite_master(
+    app, monkeypatch
+):
+    class NonSqliteConnection:
+        dialect = type("Dialect", (), {"name": "opengauss"})()
+
+        @staticmethod
+        def exec_driver_sql(_statement):
+            raise AssertionError("non-SQLite validation queried sqlite_master")
+
+    class MetadataInspector:
+        @staticmethod
+        def get_table_names():
+            return list(db.metadata.tables)
+
+        @staticmethod
+        def get_columns(table_name):
+            return [{"name": column.name} for column in db.metadata.tables[table_name].columns]
+
+        @staticmethod
+        def get_check_constraints(table_name):
+            return [
+                {"name": constraint.name}
+                for constraint in db.metadata.tables[table_name].constraints
+                if constraint.name
+            ]
+
+        @staticmethod
+        def get_unique_constraints(table_name):
+            return [
+                {
+                    "name": constraint.name,
+                    "column_names": [column.name for column in constraint.columns],
+                }
+                for constraint in db.metadata.tables[table_name].constraints
+                if constraint.__visit_name__ == "unique_constraint"
+            ]
+
+        @staticmethod
+        def get_foreign_keys(_table_name):
+            return []
+
+        @staticmethod
+        def get_pk_constraint(_table_name):
+            return {}
+
+    monkeypatch.setattr(schema_module, "inspect", lambda _connection: MetadataInspector())
+
+    with app.app_context():
+        assert schema_module._schema_shape_issues(NonSqliteConnection()) == []
 
 
 def test_rebuild_preserves_only_admin_identity_and_password(tmp_path):

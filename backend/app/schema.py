@@ -24,12 +24,14 @@ def _schema_shape_issues(connection) -> list[str]:
     expected_tables = set(db.metadata.tables)
     issues = [f"missing table {name}" for name in sorted(expected_tables - actual_tables)]
 
-    table_sql = {
-        row[0]: row[1] or ""
-        for row in connection.exec_driver_sql(
-            "SELECT name, sql FROM sqlite_master WHERE type = 'table'"
-        ).fetchall()
-    }
+    table_sql = {}
+    if connection.dialect.name == "sqlite":
+        table_sql = {
+            row[0]: row[1] or ""
+            for row in connection.exec_driver_sql(
+                "SELECT name, sql FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
     for table_name in sorted(expected_tables & actual_tables):
         expected_columns = set(db.metadata.tables[table_name].columns.keys())
         actual_columns = {column["name"] for column in inspector.get_columns(table_name)}
@@ -37,9 +39,30 @@ def _schema_shape_issues(connection) -> list[str]:
             f"missing column {table_name}.{name}"
             for name in sorted(expected_columns - actual_columns)
         )
-        normalized_sql = table_sql.get(table_name, "").lower()
+        if connection.dialect.name == "sqlite":
+            actual_constraint_names = {
+                constraint.name.lower()
+                for constraint in db.metadata.tables[table_name].constraints
+                if constraint.name
+                and constraint.name.lower() in table_sql.get(table_name, "").lower()
+            }
+        else:
+            reflected = []
+            for getter_name in (
+                "get_check_constraints",
+                "get_unique_constraints",
+                "get_foreign_keys",
+            ):
+                reflected.extend(getattr(inspector, getter_name)(table_name) or [])
+            primary_key = inspector.get_pk_constraint(table_name) or {}
+            reflected.append(primary_key)
+            actual_constraint_names = {
+                str(item.get("name") or "").lower()
+                for item in reflected
+                if item.get("name")
+            }
         for constraint in db.metadata.tables[table_name].constraints:
-            if constraint.name and constraint.name.lower() not in normalized_sql:
+            if constraint.name and constraint.name.lower() not in actual_constraint_names:
                 issues.append(f"missing constraint {constraint.name}")
     if "users" in actual_tables:
         for constraint in inspector.get_unique_constraints("users"):

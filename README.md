@@ -225,7 +225,7 @@ npm run build
 npm audit --omit=dev
 ```
 
-当前验收基线：后端 51 项、前端 100 项测试通过，Vite production build 通过；SQLite v7 结构、演示数据预检与覆盖流程已验证。
+当前验收基线：后端 52 项、前端 100 项测试通过，Vite production build 通过；SQLite/openGauss v7 结构、演示数据预检与覆盖流程已验证。
 
 ## 备份
 
