@@ -165,7 +165,13 @@ finally:
             if ($mailValues.ContainsKey($key)) { "$key=$($mailValues[$key])" }
         }
         $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-        [System.IO.File]::WriteAllLines($mailSettingsPath, $mailLines, $utf8NoBom)
+        # The remote parser is Bash. Always emit LF-only text even on Windows so
+        # SMTP host names and credentials never retain a trailing carriage return.
+        [System.IO.File]::WriteAllText(
+            $mailSettingsPath,
+            (($mailLines -join "`n") + "`n"),
+            $utf8NoBom
+        )
         scp $mailSettingsPath "${SshUser}@${Server}:$remoteMailSettings"
         Assert-LastExitCode "Mail settings upload"
         $remoteMailArgument = " '$remoteMailSettings'"

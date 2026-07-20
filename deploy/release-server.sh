@@ -219,6 +219,7 @@ fi
 
 if [[ -n "$mail_settings" ]]; then
     while IFS='=' read -r key value; do
+        value=${value%$'\r'}
         [[ -z "$key" ]] && continue
         case "$key" in
             SMTP_HOST|SMTP_PORT|SMTP_USERNAME|SMTP_PASSWORD|SMTP_FROM|SMTP_USE_TLS|NOTIFICATION_EMAIL_DRY_RUN|NOTIFICATION_EMAIL_REDIRECT)
