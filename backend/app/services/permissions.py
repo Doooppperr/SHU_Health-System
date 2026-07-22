@@ -28,21 +28,20 @@ def get_current_user() -> User | None:
 
 def role_error(user: User | None, *allowed_roles: str):
     if user is None:
-        return {"message": "user not found"}, 404
+        return {"message": "账号不存在或已不可用"}, 404
     if user.role not in allowed_roles:
         return {
-            "message": "permission denied",
-            "required_roles": list(allowed_roles),
+            "message": "当前账号没有执行此操作的权限",
         }, 403
     if not user.is_active:
-        return {"message": "account is inactive"}, 403
+        return {"message": "该账号已停用，请联系管理员"}, 403
     if user.role == ROLE_INSTITUTION_ADMIN and (
         user.managed_institution is None
         or not user.managed_institution.is_active
         or user.managed_institution.organization is None
         or not user.managed_institution.organization.is_active
     ):
-        return {"message": "managed institution is inactive"}, 403
+        return {"message": "该账号所属分院已停用"}, 403
     return None
 
 

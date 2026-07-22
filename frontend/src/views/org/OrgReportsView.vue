@@ -11,7 +11,7 @@
 
     <section v-if="!['history','shared'].includes(view)" class="report-toolbar">
       <div><strong>{{ currentTab.title }}</strong><small>{{ currentTab.description }}</small></div>
-      <el-select v-model="status" clearable placeholder="筛选预约状态" @change="load"><el-option v-for="item in appointmentStatuses" :key="item.value" :label="item.label" :value="item.value"/></el-select>
+      <el-select v-if="view==='all'" v-model="status" clearable placeholder="筛选预约状态" @change="load"><el-option v-for="item in appointmentStatuses" :key="item.value" :label="item.label" :value="item.value"/></el-select>
     </section>
 
     <section v-if="!['history','shared'].includes(view)" class="appointment-card-list" v-loading="loading">
@@ -96,26 +96,23 @@ const appointmentLabel=(value)=>appointmentStatuses.find((item)=>item.value===va
 const appointmentType=(value)=>({fulfilled:"success",invalidated:"danger",cancelled:"info",awaiting_report:"warning"}[value]||"");
 const reportLabel=(value)=>({draft:"待完善",locked:"待提交",published:"已交付"}[value]||"尚未创建");
 const reportType=(value)=>({draft:"warning",locked:"primary",published:"success"}[value]||"info");
-const items=ref([]),archivedReports=ref([]),sharedReports=ref([]),loading=ref(false),status=ref(""),view=ref(["today","archive","all","history","shared"].includes(route.query.view)?route.query.view:"today"),limited=ref(false),dailyLimit=ref(20),capacitySaving=ref(false),capacityVisible=ref(false),ocrVisible=ref(false),ocrFile=ref(null),ocrLoading=ref(false),selectedAppointment=ref(null),detailVisible=ref(false),current=ref(null),indicators=ref([]),assetFile=ref(null);
+const items=ref([]),archivedReports=ref([]),sharedReports=ref([]),loading=ref(false),status=ref(""),view=ref(["today","archive","all","history","shared"].includes(route.query.view)?route.query.view:"today"),tabCounts=reactive({today:0,archive:0,all:0}),limited=ref(false),dailyLimit=ref(20),capacitySaving=ref(false),capacityVisible=ref(false),ocrVisible=ref(false),ocrFile=ref(null),ocrLoading=ref(false),selectedAppointment=ref(null),detailVisible=ref(false),current=ref(null),indicators=ref([]),assetFile=ref(null);
 const indicatorForm=reactive({indicator_dict_id:null,value:""}),textForm=reactive({health_domain_id:null,title:"",body:""}),assetForm=reactive({health_domain_id:null});
 const allowedDomains=computed(()=>current.value?.package_version?.domains||[]);
 const allowedIndicators=computed(()=>{const ids=new Set(allowedDomains.value.map((x)=>x.id));return indicators.value.filter((x)=>(x.domains||[]).some((domain)=>ids.has(domain.id)));});
-const counts=computed(()=>Object.fromEntries(appointmentStatuses.map(({value})=>[value,items.value.filter((item)=>item.status===value).length])));
-const now=new Date();
-const todayString=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
-const visibleAppointments=computed(()=>{let result=items.value;if(view.value==="today")result=result.filter((item)=>item.appointment_date===todayString&&item.status==="unfulfilled");if(view.value==="archive")result=result.filter((item)=>item.status==="awaiting_report");return result;});
-const tabs=computed(()=>[{value:"today",label:"今日接待",count:items.value.filter((item)=>item.appointment_date===todayString&&item.status==="unfulfilled").length},{value:"archive",label:"待归档",count:counts.value.awaiting_report||0},{value:"all",label:"全部预约",count:items.value.length},{value:"history",label:"本院归档",count:archivedReports.value.length},{value:"shared",label:"机构共享档案",count:sharedReports.value.length}]);
+const visibleAppointments=computed(()=>items.value);
+const tabs=computed(()=>[{value:"today",label:"今日接待",count:tabCounts.today},{value:"archive",label:"待归档",count:tabCounts.archive},{value:"all",label:"全部预约",count:tabCounts.all},{value:"history",label:"本院归档",count:archivedReports.value.length},{value:"shared",label:"机构共享档案",count:sharedReports.value.length}]);
 const displayedReports=computed(()=>view.value==="shared"?sharedReports.value:archivedReports.value);
 const tabCopy={today:{title:"今天需要接待的受检者",description:"核对身份并确认到检后，开始本次体检流程。",empty:"今天暂无待接待预约"},archive:{title:"等待完善与归档",description:"补充检查结果、文字结论和附件，复核后正式交付。",empty:"当前没有待归档任务"},all:{title:"全部预约进度",description:"查看本机构所有预约及其当前服务状态。",empty:"暂无预约记录"}};
 const currentTab=computed(()=>tabCopy[view.value]||tabCopy.all);
 const productionStep=computed(()=>current.value?.status==="published"?4:current.value?.status==="locked"?3:Math.min(2,[(current.value?.indicators||[]).length,(current.value?.text_results||[]).length,(current.value?.assets||[]).length].filter(Boolean).length));
 const finalGuidance=computed(()=>current.value?.status==="draft"?"确认结果、结论和附件无误后锁定。锁定后将不能继续修改。":current.value?.status==="locked"?"内容已锁定。提交后将永久归档并向用户交付。":"本份健康数据已正式交付，内容不可修改或撤下。");
 
-function formatDay(value){return String(value||"").slice(-2)||"—";} function formatMonth(value){const month=String(value||"").slice(5,7);return month?`${Number(month)} 月`:"预约";}
+function dateParts(value){const match=String(value||"").match(/^(\d{4})-(\d{2})-(\d{2})/);return match?{day:match[3],month:`${Number(match[2])} 月`}:{day:"—",month:"日期待核对"};} function formatDay(value){return dateParts(value).day;} function formatMonth(value){return dateParts(value).month;}
 function reportProgress(item){return item.report_status?`健康数据：${reportLabel(item.report_status)}`:"尚未建立健康数据";}
 function nextActionText(item){if(item.status==="unfulfilled")return"核对受检者并确认到检";if(item.status==="awaiting_report"&&!item.report_id)return"建立并录入本次检查结果";if(item.report_status==="draft")return"继续完善并复核检查结果";if(item.report_status==="locked")return"提交正式归档";if(item.status==="fulfilled")return"本次服务已完成";return"无需继续处理";}
-function selectView(value){view.value=value;status.value="";router.replace({query:{...route.query,view:value}});}
-async function load(){loading.value=true;try{const [appointmentResponse,reportResponse,sharedResponse]=await Promise.all([fetchOrgAppointments(status.value?{status:status.value}:{}),fetchOrgReports({status:"published",scope:"branch"}),fetchOrgReports({scope:"organization"})]);items.value=appointmentResponse.data.items||[];archivedReports.value=reportResponse.data.items||[];sharedReports.value=(sharedResponse.data.items||[]).filter((item)=>item.access_mode==="cross_branch_read_only");}catch(error){ElMessage.error(error?.response?.data?.message||"体检任务加载失败");}finally{loading.value=false;}}
+async function selectView(value){view.value=value;status.value="";await router.replace({query:{...route.query,view:value}});await load();}
+async function load(){loading.value=true;try{const appointmentParams={view:view.value};if(view.value==="all"&&status.value)appointmentParams.status=status.value;const [appointmentResponse,reportResponse,sharedResponse]=await Promise.all([fetchOrgAppointments(appointmentParams),fetchOrgReports({status:"published",scope:"branch"}),fetchOrgReports({scope:"organization"})]);items.value=appointmentResponse.data.items||[];Object.assign(tabCounts,appointmentResponse.data.tab_counts||{});archivedReports.value=reportResponse.data.items||[];sharedReports.value=(sharedResponse.data.items||[]).filter((item)=>item.access_mode==="cross_branch_read_only");}catch(error){ElMessage.error(error?.response?.data?.message||"体检任务加载失败");}finally{loading.value=false;}}
 async function loadCapacity(){try{const{data}=await fetchOrgAppointmentCapacity();limited.value=!data.unlimited;if(data.daily_appointment_limit)dailyLimit.value=data.daily_appointment_limit;}catch{ElMessage.error("接待能力加载失败");}}
 async function saveCapacity(){capacitySaving.value=true;try{await updateOrgAppointmentCapacity(limited.value?dailyLimit.value:null);ElMessage.success(limited.value?`每日接待能力已设为 ${dailyLimit.value} 人`:"已设为不限人数");capacityVisible.value=false;}catch(error){ElMessage.error(error?.response?.data?.message||"保存失败");}finally{capacitySaving.value=false;}}
 async function attend(item){try{await ElMessageBox.confirm("请确认已经核对受检者身份且本人已到检。确认后用户不能再取消本次预约。","确认到检",{type:"warning",confirmButtonText:"已核对，确认到检"});await attendOrgAppointment(item.id);ElMessage.success("已确认到检，可以开始录入检查结果");await load();}catch(error){if(error!=="cancel"&&error!=="close")ElMessage.error(error?.response?.data?.message||"操作失败");}}

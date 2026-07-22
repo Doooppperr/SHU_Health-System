@@ -27,3 +27,19 @@ export function refresh(token) {
 export function getMe() {
   return http.get("/users/me");
 }
+
+export function requestPasswordResetCode(payload) {
+  return http.post("/auth/password-reset/code", payload);
+}
+
+export function confirmPasswordReset(payload) {
+  return http.post("/auth/password-reset/confirm", payload);
+}
+
+export function requestPasswordChangeCode() {
+  return http.post("/auth/password-change/code");
+}
+
+export function confirmPasswordChange(payload) {
+  return http.post("/auth/password-change/confirm", payload);
+}

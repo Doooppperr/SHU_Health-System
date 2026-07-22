@@ -29,6 +29,7 @@ from app.services.permissions import ROLE_INSTITUTION_ADMIN, roles_required
 from app.services.package_reviews import create_change_request
 from app.services.record_files import delete_report_urls
 from app.services.reports import find_subject_user, submit_report
+from app.services.dates import calendar_date_iso
 from app.services.domain_rules import (
     DomainAdmissionError, admit_indicator, report_allowed_domain_ids,
     validate_report_domains,
@@ -176,7 +177,7 @@ def dashboard():
     ).order_by(Appointment.appointment_date, Appointment.id).limit(8).all()
     tasks = [{
         "id": row.id,
-        "appointment_date": row.appointment_date.isoformat(),
+        "appointment_date": calendar_date_iso(row.appointment_date),
         "subject_name": row.user_name_snapshot,
         "package_name": row.package_name_snapshot,
         "status": row.status,
@@ -378,9 +379,21 @@ def withdraw_package_change_request(request_id):
 def list_appointments():
     institution, error = managed_institution()
     if error: return error
-    query = Appointment.query.filter_by(institution_id=institution.id)
+    base = Appointment.query.filter_by(institution_id=institution.id)
+    business_today = datetime.now(BUSINESS_TZ).date()
+    tab_counts = {
+        "today": base.filter_by(appointment_date=business_today, status="unfulfilled").count(),
+        "archive": base.filter_by(status="awaiting_report").count(),
+        "all": base.count(),
+    }
+    view = (request.args.get("view") or "all").strip()
+    query = base
+    if view == "today":
+        query = query.filter_by(appointment_date=business_today, status="unfulfilled")
+    elif view == "archive":
+        query = query.filter_by(status="awaiting_report")
     status = (request.args.get("status") or "").strip()
-    if status: query = query.filter_by(status=status)
+    if view == "all" and status: query = query.filter_by(status=status)
     day = parse_date(request.args.get("appointment_date")) if request.args.get("appointment_date") else None
     if day: query = query.filter_by(appointment_date=day)
     page = max(request.args.get("page", 1, type=int) or 1, 1); size = min(max(request.args.get("page_size", 30, type=int) or 30, 1), 100)
@@ -393,7 +406,7 @@ def list_appointments():
                    "booked": active, "remaining": None if institution.daily_appointment_limit is None else max(institution.daily_appointment_limit - active, 0),
                    "attended": all_day.filter(Appointment.status.in_(("awaiting_report", "fulfilled"))).count(),
                    "waitlist_subscriptions": WaitlistSubscription.query.filter_by(institution_id=institution.id, appointment_date=day, status="active").count()}
-    return {"items": [item.to_dict(include_user=True) for item in rows], "summary": summary,
+    return {"items": [item.to_dict(include_user=True) for item in rows], "summary": summary, "tab_counts": tab_counts,
             "pagination": {"page": page, "page_size": size, "total": total, "pages": (total + size - 1) // size}}, 200
 
 

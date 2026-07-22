@@ -1,10 +1,12 @@
-from flask import request
+from datetime import datetime, timezone
+
+from flask import g, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from app.comments import comments_bp
 from app.extensions import db
-from app.models import Comment, Institution, InstitutionReport, User
-from app.services.permissions import ROLE_USER, role_error
+from app.models import Comment, CommentReply, Institution, InstitutionReport, User
+from app.services.permissions import ROLE_ADMIN, ROLE_INSTITUTION_ADMIN, ROLE_USER, role_error, roles_required
 
 
 def _current_user():
@@ -39,9 +41,9 @@ def _normalize_content(raw_value):
 
 def _require_admin(user: User):
     if user is None:
-        return {"message": "user not found"}, 404
+        return {"message": "账号不存在或已不可用"}, 404
     if user.role != "admin":
-        return {"message": "admin permission required"}, 403
+        return {"message": "只有系统管理员可以执行此操作"}, 403
     return None, None
 
 
@@ -88,6 +90,76 @@ def list_my_comments():
     return {"items": [item.to_dict() for item in items]}, 200
 
 
+@comments_bp.get("/mine/unread-replies")
+@roles_required(ROLE_USER)
+def unread_reply_count():
+    count = db.session.query(CommentReply.id).join(Comment).filter(
+        Comment.user_id == g.current_user.id,
+        CommentReply.status == "approved",
+        CommentReply.user_read_at.is_(None),
+    ).count()
+    return {"count": count}, 200
+
+
+@comments_bp.post("/mine/replies/read")
+@roles_required(ROLE_USER)
+def mark_replies_read():
+    now = datetime.now(timezone.utc)
+    rows = db.session.query(CommentReply).join(Comment).filter(
+        Comment.user_id == g.current_user.id,
+        CommentReply.status == "approved",
+        CommentReply.user_read_at.is_(None),
+    ).all()
+    for row in rows:
+        row.user_read_at = now
+    db.session.commit()
+    return {"message": "机构回复已标记为已读", "updated": len(rows)}, 200
+
+
+@comments_bp.get("/organization")
+@roles_required(ROLE_INSTITUTION_ADMIN)
+def organization_comments():
+    rows = Comment.query.filter_by(
+        institution_id=g.current_user.managed_institution_id,
+        is_visible=True,
+    ).order_by(Comment.created_at.desc(), Comment.id.desc()).all()
+    return {"items": [row.to_dict(include_unapproved_reply=True) for row in rows]}, 200
+
+
+@comments_bp.post("/<int:comment_id>/reply")
+@roles_required(ROLE_INSTITUTION_ADMIN)
+def submit_organization_reply(comment_id):
+    comment = Comment.query.filter_by(
+        id=comment_id,
+        institution_id=g.current_user.managed_institution_id,
+        is_visible=True,
+    ).first()
+    if comment is None:
+        return {"message": "未找到可回复的公开评价"}, 404
+    content = str((request.get_json(silent=True) or {}).get("content") or "").strip()
+    if not content:
+        return {"message": "请填写回复内容"}, 400
+    if len(content) > 1000:
+        return {"message": "回复内容不能超过1000个字符"}, 400
+    reply = comment.reply
+    if reply and reply.status in {"pending", "approved"}:
+        message = "该回复正在等待管理员审核" if reply.status == "pending" else "该评价已经有审核通过的机构回复"
+        return {"message": message}, 409
+    if reply is None:
+        reply = CommentReply(comment_id=comment.id, institution_id=comment.institution_id)
+        db.session.add(reply)
+    reply.content = content
+    reply.status = "pending"
+    reply.submitted_by_user_id = g.current_user.id
+    reply.submitted_at = datetime.now(timezone.utc)
+    reply.reviewed_by_user_id = None
+    reply.reviewed_at = None
+    reply.review_note = None
+    reply.user_read_at = None
+    db.session.commit()
+    return {"item": reply.to_dict(), "message": "机构回复已提交，等待管理员审核"}, 201
+
+
 @comments_bp.post("")
 @jwt_required()
 def create_comment():
@@ -102,20 +174,20 @@ def create_comment():
     rating = _parse_optional_int(payload.get("rating"))
 
     if institution_id is None:
-        return {"message": "institution_id is required"}, 400
+        return {"message": "请选择要评价的体检机构"}, 400
 
     institution = db.session.get(Institution, institution_id)
     if institution is None or not institution.is_active:
-        return {"message": "institution not found"}, 404
+        return {"message": "没有找到可评价的体检机构"}, 404
 
     if not content:
-        return {"message": "content is required"}, 400
+        return {"message": "请填写评价内容"}, 400
 
     if len(content) > 1000:
-        return {"message": "content is too long"}, 400
+        return {"message": "评价内容不能超过1000个字符"}, 400
 
     if rating is None or rating < 1 or rating > 5:
-        return {"message": "rating must be between 1 and 5"}, 400
+        return {"message": "请选择1至5星评分"}, 400
 
     uploaded_record = InstitutionReport.query.filter_by(
         matched_user_id=user.id,
@@ -125,7 +197,7 @@ def create_comment():
     if uploaded_record is None:
         return {
             "code": "comment_requires_record",
-            "message": "a published institution report is required before commenting",
+            "message": "在该机构完成体检并收到正式归档结果后才能评价",
         }, 403
 
     comment = Comment(
@@ -138,7 +210,7 @@ def create_comment():
     db.session.add(comment)
     db.session.commit()
 
-    return {"item": comment.to_dict(), "message": "comment submitted for moderation"}, 201
+    return {"item": comment.to_dict(), "message": "评价已提交，等待管理员审核"}, 201
 
 
 @comments_bp.get("/moderation")
@@ -155,7 +227,41 @@ def list_comments_for_moderation():
         query = query.filter_by(institution_id=institution_id)
 
     items = query.all()
-    return {"items": [item.to_dict() for item in items]}, 200
+    return {"items": [item.to_dict(include_unapproved_reply=True) for item in items]}, 200
+
+
+@comments_bp.post("/replies/<int:reply_id>/approve")
+@roles_required(ROLE_ADMIN)
+def approve_reply(reply_id):
+    reply = db.session.get(CommentReply, reply_id)
+    if reply is None:
+        return {"message": "未找到机构回复"}, 404
+    if reply.status != "pending":
+        return {"message": "只有待审核的机构回复可以通过"}, 409
+    reply.status = "approved"
+    reply.reviewed_by_user_id = g.current_user.id
+    reply.reviewed_at = datetime.now(timezone.utc)
+    reply.review_note = None
+    reply.user_read_at = None
+    db.session.commit()
+    return {"item": reply.to_dict(), "message": "机构回复已审核通过"}, 200
+
+
+@comments_bp.post("/replies/<int:reply_id>/reject")
+@roles_required(ROLE_ADMIN)
+def reject_reply(reply_id):
+    reply = db.session.get(CommentReply, reply_id)
+    if reply is None:
+        return {"message": "未找到机构回复"}, 404
+    if reply.status != "pending":
+        return {"message": "只有待审核的机构回复可以驳回"}, 409
+    note = str((request.get_json(silent=True) or {}).get("review_note") or "").strip()
+    reply.status = "rejected"
+    reply.reviewed_by_user_id = g.current_user.id
+    reply.reviewed_at = datetime.now(timezone.utc)
+    reply.review_note = note or "回复内容未通过审核，请修改后重新提交"
+    db.session.commit()
+    return {"item": reply.to_dict(), "message": "机构回复已驳回"}, 200
 
 
 @comments_bp.put("/<int:comment_id>/visibility")
@@ -230,8 +336,8 @@ def delete_comment(comment_id: int):
         return {"message": "comment not found"}, 404
 
     if not _is_admin(user) and (user.role != ROLE_USER or comment.user_id != user.id):
-        return {"message": "permission denied"}, 403
+        return {"message": "无权删除该评价"}, 403
 
     db.session.delete(comment)
     db.session.commit()
-    return {"message": "comment deleted"}, 200
+    return {"message": "评价已删除"}, 200

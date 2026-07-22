@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from app.extensions import db
+from app.services.dates import calendar_date_iso
 
 
 class Institution(db.Model):
@@ -213,7 +214,7 @@ class Appointment(db.Model):
             "package_version_id": self.package_version_id,
             "booking_group_id": self.booking_group_id,
             "booked_by_user_id": self.booked_by_user_id,
-            "appointment_date": self.appointment_date.isoformat(),
+            "appointment_date": calendar_date_iso(self.appointment_date),
             "status": self.status,
             "package_name": self.package_name_snapshot,
             "package_price": float(self.package_price_snapshot),
@@ -274,6 +275,21 @@ class PackageChangeRequest(db.Model):
     reviewer = db.relationship("User", foreign_keys=[reviewed_by_user_id])
 
     def to_dict(self):
+        from app.models.v7 import HealthDomain
+
+        def details(data):
+            if not data:
+                return None
+            value = dict(data)
+            ids = value.pop("domain_ids", []) or []
+            domains = HealthDomain.query.filter(HealthDomain.id.in_(ids)).all() if ids else []
+            by_id = {row.id: row.name for row in domains}
+            value["health_domains"] = [by_id[item] for item in ids if item in by_id]
+            value["package_type_label"] = {"special": "专项套餐", "combined": "组合套餐"}.get(value.get("package_type"), "体检套餐")
+            value["gender_scope_label"] = {"all": "不限性别", "male": "男性", "female": "女性", "female_all": "女性人群"}.get(value.get("gender_scope"), "不限性别")
+            value["status_label"] = "启用" if value.get("is_active", True) else "停用"
+            return value
+
         return {
             "id": self.id,
             "institution_id": self.institution_id,
@@ -285,9 +301,11 @@ class PackageChangeRequest(db.Model):
             "package_id": self.package_id,
             "package_name": (self.proposed_data or {}).get("name") or (self.before_data or {}).get("name"),
             "action": self.action,
+            "action_label": {"create": "新增套餐", "update": "修改套餐", "deactivate": "下架套餐", "reactivate": "恢复套餐"}.get(self.action, "套餐变更"),
             "status": self.status,
-            "before_data": self.before_data,
-            "proposed_data": self.proposed_data,
+            "status_label": {"pending": "待审核", "approved": "已通过", "rejected": "已驳回", "withdrawn": "已撤回"}.get(self.status, "处理中"),
+            "before_details": details(self.before_data),
+            "proposed_details": details(self.proposed_data),
             "requester": self.requester.username if self.requester else None,
             "reviewer": self.reviewer.username if self.reviewer else None,
             "review_note": self.review_note,

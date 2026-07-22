@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from app.extensions import db
+from app.services.dates import calendar_date_iso
 
 
 def utc_now():
@@ -111,7 +112,7 @@ class BookingGroup(db.Model):
     def to_dict(self, include_appointments=True):
         data = {"id": self.id, "group_code": self.group_code, "booked_by_user_id": self.booked_by_user_id,
                 "institution_id": self.institution_id, "package_id": self.package_id,
-                "package_version_id": self.package_version_id, "appointment_date": self.appointment_date.isoformat(),
+                "package_version_id": self.package_version_id, "appointment_date": calendar_date_iso(self.appointment_date),
                 "party_size": self.party_size, "package_name": self.package_name_snapshot,
                 "package_price": float(self.package_price_snapshot), "domains": self.domain_snapshot or [],
                 "booking_notice": self.booking_notice_snapshot,
@@ -173,7 +174,7 @@ class WaitlistSubscription(db.Model):
 
     def to_dict(self):
         return {"id": self.id, "institution_id": self.institution_id, "package_id": self.package_id,
-                "appointment_date": self.appointment_date.isoformat(), "party_size": self.party_size,
+                "appointment_date": calendar_date_iso(self.appointment_date), "party_size": self.party_size,
                 "notification_email": self.notification_email, "status": self.status,
                 "participants": [row.to_dict() for row in self.participants],
                 "created_at": self.created_at.isoformat() if self.created_at else None}

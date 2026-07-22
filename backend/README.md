@@ -1,13 +1,13 @@
 # 康康健健 HealthDoc 后端
 
-Flask 后端负责认证与三角色授权、机构主体/分院协作、领域化体检数据、多人预约、空位提醒、私有附件、OCR 和健康 AI。本地使用 SQLite schema v8；服务器通过 `DATABASE_URL` 连接 GaussDB/openGauss，并使用 Alembic 增量迁移。
+Flask 后端负责认证与三角色授权、账号邮件验证、机构主体/分院协作、领域化体检数据、多人预约、评价回复、空位提醒、私有附件、OCR 和健康 AI。本地使用 SQLite schema v9；服务器通过 `DATABASE_URL` 连接 GaussDB/openGauss，并使用 Alembic 增量迁移。
 
 ## 1.0—3.0 后端演进
 
 - 1.0 建立 Flask API、JWT 三角色授权、机构/套餐、基础预约和健康记录。
 - 2.0 增加自主测量、报告草稿/锁定/归档、时间线、趋势、亲友授权和 AI/OCR 权限链。
 - 3.0 引入健康领域、套餐版本、预约组、容量候补、通知 outbox、图文报告；schema v8 进一步增加机构主体、分院和跨院访问审计。
-- 当前只维护 schema v8 的统一模型和接口；旧地址仅在有明确兼容价值时保留，旧数据库通过迁移脚本升级。
+- 当前只维护 schema v9 的统一模型和接口；旧地址仅在有明确兼容价值时保留，旧数据库通过迁移脚本升级。
 
 ## 环境与安装
 
@@ -29,7 +29,7 @@ if (-not (Test-Path .env)) {
 
 根目录的 `scripts/start-full-dev.ps1` 和 `scripts/start-full-prod.ps1` 会在后端就绪后自动启动隐藏的常驻 worker，每 5 秒处理一次 Outbox，并在前端命令退出时停止。单独运行可使用 `scripts/start-notification-worker.ps1`，或在后端目录执行 `python scripts/notification_worker.py --watch --interval-seconds 5`。条件更新保证误开两个 worker 时同一条通知只会被一个进程领取；发送前会把 Outbox 载荷转换为连续的中文业务文本，不会把 JSON 原文发给用户。
 
-## 数据库与 schema v8
+## 数据库与 schema v9
 
 默认数据库为 `instance/health_system.db`。SQLite 连接启用外键；`PRAGMA user_version=8` 标识当前结构。新空库会直接创建 v8，v4–v7 使用升级脚本全量保留迁移；生产 openGauss/GaussDB 使用 `migrations/versions/20260720_schema_v8.py`，其下修订为 schema v7。
 

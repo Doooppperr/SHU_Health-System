@@ -75,6 +75,7 @@
             <article v-for="comment in comments" :key="comment.id" class="institution-review-card">
               <header><span class="institution-review-card__avatar">{{ (comment.user?.username || "用").slice(0, 1).toUpperCase() }}</span><div><strong>{{ comment.user?.username || "用户" }}</strong><el-rate :model-value="comment.rating" disabled /></div><time>{{ formatDate(comment.created_at) }}</time></header>
               <p>{{ comment.content }}</p>
+              <div v-if="comment.reply" class="institution-review-reply"><strong>机构回复</strong><p>{{ comment.reply.content }}</p></div>
             </article>
             <el-empty v-if="!comments.length" description="还没有公开评价" :image-size="80" />
           </div>

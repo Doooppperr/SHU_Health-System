@@ -55,6 +55,7 @@ class User(db.Model):
     allergy_history = db.Column(db.Text, nullable=True)
     medical_history = db.Column(db.Text, nullable=True)
     is_active = db.Column(db.Boolean, nullable=False, default=True, server_default=db.true())
+    token_version = db.Column(db.Integer, nullable=False, default=0, server_default="0")
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utc_now)
 
     managed_institution = db.relationship(

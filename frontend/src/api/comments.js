@@ -29,3 +29,27 @@ export function updateComment(commentId, payload) {
 export function deleteComment(commentId) {
   return http.delete(`/comments/${commentId}`);
 }
+
+export function fetchOrganizationComments() {
+  return http.get("/comments/organization");
+}
+
+export function submitOrganizationReply(commentId, content) {
+  return http.post(`/comments/${commentId}/reply`, { content });
+}
+
+export function approveCommentReply(replyId) {
+  return http.post(`/comments/replies/${replyId}/approve`);
+}
+
+export function rejectCommentReply(replyId, reviewNote) {
+  return http.post(`/comments/replies/${replyId}/reject`, { review_note: reviewNote });
+}
+
+export function fetchUnreadCommentReplyCount() {
+  return http.get("/comments/mine/unread-replies");
+}
+
+export function markCommentRepliesRead() {
+  return http.post("/comments/mine/replies/read");
+}

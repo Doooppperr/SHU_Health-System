@@ -83,6 +83,5 @@ def test_health_trends_return_dates_and_explainable_reference_ranges(client):
     entries = response.get_json()["series_by_indicator"]
     assert entries
     for entry in entries:
-        for track in entry["series"]:
-            assert all(len(point["date"]) == 10 and point["date"][4] == "-" for point in track["points"])
-            assert {"kind", "label", "context", "varies"} <= set(track["reference"])
+        assert all(len(point["date"]) == 10 and point["date"][4] == "-" for point in entry["points"])
+        assert {"kind", "label", "context", "varies"} <= set(entry["reference"])

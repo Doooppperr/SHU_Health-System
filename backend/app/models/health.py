@@ -4,6 +4,7 @@ from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import synonym
 
 from app.extensions import db
+from app.services.dates import calendar_date_iso
 
 
 def utc_now():
@@ -106,7 +107,7 @@ class InstitutionReport(db.Model):
             "package_id": self.package_id,
             "package_version_id": self.package_version_id,
             "appointment_id": self.appointment_id,
-            "exam_date": self.exam_date.isoformat(),
+            "exam_date": calendar_date_iso(self.exam_date),
             "status": self.status,
             "subject_name_snapshot": self.subject_name_snapshot,
             "created_by_username_snapshot": self.created_by_username_snapshot,

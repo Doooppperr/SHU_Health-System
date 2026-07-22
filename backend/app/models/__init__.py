@@ -1,4 +1,5 @@
-from .comment import Comment
+from .account_security import PasswordVerificationChallenge
+from .comment import Comment, CommentReply
 from .friend import FriendRelation
 from .health import InstitutionReport, ReportIndicator, SelfMeasurement
 from .indicator import IndicatorCategory, IndicatorDict
@@ -21,7 +22,7 @@ HealthRecord = InstitutionReport
 HealthIndicator = ReportIndicator
 
 __all__ = [
-    "User", "Comment", "FriendRelation", "Organization", "Institution", "InstitutionImage",
+    "User", "Comment", "CommentReply", "PasswordVerificationChallenge", "FriendRelation", "Organization", "Institution", "InstitutionImage",
     "InstitutionInvite", "Package", "Appointment", "PackageChangeRequest", "IndicatorCategory", "IndicatorDict",
     "SelfMeasurement", "InstitutionReport", "ReportIndicator",
     "HealthDomain", "IndicatorDomainLink", "PackageVersion", "PackageVersionDomain",

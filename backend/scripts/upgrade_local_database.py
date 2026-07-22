@@ -1,4 +1,4 @@
-"""Upgrade the local SQLite database to HealthDoc schema v8.
+"""Upgrade the local SQLite database to HealthDoc schema v9.
 
 The v6-to-v7 path preserves all current business data while adding health
 domains, package versions, booking groups, waitlists and private assets. Older
@@ -25,7 +25,7 @@ from sqlalchemy import create_engine
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_DATABASE = BACKEND_DIR / "instance" / "health_system.db"
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 sys.path.insert(0, str(BACKEND_DIR))
 
 from app import models as _models  # noqa: E402,F401
@@ -45,7 +45,7 @@ class SchemaReport:
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Upgrade the local SQLite database to schema v8.")
+    parser = argparse.ArgumentParser(description="Upgrade the local SQLite database to schema v9.")
     parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE)
     parser.add_argument("--check-only", action="store_true")
     return parser.parse_args()
@@ -91,7 +91,7 @@ def validate(connection):
         raise RuntimeError(f"SQLite foreign_key_check found {len(violations)} violation(s)")
     report = inspect_schema(connection)
     if not report.is_current:
-        raise RuntimeError(f"schema v8 validation failed: {report}")
+        raise RuntimeError(f"schema v9 validation failed: {report}")
 
 
 def read_admin(connection):
@@ -110,7 +110,7 @@ def read_admin(connection):
 
 def backup_path(database):
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return database.with_name(f"{database.stem}.before-schema-v8-{stamp}-{uuid.uuid4().hex[:6]}.db")
+    return database.with_name(f"{database.stem}.before-schema-v9-{stamp}-{uuid.uuid4().hex[:6]}.db")
 
 
 def prepare_v8_source(database_path):
@@ -154,7 +154,7 @@ def rebuild_database(database_path):
     if report.version in {4, 5, 6, 7, 8}:
         from scripts.migrate_sqlite_to_gaussdb import migrate
 
-        temporary = database_path.with_name(f".{database_path.stem}.v8-{uuid.uuid4().hex}.db")
+        temporary = database_path.with_name(f".{database_path.stem}.v9-{uuid.uuid4().hex}.db")
         prepared = prepare_v8_source(database_path)
         backup = backup_path(database_path)
         try:
@@ -178,7 +178,7 @@ def rebuild_database(database_path):
             prepared.unlink(missing_ok=True)
         return backup
 
-    temporary = database_path.with_name(f".{database_path.stem}.v8-{uuid.uuid4().hex}.db")
+    temporary = database_path.with_name(f".{database_path.stem}.v9-{uuid.uuid4().hex}.db")
     backup = backup_path(database_path)
     engine = create_engine(f"sqlite:///{temporary.as_posix()}")
     try:

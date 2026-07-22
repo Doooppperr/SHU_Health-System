@@ -4,7 +4,7 @@
       <div>
         <span class="user-kicker">长期变化</span>
         <h2>看看身体在一段时间里的变化</h2>
-        <p>同一指标按来源分开呈现，既能看到日常习惯，也不会把机构检查和个人测量混为一谈。</p>
+        <p>同一指标汇总个人日常测量和各机构体检结果，每天只保留一个最有效的趋势点。</p>
       </div>
       <el-button type="primary" @click="router.push({ name: 'dashboard', query: { quick: 'measurement' } })">记录新测量</el-button>
     </section>
@@ -27,6 +27,10 @@
           <span class="filter-field-label">日期范围</span>
           <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" />
         </label>
+        <label class="filter-field">
+          <span class="filter-field-label">数据来源</span>
+          <el-select v-model="filters.source"><el-option v-for="item in sourceOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select>
+        </label>
         <div class="filter-actions"><el-button type="primary" @click="apply">查看变化</el-button></div>
       </div>
     </el-card>
@@ -41,26 +45,26 @@
           <small>{{ entry.indicator.unit || "无单位" }}</small>
         </header>
 
-        <section v-for="track in entry.series" :key="track.source_key" class="trend-source-story">
+        <section class="trend-source-story">
           <div class="trend-source-story__heading">
-            <el-tag :type="track.source.type === 'self' ? 'info' : 'success'" effect="light">{{ sourceName(track.source) }}</el-tag>
+            <el-tag type="success" effect="light">{{ selectedSourceLabel }}</el-tag>
             <div>
               <span>最近一次</span>
-              <strong>{{ compact(track.summary.latest) }} <small>{{ entry.indicator.unit }}</small></strong>
+              <strong>{{ compact(entry.summary.latest) }} <small>{{ entry.indicator.unit }}</small></strong>
             </div>
             <div>
               <span>较上次</span>
-              <strong :class="changeClass(track.summary.change)">{{ changeLabel(track.summary.change) }}</strong>
+              <strong :class="changeClass(entry.summary.change)">{{ changeLabel(entry.summary.change) }}</strong>
             </div>
           </div>
 
           <div class="trend-chart-platform">
-            <HealthTrendChart :points="track.points" :reference="track.reference" :unit="entry.indicator.unit || ''" :indicator-name="entry.indicator.name" :source-name="sourceName(track.source)" />
+            <HealthTrendChart :points="entry.points" :reference="entry.reference" :unit="entry.indicator.unit || ''" :indicator-name="entry.indicator.name" :source-name="selectedSourceLabel" />
             <div class="trend-reference-note">
-              <strong>{{ track.reference?.label || "暂无统一参考范围" }}</strong>
-              <span v-if="track.reference?.low != null && track.reference?.high != null">{{ track.reference.low }}–{{ track.reference.high }} {{ entry.indicator.unit }}</span>
-              <p>{{ track.reference?.context }}</p>
-              <a v-if="track.reference?.source_url" :href="track.reference.source_url" target="_blank" rel="noopener noreferrer">{{ track.reference.source_title || "查看参考来源" }}</a>
+              <strong>{{ entry.reference?.label || "暂无统一参考范围" }}</strong>
+              <span v-if="entry.reference?.low != null && entry.reference?.high != null">{{ entry.reference.low }}–{{ entry.reference.high }} {{ entry.indicator.unit }}</span>
+              <p>{{ entry.reference?.context }}</p>
+              <a v-if="entry.reference?.source_url" :href="entry.reference.source_url" target="_blank" rel="noopener noreferrer">{{ entry.reference.source_title || "查看参考来源" }}</a>
             </div>
           </div>
         </section>
@@ -84,18 +88,7 @@
     </aside>
     </div>
 
-    <el-card v-if="assetEvents.length" shadow="never" class="user-panel trend-asset-panel">
-      <template #header><div class="user-section-heading"><div><span>检查附件</span><h3>这段时间的影像与文件</h3></div></div></template>
-      <div class="trend-asset-list">
-        <button v-for="event in assetEvents" :key="event.asset.id" type="button" @click="openAsset(event)">
-          <span class="health-asset-grid__icon">{{ event.asset.modality === "pdf" ? "PDF" : "影" }}</span>
-          <span><strong>{{ event.asset.title }}</strong><small>{{ sourceName(event.source) }} · {{ formatShortDate(event.date) }}</small></span>
-          <span aria-hidden="true">›</span>
-        </button>
-      </div>
-    </el-card>
-
-    <div v-if="!loading && !series.length && !assetEvents.length" class="user-empty-state user-empty-state--page">
+    <div v-if="!loading && !series.length" class="user-empty-state user-empty-state--page">
       <span class="user-empty-state__icon">趋</span>
       <div><strong>这个健康方向还没有足够的数据</strong><p>连续记录几次后，就能在这里看见自己的变化。</p></div>
       <el-button type="primary" plain @click="router.push({ name: 'dashboard', query: { quick: 'measurement' } })">开始记录</el-button>
@@ -104,23 +97,22 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, reactive, ref } from "vue";
-import { ElMessage } from "element-plus";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { fetchFriends } from "../api/friends";
 import { streamAiTrendAnalysis } from "../api/ai";
-import { fetchHealthAssetContent, fetchHealthDomains, fetchHealthTrends } from "../api/health";
+import { fetchHealthDomains, fetchHealthTrends } from "../api/health";
 import HealthTrendChart from "../components/HealthTrendChart.vue";
 import { useAuthStore } from "../stores/auth";
-import { buildHealthOwnerOptions } from "../utils/healthOwners";
+import { buildHealthOwnerOptions, ownerRequestParams, SELF_OWNER_VALUE } from "../utils/healthOwners";
 
 const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
 const domains = ref([]);
 const owners = ref([]);
+const sourceOptions = ref([{ value: "all", label: "全部来源" }, { value: "self", label: "个人日常测量" }, { value: "institution", label: "全部机构体检" }]);
 const series = ref([]);
-const assetEvents = ref([]);
 const loading = ref(false);
 const error = ref("");
 const dateRange = ref([]);
@@ -134,9 +126,11 @@ const analysisCache = new Map();
 let analysisController;
 let analysisTimer;
 const filters = reactive({
-  owner_id: route.query.owner_id ? Number(route.query.owner_id) : null,
+  owner_id: route.query.owner_id ? String(route.query.owner_id) : SELF_OWNER_VALUE,
   domain_id: route.query.domain_id ? Number(route.query.domain_id) : null,
+  source: typeof route.query.source === "string" ? route.query.source : "all",
 });
+const selectedSourceLabel = computed(() => sourceOptions.value.find((item) => item.value === filters.source)?.label || "全部来源");
 if (route.query.start_date && route.query.end_date) dateRange.value = [route.query.start_date, route.query.end_date];
 
 function sourceName(source) {
@@ -183,13 +177,15 @@ async function load() {
   error.value = "";
   try {
     const params = cleanParams({
-      owner_id: filters.owner_id,
+      ...ownerRequestParams(filters.owner_id),
+      source_type: filters.source.startsWith("institution") ? "institution" : filters.source,
+      institution_id: filters.source.startsWith("institution:") ? Number(filters.source.split(":")[1]) : undefined,
       start_date: dateRange.value?.[0],
       end_date: dateRange.value?.[1],
     });
     const { data } = await fetchHealthTrends(filters.domain_id, params);
     series.value = data.series_by_indicator || [];
-    assetEvents.value = data.asset_events || [];
+    sourceOptions.value = data.source_options || sourceOptions.value;
     if (trendConsent.value) scheduleTrendAnalysis();
   } catch (fetchError) {
     error.value = fetchError?.response?.data?.message || "健康趋势暂时没有加载成功，请稍后重试";
@@ -199,7 +195,9 @@ async function load() {
 }
 
 function analysisPayload() {
-  return cleanParams({ owner_id: filters.owner_id, domain_id: filters.domain_id,
+  return cleanParams({ ...ownerRequestParams(filters.owner_id), domain_id: filters.domain_id,
+    source_type: filters.source.startsWith("institution") ? "institution" : filters.source,
+    institution_id: filters.source.startsWith("institution:") ? Number(filters.source.split(":")[1]) : undefined,
     start_date: dateRange.value?.[0], end_date: dateRange.value?.[1], consent: true });
 }
 
@@ -237,6 +235,7 @@ async function runTrendAnalysis(force = false) {
 async function apply() {
   const query = cleanParams({
     ...filters,
+    owner_id: filters.owner_id === SELF_OWNER_VALUE ? undefined : filters.owner_id,
     start_date: dateRange.value?.[0],
     end_date: dateRange.value?.[1],
   });
@@ -244,26 +243,11 @@ async function apply() {
   await load();
 }
 
-async function openAsset(event) {
-  try {
-    const params = filters.owner_id ? { owner_id: filters.owner_id } : {};
-    const { data } = await fetchHealthAssetContent(event.health_data_id, event.asset.id, params);
-    const url = URL.createObjectURL(data);
-    window.open(url, "_blank", "noopener");
-    window.setTimeout(() => URL.revokeObjectURL(url), 60000);
-  } catch (assetError) {
-    ElMessage.error(assetError?.response?.data?.message || "附件暂时无法打开");
-  }
-}
-
 onMounted(async () => {
   const [domainResponse, friendResponse] = await Promise.all([fetchHealthDomains(), fetchFriends()]);
   domains.value = domainResponse.data.items || [];
   filters.domain_id ||= domains.value[0]?.id;
-  owners.value = buildHealthOwnerOptions(friendResponse.data, auth.user).map((item) => ({
-    ...item,
-    value: item.value === "self" ? null : Number(item.value),
-  }));
+  owners.value = buildHealthOwnerOptions(friendResponse.data, auth.user);
   await load();
 });
 onBeforeUnmount(() => { clearTimeout(analysisTimer); analysisController?.abort(); });

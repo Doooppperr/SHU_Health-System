@@ -1,4 +1,6 @@
 from pathlib import Path
+import re
+import os
 
 from flask import Flask, abort, jsonify, send_from_directory
 
@@ -64,6 +66,39 @@ def create_app(config_name="development"):
     def health_check():
         return {"status": "ok"}, 200
 
+    @app.after_request
+    def localize_api_messages(response):
+        """Prevent internal English validation/database text from reaching a user."""
+        if not response.is_json:
+            return response
+        payload = response.get_json(silent=True)
+        if not isinstance(payload, dict) or not isinstance(payload.get("message"), str):
+            return response
+        message = payload["message"].strip()
+        if not message or re.search(r"[\u3400-\u9fff]", message):
+            return response
+        exact = {
+            "appointment_id is required": "请选择对应的预约记录",
+            "registered user not found": "没有找到对应的已注册普通用户",
+            "registered user not found or identity does not match": "没有找到对应的已注册普通用户，或身份信息不匹配",
+            "friend relation not found": "没有找到这条亲友关系",
+            "health data not found": "没有找到该健康数据",
+            "review request not found": "没有找到该审核申请",
+        }
+        payload["message"] = exact.get(message, {
+            400: "提交内容不正确，请检查后重试",
+            401: "登录状态已失效，请重新登录",
+            403: "当前账号没有执行此操作的权限",
+            404: "没有找到请求的内容",
+            405: "当前页面不支持此操作",
+            409: "当前数据状态不允许此操作",
+            413: "上传内容超过允许的大小",
+            429: "请求过于频繁，请稍后再试",
+        }.get(response.status_code, "操作没有完成，请稍后重试"))
+        response.set_data(app.json.dumps(payload))
+        response.content_type = "application/json; charset=utf-8"
+        return response
+
     @app.get("/uploads/<path:filename>")
     def serve_upload(filename: str):
         normalized = filename.replace("\\", "/")
@@ -75,17 +110,31 @@ def create_app(config_name="development"):
         upload_dir = Path(app.config["UPLOAD_DIR"]).resolve()
         return send_from_directory(upload_dir, normalized)
 
+    @app.errorhandler(400)
+    def bad_request(_error):
+        return jsonify({"message": "请求内容不正确，请检查后重试"}), 400
+
     @app.errorhandler(404)
     def not_found(_error):
-        return jsonify({"message": "Resource not found"}), 404
+        return jsonify({"message": "没有找到请求的内容"}), 404
+
+    @app.errorhandler(405)
+    def method_not_allowed(_error):
+        return jsonify({"message": "当前页面不支持此操作"}), 405
+
+    @app.errorhandler(413)
+    def payload_too_large(_error):
+        return jsonify({"message": "上传内容超过允许的大小"}), 413
 
     @app.errorhandler(500)
     def internal_error(_error):
-        return jsonify({"message": "Internal server error"}), 500
+        app.logger.exception("Unhandled application error", exc_info=_error)
+        return jsonify({"message": "系统暂时无法完成操作，请稍后重试"}), 500
 
     with app.app_context():
         Path(app.config["UPLOAD_DIR"]).mkdir(parents=True, exist_ok=True)
-        initialize_or_validate_schema()
-        seed_core_data()
+        if os.getenv("HEALTHDOC_SCHEMA_MIGRATION") != "1":
+            initialize_or_validate_schema()
+            seed_core_data()
 
     return app

@@ -2,7 +2,7 @@ import base64
 import hashlib
 import secrets
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from flask import current_app, request
@@ -17,7 +17,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.auth import auth_bp
 from app.extensions import db
-from app.models import InstitutionInvite, User
+from app.models import InstitutionInvite, NotificationOutbox, PasswordVerificationChallenge, User
 from app.services.contact import is_valid_email, normalize_email
 
 
@@ -108,7 +108,7 @@ def _verify_captcha(challenge_id, answer):
 
 
 def _build_auth_payload(user, message):
-    claims = {"role": user.role}
+    claims = {"role": user.role, "token_version": user.token_version}
     access_token = create_access_token(identity=str(user.id), additional_claims=claims)
     refresh_token = create_refresh_token(identity=str(user.id), additional_claims=claims)
     return {
@@ -130,6 +130,102 @@ def _new_health_id() -> str:
         if User.query.filter_by(health_id=candidate).first() is None:
             return candidate
     raise RuntimeError("unable to allocate a unique health identity")
+
+
+def _request_ip_hash() -> str:
+    raw = f"{request.remote_addr or 'unknown'}:{current_app.config['JWT_SECRET_KEY']}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _aware(value):
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=timezone.utc)
+
+
+def _password_code_response(challenge_id=None, code=None):
+    payload = {
+        "message": "如果账号与邮箱信息匹配，验证码将发送到绑定邮箱，请注意查收",
+        "challenge_id": challenge_id or str(uuid4()),
+        "expires_in": 600,
+    }
+    if current_app.config.get("TESTING") and code:
+        payload["verification_code"] = code
+    return payload, 200
+
+
+def _create_password_challenge(user, purpose):
+    now = datetime.now(timezone.utc)
+    ip_hash = _request_ip_hash()
+    recent = PasswordVerificationChallenge.query.filter_by(user_id=user.id, purpose=purpose).filter(
+        PasswordVerificationChallenge.created_at >= now - timedelta(seconds=60)
+    ).first()
+    hourly_account = PasswordVerificationChallenge.query.filter_by(user_id=user.id).filter(
+        PasswordVerificationChallenge.created_at >= now - timedelta(hours=1)
+    ).count()
+    hourly_ip = PasswordVerificationChallenge.query.filter_by(request_ip_hash=ip_hash).filter(
+        PasswordVerificationChallenge.created_at >= now - timedelta(hours=1)
+    ).count()
+    if recent:
+        return recent, None
+    if hourly_account >= 5 or hourly_ip >= 5:
+        active = PasswordVerificationChallenge.query.filter_by(
+            user_id=user.id, purpose=purpose, consumed_at=None
+        ).filter(PasswordVerificationChallenge.expires_at > now).order_by(
+            PasswordVerificationChallenge.created_at.desc()
+        ).first()
+        return active, None
+
+    PasswordVerificationChallenge.query.filter_by(
+        user_id=user.id, purpose=purpose, consumed_at=None
+    ).update({"consumed_at": now}, synchronize_session=False)
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    challenge = PasswordVerificationChallenge(
+        user_id=user.id,
+        purpose=purpose,
+        email_snapshot=user.email,
+        request_ip_hash=ip_hash,
+        expires_at=now + timedelta(minutes=10),
+    )
+    challenge.set_code(code)
+    db.session.add(challenge)
+    db.session.flush()
+    db.session.add(NotificationOutbox(
+        event_type="password_verification_code",
+        idempotency_key=f"password-code:{challenge.public_id}",
+        recipient=user.email,
+        payload={
+            "challenge_id": challenge.public_id,
+            "verification_code": code,
+            "purpose": purpose,
+            "username": user.username,
+            "expires_minutes": 10,
+        },
+    ))
+    db.session.commit()
+    return challenge, code
+
+
+def _verify_password_challenge(public_id, code, purpose, *, user=None):
+    challenge = PasswordVerificationChallenge.query.filter_by(public_id=public_id, purpose=purpose).first()
+    now = datetime.now(timezone.utc)
+    if (
+        challenge is None
+        or challenge.consumed_at is not None
+        or _aware(challenge.expires_at) <= now
+        or challenge.attempt_count >= 5
+        or (user is not None and challenge.user_id != user.id)
+    ):
+        return None, ({"message": "验证码无效或已过期，请重新获取", "code": "PASSWORD_CODE_INVALID"}, 400)
+    if not challenge.check_code(str(code or "").strip()):
+        challenge.attempt_count += 1
+        db.session.commit()
+        return None, ({"message": "验证码不正确，请检查后重试", "code": "PASSWORD_CODE_INCORRECT"}, 400)
+    if normalize_email(challenge.user.email) != normalize_email(challenge.email_snapshot):
+        challenge.consumed_at = now
+        db.session.commit()
+        return None, ({"message": "绑定邮箱已经变更，请重新获取验证码", "code": "PASSWORD_EMAIL_CHANGED"}, 409)
+    return challenge, None
 
 
 @auth_bp.get("/captcha")
@@ -218,7 +314,7 @@ def register():
         db.session.rollback()
         return {"message": "注册信息冲突，请检查后重试"}, 409
 
-    return _build_auth_payload(user, "register success"), 201
+    return _build_auth_payload(user, "注册成功"), 201
 
 
 @auth_bp.post("/login")
@@ -248,7 +344,91 @@ def login():
     ):
         return {"message": "该账号所属分院已停用", "code": "INSTITUTION_INACTIVE"}, 403
 
-    return _build_auth_payload(user, "login success"), 200
+    return _build_auth_payload(user, "登录成功"), 200
+
+
+@auth_bp.post("/password-reset/code")
+def request_password_reset_code():
+    payload = request.get_json(silent=True) or {}
+    username = (payload.get("username") or "").strip()
+    email = normalize_email(payload.get("email"))
+    captcha_id = (payload.get("captcha_id") or "").strip()
+    captcha_answer = (payload.get("captcha_answer") or "").strip()
+    if not username or not email or not captcha_id or not captcha_answer:
+        return {"message": "请输入用户名、绑定邮箱和图片验证码", "code": "RESET_FIELDS_REQUIRED"}, 400
+    if not _verify_captcha(captcha_id, captcha_answer):
+        return {"message": "图片验证码不正确，请重新输入", "code": "INVALID_CAPTCHA"}, 400
+    user = User.query.filter_by(username=username).first()
+    if (
+        user is None or user.role not in {"user", "institution_admin"} or not user.is_active
+        or normalize_email(user.email) != email
+    ):
+        return _password_code_response()
+    challenge, code = _create_password_challenge(user, "reset")
+    return _password_code_response(challenge.public_id if challenge else None, code)
+
+
+@auth_bp.post("/password-reset/confirm")
+def confirm_password_reset():
+    payload = request.get_json(silent=True) or {}
+    new_password = payload.get("new_password") or ""
+    if len(new_password) < 6:
+        return {"message": "新密码至少需要6个字符", "code": "PASSWORD_TOO_SHORT"}, 400
+    challenge, error = _verify_password_challenge(
+        (payload.get("challenge_id") or "").strip(), payload.get("verification_code"), "reset"
+    )
+    if error:
+        return error
+    user = challenge.user
+    if user.role not in {"user", "institution_admin"} or not user.is_active:
+        return {"message": "账号当前不可使用，请联系管理员", "code": "ACCOUNT_UNAVAILABLE"}, 403
+    user.set_password(new_password)
+    user.token_version += 1
+    user.email_verified_at = datetime.now(timezone.utc)
+    challenge.consumed_at = datetime.now(timezone.utc)
+    db.session.commit()
+    return {"message": "密码已重置，请使用新密码登录"}, 200
+
+
+@auth_bp.post("/password-change/code")
+@jwt_required()
+def request_password_change_code():
+    user = db.session.get(User, int(get_jwt_identity()))
+    if user is None or user.role not in {"user", "institution_admin"} or not user.is_active:
+        return {"message": "账号当前不可使用", "code": "ACCOUNT_UNAVAILABLE"}, 403
+    if not user.email:
+        return {"message": "当前账号尚未绑定邮箱，请先联系管理员完善账号资料"}, 409
+    challenge, code = _create_password_challenge(user, "change")
+    if challenge is None:
+        return {"message": "验证码发送过于频繁，请稍后再试", "code": "PASSWORD_CODE_RATE_LIMITED"}, 429
+    payload, status = _password_code_response(challenge.public_id, code)
+    payload["message"] = "验证码已发送到绑定邮箱，请注意查收"
+    return payload, status
+
+
+@auth_bp.post("/password-change/confirm")
+@jwt_required()
+def confirm_password_change():
+    user = db.session.get(User, int(get_jwt_identity()))
+    payload = request.get_json(silent=True) or {}
+    new_password = payload.get("new_password") or ""
+    if user is None or user.role not in {"user", "institution_admin"}:
+        return {"message": "账号当前不可使用", "code": "ACCOUNT_UNAVAILABLE"}, 403
+    if not user.check_password(payload.get("current_password") or ""):
+        return {"message": "当前密码不正确", "code": "CURRENT_PASSWORD_INCORRECT"}, 400
+    if len(new_password) < 6:
+        return {"message": "新密码至少需要6个字符", "code": "PASSWORD_TOO_SHORT"}, 400
+    challenge, error = _verify_password_challenge(
+        (payload.get("challenge_id") or "").strip(), payload.get("verification_code"), "change", user=user
+    )
+    if error:
+        return error
+    user.set_password(new_password)
+    user.token_version += 1
+    user.email_verified_at = datetime.now(timezone.utc)
+    challenge.consumed_at = datetime.now(timezone.utc)
+    db.session.commit()
+    return {"message": "密码修改成功，请重新登录"}, 200
 
 
 @auth_bp.post("/refresh")
@@ -261,7 +441,7 @@ def refresh_token():
     if not user.is_active:
         return {"message": "该账号已停用，请联系管理员", "code": "ACCOUNT_INACTIVE"}, 403
 
-    access_token = create_access_token(identity=str(user.id), additional_claims={"role": user.role})
+    access_token = create_access_token(identity=str(user.id), additional_claims={"role": user.role, "token_version": user.token_version})
     return {"access_token": access_token}, 200
 
 

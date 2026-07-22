@@ -13,6 +13,7 @@ from app.models import (
     ReportAsset, ReportIndicator, SelfMeasurement, User,
 )
 from app.services.permissions import ROLE_ADMIN, ROLE_INSTITUTION_ADMIN, ROLE_USER, roles_required
+from app.services.dates import calendar_date_iso
 
 
 BUSINESS_TZ = ZoneInfo("Asia/Shanghai")
@@ -157,7 +158,7 @@ def health_data_list():
         domain_ids.update(row.health_domain_id for row in report.assets)
         domain_rows = HealthDomain.query.filter(HealthDomain.id.in_(domain_ids)).order_by(HealthDomain.sort_order).all() if domain_ids else []
         records.append({"health_data_id": report_key(report), "source_type": "institution",
-                        "business_date": report.exam_date.isoformat(),
+                        "business_date": calendar_date_iso(report.exam_date),
                         "source": {"id": report.institution_id, "name": report.institution.name,
                                    "branch_name": report.institution.branch_name} if report.institution else None,
                         "package": {"id": report.package_id, "name": report.package.name} if report.package else None,
@@ -182,7 +183,7 @@ def _detail_for(owner, health_data_id):
         source = {"id": report.institution_id, "name": report.institution.name,
                   "branch_name": report.institution.branch_name} if report.institution else None
         package = {"id": report.package_id, "name": report.package.name} if report.package else None
-        business_date = report.exam_date.isoformat()
+        business_date = calendar_date_iso(report.exam_date)
     elif kind == "self" and value[0] == owner.id:
         day = value[1]
         start_at, end_at = _day_bounds(day)
@@ -237,62 +238,89 @@ def health_trends(domain_id):
     owner, error = _owner()
     if error: return error
     domain = db.session.get(HealthDomain, domain_id)
-    if not domain or not domain.is_active: return {"message": "health domain not found"}, 404
+    if not domain or not domain.is_active: return {"message": "没有找到该健康方向"}, 404
     start, end, error = _date_range()
     if error: return error
+    source_type = (request.args.get("source_type") or "all").strip()
+    if source_type not in {"all", "self", "institution"}:
+        return {"message": "趋势来源筛选不正确"}, 400
     institution_id = request.args.get("institution_id", type=int)
     items = []
+    available_institutions = {}
+    available_query = db.session.query(InstitutionReport).join(ReportIndicator).filter(
+        InstitutionReport.matched_user_id == owner.id,
+        InstitutionReport.status == "published",
+        ReportIndicator.display_domain_id == domain.id,
+    )
+    if start: available_query = available_query.filter(InstitutionReport.exam_date >= start)
+    if end: available_query = available_query.filter(InstitutionReport.exam_date <= end)
+    for report in available_query.distinct().all():
+        available_institutions[report.institution_id] = {
+            "type": "institution", "id": report.institution_id,
+            "name": report.institution.name, "branch_name": report.institution.branch_name,
+        }
     links = IndicatorDomainLink.query.filter_by(health_domain_id=domain.id).order_by(
         IndicatorDomainLink.sort_order, IndicatorDomainLink.indicator_dict_id).all()
     for link in links:
-        definition = link.indicator; sources = defaultdict(list)
+        definition = link.indicator
+        daily_self = {}
+        daily_reports = defaultdict(list)
         reports = db.session.query(ReportIndicator, InstitutionReport).join(InstitutionReport).filter(
             InstitutionReport.matched_user_id == owner.id, InstitutionReport.status == "published",
             ReportIndicator.indicator_dict_id == definition.id, ReportIndicator.display_domain_id == domain.id)
         if start: reports = reports.filter(InstitutionReport.exam_date >= start)
         if end: reports = reports.filter(InstitutionReport.exam_date <= end)
         if institution_id: reports = reports.filter(InstitutionReport.institution_id == institution_id)
-        for result, report in reports.order_by(InstitutionReport.exam_date, InstitutionReport.id).all():
+        for result, report in reports.order_by(InstitutionReport.exam_date, InstitutionReport.published_at, InstitutionReport.id).all():
             try: numeric = float(result.value)
             except (TypeError, ValueError): continue
-            key = f"institution:{report.institution_id}"
-            sources[key].append({"date": report.exam_date.isoformat(), "value": numeric,
-                                 "unit": result.normalized_unit or definition.unit,
-                                 "reference": result.reference_text, "is_abnormal": result.is_abnormal,
-                                 "health_data_id": report_key(report),
-                                 "source": {"type": "institution", "id": report.institution_id,
-                                            "name": report.institution.name, "branch_name": report.institution.branch_name}})
-        if not institution_id:
+            source = {"type": "institution", "id": report.institution_id,
+                      "name": report.institution.name, "branch_name": report.institution.branch_name}
+            available_institutions[report.institution_id] = source
+            day = calendar_date_iso(report.exam_date)
+            daily_reports[day].append({"date": day, "value": numeric,
+                "unit": result.normalized_unit or definition.unit, "reference": result.reference_text,
+                "is_abnormal": result.is_abnormal, "health_data_id": report_key(report), "source": source,
+                "published_at": report.published_at.isoformat() if report.published_at else None})
+        if not institution_id and source_type in {"all", "self"}:
             measurements = SelfMeasurement.query.filter_by(user_id=owner.id, indicator_dict_id=definition.id)
             if start: measurements = measurements.filter(SelfMeasurement.measured_at >= _day_bounds(start)[0])
             if end: measurements = measurements.filter(SelfMeasurement.measured_at <= _day_bounds(end)[1])
-            daily = {}
-            for row in measurements.order_by(SelfMeasurement.measured_at, SelfMeasurement.id).all(): daily[_measurement_day(row.measured_at)] = row
-            for day, row in sorted(daily.items()):
-                sources["self"].append({"date": day.isoformat(), "value": float(row.value), "unit": definition.unit,
-                                        "measured_at": row.measured_at.isoformat(), "health_data_id": self_key(owner.id, day),
-                                        "source": {"type": "self", "id": None, "name": "个人自测"}})
-        if sources:
-            series = []
-            for key, points in sources.items():
-                previous = points[-2]["value"] if len(points) > 1 else None
-                series.append({"source_key": key, "source": points[-1]["source"], "points": points,
-                               "reference": _track_reference(owner, definition, key, points),
-                               "summary": {"latest": points[-1]["value"],
-                                           "change": points[-1]["value"] - previous if previous is not None else None,
-                                           "count": len(points)}})
-            items.append({"indicator": definition.to_dict(), "series": series})
-    assets = db.session.query(ReportAsset, InstitutionReport).join(InstitutionReport).filter(
-        InstitutionReport.matched_user_id == owner.id, InstitutionReport.status == "published",
-        ReportAsset.health_domain_id == domain.id)
-    if start: assets = assets.filter(InstitutionReport.exam_date >= start)
-    if end: assets = assets.filter(InstitutionReport.exam_date <= end)
-    if institution_id: assets = assets.filter(InstitutionReport.institution_id == institution_id)
-    asset_events = [{"date": report.exam_date.isoformat(), "health_data_id": report_key(report),
-                     "asset": asset.to_dict(report_key(report)),
-                     "source": {"type": "institution", "id": report.institution_id,
-                                "name": report.institution.name, "branch_name": report.institution.branch_name}}
-                    for asset, report in assets.order_by(InstitutionReport.exam_date, ReportAsset.sort_order).all()]
+            for row in measurements.order_by(SelfMeasurement.measured_at, SelfMeasurement.id).all():
+                day = _measurement_day(row.measured_at)
+                daily_self[day.isoformat()] = {"date": day.isoformat(), "value": float(row.value),
+                    "unit": definition.unit, "measured_at": row.measured_at.isoformat(),
+                    "health_data_id": self_key(owner.id, day),
+                    "source": {"type": "self", "id": None, "name": "个人日常测量"}}
+        points = []
+        all_days = sorted(set(daily_self) | set(daily_reports))
+        for day in all_days:
+            report_points = daily_reports.get(day, [])
+            if source_type == "self":
+                chosen = daily_self.get(day)
+            elif source_type == "institution" or institution_id:
+                chosen = report_points[-1] if report_points else None
+            else:
+                chosen = report_points[-1] if report_points else daily_self.get(day)
+            if chosen:
+                chosen = dict(chosen)
+                chosen["same_day_other_count"] = max(len(report_points) - 1, 0)
+                points.append(chosen)
+        if points:
+            previous = points[-2]["value"] if len(points) > 1 else None
+            reference_key = "self" if all(point["source"]["type"] == "self" for point in points) else "institution:mixed"
+            items.append({"indicator": definition.to_dict(), "points": points,
+                          "reference": _track_reference(owner, definition, reference_key, points),
+                          "summary": {"latest": points[-1]["value"],
+                                      "change": points[-1]["value"] - previous if previous is not None else None,
+                                      "count": len(points)}})
+    source_options = [
+        {"value": "all", "label": "全部来源"},
+        {"value": "self", "label": "个人日常测量"},
+        {"value": "institution", "label": "全部机构体检"},
+        *[{"value": f"institution:{item['id']}", "label": f"{item['name']} · {item['branch_name']}"}
+          for item in sorted(available_institutions.values(), key=lambda row: (row["name"], row["branch_name"]))],
+    ]
     return {"owner": owner.friend_identity_dict(), "domain": domain.to_dict(),
-            "series_by_indicator": items, "asset_events": asset_events,
-            "abnormal_count": sum(1 for item in items for series in item["series"] for point in series["points"] if point.get("is_abnormal"))}, 200
+            "series_by_indicator": items, "source_options": source_options,
+            "abnormal_count": sum(1 for item in items for point in item["points"] if point.get("is_abnormal"))}, 200

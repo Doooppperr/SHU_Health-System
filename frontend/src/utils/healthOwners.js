@@ -1,12 +1,11 @@
 export const SELF_OWNER_VALUE = "self";
 
 export function buildHealthOwnerOptions(payload = {}, currentUser = {}) {
-  const username = currentUser?.username ? `（${currentUser.username}）` : "";
   const options = [
     {
       value: SELF_OWNER_VALUE,
       ownerId: null,
-      label: `我本人${username}`,
+      label: "本人",
     },
   ];
   const seen = new Set();

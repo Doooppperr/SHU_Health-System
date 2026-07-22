@@ -48,7 +48,9 @@ function render() {
     const point = item?.data?.point || {};
     const originalReference = point.reference ? `<br>报告参考：${escapeHtml(point.reference)}` : "";
     const abnormal = point.is_abnormal === true ? "<br><strong>报告标记：需关注</strong>" : "";
-    return `${escapeHtml(point.date || "日期待核对")}<br>${escapeHtml(props.indicatorName)}：<strong>${escapeHtml(point.value)} ${escapeHtml(props.unit)}</strong><br>来源：${escapeHtml(props.sourceName)}${originalReference}${abnormal}`;
+    const source = point.source?.type === "self" ? "个人日常测量" : [point.source?.name, point.source?.branch_name].filter(Boolean).join(" · ") || props.sourceName;
+    const other = point.same_day_other_count ? `<br>同日另有 ${point.same_day_other_count} 条机构记录，已采用最后归档结果` : "";
+    return `${escapeHtml(point.date || "日期待核对")}<br>${escapeHtml(props.indicatorName)}：<strong>${escapeHtml(point.value)} ${escapeHtml(props.unit)}</strong><br>来源：${escapeHtml(source)}${originalReference}${abnormal}${other}`;
   };
   option.series[0].label = {
     show: true,
@@ -56,8 +58,12 @@ function render() {
     distance: appearance.careMode ? 10 : 7,
     fontSize: appearance.careMode ? 16 : 13,
     color: appearance.effectiveTheme === "dark" ? "#f5f5f7" : "#1d1d1f",
-    formatter: ({ value }) => `${Number(value).toLocaleString("zh-CN", { maximumFractionDigits: 2 })}${props.unit ? ` ${props.unit}` : ""}`,
+    formatter: ({ value, dataIndex, data }) => {
+      if (props.points.length > 8 && dataIndex !== 0 && dataIndex !== props.points.length - 1 && data?.point?.is_abnormal !== true) return "";
+      return `${Number(value).toLocaleString("zh-CN", { maximumFractionDigits: 2 })}${props.unit ? ` ${props.unit}` : ""}`;
+    },
   };
+  option.series[0].labelLayout = { hideOverlap: true, moveOverlap: "shiftY" };
   if (Number.isFinite(props.reference?.low) && Number.isFinite(props.reference?.high)) {
     option.series[0].markArea = {
       silent: true,

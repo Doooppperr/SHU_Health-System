@@ -29,7 +29,7 @@
       </el-form-item>
       <div class="measurement-form__grid">
         <el-form-item label="测量值" required>
-          <el-input-number v-model="form.value" :min="0" :precision="2" controls-position="right" style="width: 100%" />
+          <el-input-number v-model="form.value" :min="0" :precision="2" :step="0.01" controls-position="right" style="width: 100%" />
         </el-form-item>
         <el-form-item label="测量时间" required>
           <el-date-picker

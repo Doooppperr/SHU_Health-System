@@ -11,6 +11,7 @@ const adminMeta = { requiresAuth: true, roles: ["admin"], workspace: "admin" };
 const routes = [
   { path: "/", name: "public-home", component: () => import("../views/PublicHomeView.vue"), meta: { title: "康康健健 HealthDoc" } },
   { path: "/login", name: "login", component: () => import("../views/LoginView.vue"), meta: { guestOnly: true, title: "登录" } },
+  { path: "/forgot-password", name: "forgot-password", component: () => import("../views/ForgotPasswordView.vue"), meta: { guestOnly: true, title: "找回密码" } },
   { path: "/register", name: "register", component: () => import("../views/RegisterView.vue"), meta: { guestOnly: true, title: "注册" } },
   { path: "/workspace", component: WorkspaceLayout, meta: userMeta, children: [
     { path: "/dashboard", name: "dashboard", component: () => import("../views/UserDashboardView.vue"), meta: { title: "健康总览" } },
@@ -33,7 +34,8 @@ const routes = [
     { path: "dashboard", name: "org-dashboard", component: () => import("../views/org/OrgDashboardView.vue"), meta: { title: "机构运营总览" } },
     { path: "reports", name: "org-reports", component: () => import("../views/org/OrgReportsView.vue"), meta: { title: "体检管理" } },
     { path: "profile", name: "org-profile", component: () => import("../views/org/OrgProfileView.vue"), meta: { title: "机构资料" } },
-    { path: "gallery", name: "org-gallery", component: () => import("../views/org/OrgGalleryView.vue"), meta: { title: "机构相册" } },
+    { path: "gallery", name: "org-gallery", redirect: { name: "org-profile", query: { section: "gallery" } } },
+    { path: "comments", name: "org-comments", component: () => import("../views/org/OrgCommentsView.vue"), meta: { title: "用户评价" } },
     { path: "packages", name: "org-packages", component: () => import("../views/org/OrgPackagesView.vue"), meta: { title: "体检套餐" } },
     { path: "package-reviews", name: "org-package-reviews", component: () => import("../views/org/OrgPackageReviewsView.vue"), meta: { title: "信息审核" } },
   ] },

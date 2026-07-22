@@ -29,6 +29,7 @@
         >
           <span class="workspace-nav-icon">{{ item.icon }}</span>
           <span>{{ item.label }}</span>
+          <el-badge v-if="item.badge" :value="item.badge" :max="99" style="margin-left:auto" />
         </router-link>
       </nav>
 
@@ -87,6 +88,7 @@ import { useAppearanceStore } from "../stores/appearance";
 import { dashboardRouteForRole, roleLabel } from "../utils/roles";
 import AiAssistantLauncher from "../components/AiAssistantLauncher.vue";
 import AppearanceQuickControls from "../components/AppearanceQuickControls.vue";
+import { fetchUnreadCommentReplyCount } from "../api/comments";
 
 const route = useRoute();
 const router = useRouter();
@@ -98,6 +100,7 @@ const sidebarRef = ref(null);
 let lastFocusedElement = null;
 let mobileMediaQuery = null;
 let careMobileMediaQuery = null;
+const unreadReplies = ref(0);
 
 const menus = {
   user: [
@@ -114,7 +117,7 @@ const menus = {
   institution_admin: [
     { name: "org-dashboard", label: "运营总览", icon: "总" },
     { name: "org-profile", label: "机构资料", icon: "资" },
-    { name: "org-gallery", label: "机构相册", icon: "图" },
+    { name: "org-comments", label: "用户评价", icon: "评" },
     { name: "org-packages", label: "体检套餐", icon: "套" },
     { name: "org-reports", label: "体检管理", icon: "检" },
     { name: "org-package-reviews", label: "信息审核", icon: "审" },
@@ -135,7 +138,9 @@ const workspaceName = computed(() => {
   if (workspaceType.value === "institution_admin") return "机构运营后台";
   return "个人健康中心";
 });
-const menuItems = computed(() => menus[workspaceType.value] || menus.user);
+const menuItems = computed(() => (menus[workspaceType.value] || menus.user).map((item) => (
+  item.name === "my-comments" ? { ...item, badge: unreadReplies.value } : item
+)));
 const roleName = computed(() => roleLabel(authStore.user?.role));
 const userInitial = computed(() => (authStore.user?.username || "U").slice(0, 1).toUpperCase());
 const homeRoute = computed(() => dashboardRouteForRole(authStore.user?.role));
@@ -210,10 +215,15 @@ onMounted(() => {
   syncMobileViewport();
   mobileMediaQuery.addEventListener?.("change", syncMobileViewport);
   careMobileMediaQuery.addEventListener?.("change", syncMobileViewport);
+  if (authStore.user?.role === "user") fetchUnreadCommentReplyCount().then(({data}) => { unreadReplies.value = data.count || 0; }).catch(() => {});
+  window.addEventListener("healthdoc-comment-replies-read", clearUnreadReplies);
 });
+
+function clearUnreadReplies() { unreadReplies.value = 0; }
 
 onBeforeUnmount(() => {
   mobileMediaQuery?.removeEventListener?.("change", syncMobileViewport);
   careMobileMediaQuery?.removeEventListener?.("change", syncMobileViewport);
+  window.removeEventListener("healthdoc-comment-replies-read", clearUnreadReplies);
 });
 </script>

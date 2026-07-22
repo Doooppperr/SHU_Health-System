@@ -22,16 +22,26 @@
       </el-form>
     </el-card>
 
+    <AccountSecurityPanel :email="authStore.user?.email || ''" />
+
+    <section id="institution-gallery"><OrgGalleryView /></section>
+
     <el-alert title="权限说明" description="机构主体和分院归属由系统管理员维护；当前账号只能编辑自己绑定分院的公开资料。" type="info" show-icon :closable="false" />
   </div>
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from "vue";
+import { nextTick, onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
+import { useRoute } from "vue-router";
 import { fetchOrgInstitution, updateOrgInstitution } from "../../api/org";
+import AccountSecurityPanel from "../../components/AccountSecurityPanel.vue";
+import { useAuthStore } from "../../stores/auth";
+import OrgGalleryView from "./OrgGalleryView.vue";
 
 const loading = ref(false);
+const authStore = useAuthStore();
+const route = useRoute();
 const saving = ref(false);
 const errorMessage = ref("");
 const organizationName = ref("");
@@ -68,5 +78,5 @@ async function save() {
     saving.value = false;
   }
 }
-onMounted(load);
+onMounted(async()=>{await load();if(route.query.section==="gallery"){await nextTick();document.getElementById("institution-gallery")?.scrollIntoView({behavior:"smooth"});}});
 </script>

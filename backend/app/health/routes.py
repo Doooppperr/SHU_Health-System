@@ -1,5 +1,6 @@
 from collections import defaultdict
 from datetime import date, datetime, time, timezone
+from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 
 from flask import g, request
@@ -109,12 +110,15 @@ def measurement_payload(row, payload):
     if not definition or not definition.allow_self_measurement:
         return {"message": "indicator is not allowed for self measurement"}, 400
     try:
-        value = float(payload.get("value", row.value if row else None))
-    except (TypeError, ValueError):
-        return {"message": "value must be numeric"}, 400
-    if value < 0: return {"message": "value must be non-negative"}, 400
+        value = Decimal(str(payload.get("value", row.value if row else None)))
+    except (InvalidOperation, TypeError, ValueError):
+        return {"message": "请输入有效的测量数值"}, 400
+    if not value.is_finite(): return {"message": "请输入有效的测量数值"}, 400
+    if value < 0: return {"message": "测量数值不能小于0"}, 400
+    if value != value.quantize(Decimal("0.01")):
+        return {"message": "测量数值最多保留小数点后两位"}, 400
     measured_at = parse_datetime(payload.get("measured_at", row.measured_at.isoformat() if row else None))
-    if not measured_at: return {"message": "measured_at must be an ISO datetime"}, 400
+    if not measured_at: return {"message": "请选择有效的测量时间"}, 400
     if row is None: row = SelfMeasurement(user_id=g.current_user.id)
     row.indicator_dict_id = definition.id; row.value = value; row.measured_at = measured_at
     return row, None
@@ -146,10 +150,14 @@ def delete_measurement(measurement_id):
     db.session.delete(row); db.session.commit(); return {"message": "measurement deleted"}, 200
 
 
-def effective_points(owner_id, indicator_id, start_date=None, end_date=None):
+def effective_points(owner_id, indicator_id, start_date=None, end_date=None, *, source_type="all", institution_id=None, domain_id=None):
     report_query = db.session.query(ReportIndicator, InstitutionReport).join(InstitutionReport, ReportIndicator.report_id == InstitutionReport.id).filter(
         InstitutionReport.matched_user_id == owner_id, InstitutionReport.status == "published", ReportIndicator.indicator_dict_id == indicator_id
     )
+    if domain_id:
+        report_query = report_query.filter(ReportIndicator.display_domain_id == domain_id)
+    if institution_id:
+        report_query = report_query.filter(InstitutionReport.institution_id == institution_id)
     measurement_query = SelfMeasurement.query.filter_by(user_id=owner_id, indicator_dict_id=indicator_id)
     if start_date:
         report_query = report_query.filter(InstitutionReport.exam_date >= start_date)
@@ -158,10 +166,13 @@ def effective_points(owner_id, indicator_id, start_date=None, end_date=None):
         report_query = report_query.filter(InstitutionReport.exam_date <= end_date)
         measurement_query = measurement_query.filter(SelfMeasurement.measured_at <= datetime.combine(end_date, time.max, tzinfo=BUSINESS_TZ).astimezone(timezone.utc))
     points = {}
-    for row in measurement_query.order_by(SelfMeasurement.measured_at.asc(), SelfMeasurement.id.asc()).all():
-        day = measurement_business_day(row.measured_at)
-        points[day] = {"date": day.isoformat(), "value": float(row.value), "source": "self_measurement", "measurement_id": row.id, "measured_at": row.measured_at.isoformat()}
-    for indicator, report in report_query.order_by(InstitutionReport.exam_date.asc(), InstitutionReport.id.asc()).all():
+    if source_type in {"all", "self"} and not institution_id:
+        for row in measurement_query.order_by(SelfMeasurement.measured_at.asc(), SelfMeasurement.id.asc()).all():
+            day = measurement_business_day(row.measured_at)
+            points[day] = {"date": day.isoformat(), "value": float(row.value), "source": "self_measurement", "measurement_id": row.id, "measured_at": row.measured_at.isoformat()}
+    if source_type == "self":
+        return [points[key] for key in sorted(points)]
+    for indicator, report in report_query.order_by(InstitutionReport.exam_date.asc(), InstitutionReport.published_at.asc(), InstitutionReport.id.asc()).all():
         try: value = float(indicator.value)
         except (TypeError, ValueError): continue
         report_day = as_calendar_date(report.exam_date)
@@ -225,6 +236,7 @@ def _appointment_history(row):
 
 
 def _appointment_timeline_item(row, *, include_participant_name=True):
+    appointment_day = as_calendar_date(row.appointment_date)
     status_label, status_message = APPOINTMENT_TIMELINE_STATUS[row.status]
     health_data_id = (
         report_health_data_id(row.report.id)
@@ -245,8 +257,8 @@ def _appointment_timeline_item(row, *, include_participant_name=True):
         "record_type": "exam",
         "type": "appointment",
         "record_key": f"exam-{row.id}",
-        "occurred_at": datetime.combine(row.appointment_date, time.min, tzinfo=BUSINESS_TZ).isoformat(),
-        "business_date": row.appointment_date.isoformat(),
+        "occurred_at": datetime.combine(appointment_day, time.min, tzinfo=BUSINESS_TZ).isoformat(),
+        "business_date": appointment_day.isoformat(),
         "title": f"{row.package_name_snapshot or '体检服务'} · {status_label}",
         "source": {"type": "institution", **institution} if institution else None,
         "institution": institution,
@@ -391,7 +403,7 @@ def health_dashboard():
     if latest_report:
         latest_health_data = {
             "health_data_id": report_health_data_id(latest_report.id),
-            "business_date": latest_report.exam_date.isoformat(),
+            "business_date": as_calendar_date(latest_report.exam_date).isoformat(),
             "source": {"id": latest_report.institution_id, "name": latest_report.institution.name,
                        "branch_name": latest_report.institution.branch_name} if latest_report.institution else None,
             "package": {"id": latest_report.package_id, "name": latest_report.package.name} if latest_report.package else None,

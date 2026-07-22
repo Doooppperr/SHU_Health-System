@@ -82,10 +82,10 @@ def add_friend():
     relation_name = (payload.get("relation_name") or "亲友").strip()
 
     if not relation_name:
-        return {"message": "relation_name is required"}, 400
+        return {"message": "请填写与亲友的关系"}, 400
 
     if len(relation_name) > 80:
-        return {"message": "relation_name must be <= 80 characters"}, 400
+        return {"message": "关系名称不能超过80个字符"}, 400
 
     target_user = None
     if friend_user_id is not None:
@@ -93,17 +93,18 @@ def add_friend():
     elif friend_username:
         target_user = User.query.filter_by(username=friend_username).first()
     else:
-        return {"message": "friend_user_id or friend_username is required"}, 400
+        return {"message": "请输入要添加的亲友用户名"}, 400
 
     if target_user is None:
-        return {"message": "friend user not found"}, 404
+        return {"message": "没有找到该普通用户，请检查用户名"}, 404
 
     if target_user.id == user_id:
-        return {"message": "cannot add yourself as friend"}, 400
+        return {"message": "不能将自己的账号添加为亲友"}, 400
 
     existing = FriendRelation.query.filter_by(user_id=user_id, friend_user_id=target_user.id).first()
     if existing is not None:
-        return {"message": "friend relation already exists"}, 409
+        message = "该亲友已经添加并获得授权" if existing.auth_status else "该亲友已经添加，正在等待对方授权"
+        return {"message": message}, 409
 
     relation = FriendRelation(
         user_id=user_id,
@@ -126,7 +127,7 @@ def rename_relation(relation_id: int):
         return {"message": "friend relation not found"}, 404
 
     if relation.user_id != user_id:
-        return {"message": "only relation creator can rename"}, 403
+        return {"message": "只有亲友关系的添加者可以修改关系名称"}, 403
 
     payload = request.get_json(silent=True) or {}
     relation_name = (payload.get("relation_name") or "").strip()
@@ -150,12 +151,12 @@ def update_authorization(relation_id: int):
         return {"message": "friend relation not found"}, 404
 
     if relation.friend_user_id != user_id:
-        return {"message": "only friend user can update authorization"}, 403
+        return {"message": "只有被添加的亲友本人可以修改授权"}, 403
 
     payload = request.get_json(silent=True) or {}
     auth_status = _parse_bool(payload.get("auth_status"))
     if auth_status is None:
-        return {"message": "auth_status must be boolean"}, 400
+        return {"message": "授权状态不正确"}, 400
 
     relation.auth_status = auth_status
     db.session.commit()
@@ -171,11 +172,11 @@ def update_booking_authorization(relation_id: int):
     if relation is None:
         return {"message": "friend relation not found"}, 404
     if relation.friend_user_id != user_id:
-        return {"message": "only friend user can update booking authorization"}, 403
+        return {"message": "只有被添加的亲友本人可以修改代预约授权"}, 403
     payload = request.get_json(silent=True) or {}
     allowed = _parse_bool(payload.get("booking_auth_status"))
     if allowed is None:
-        return {"message": "booking_auth_status must be boolean"}, 400
+        return {"message": "代预约授权状态不正确"}, 400
     relation.booking_auth_status = allowed
     relation.booking_authorized_at = datetime.now(timezone.utc) if allowed else None
     db.session.commit()
@@ -192,4 +193,4 @@ def delete_relation(relation_id: int):
 
     db.session.delete(relation)
     db.session.commit()
-    return {"message": "friend relation deleted"}, 200
+    return {"message": "亲友关系已删除"}, 200

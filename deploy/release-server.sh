@@ -234,6 +234,49 @@ if [[ -n "$mail_settings" ]]; then
     rm -f "$mail_settings"
 fi
 
+# Every production release takes a full cold backup before any additive
+# migration. The ordinary path never imports a local/demo database.
+if [[ -z "$database_backup" ]]; then
+    backup_root="/var/backups/healthdoc/$release_id"
+    install -d -o root -g root -m 700 "$backup_root"
+    install -m 600 /etc/healthdoc/healthdoc.env "$backup_root/healthdoc.env"
+    if [[ -d /var/lib/healthdoc/uploads ]]; then
+        tar -C /var/lib/healthdoc -czf "$backup_root/uploads.tar.gz" uploads
+        chmod 600 "$backup_root/uploads.tar.gz"
+    fi
+    systemctl stop healthdoc.service
+    systemctl stop healthdoc-notifications.service 2>/dev/null || true
+    docker stop healthdoc-gaussdb >/dev/null
+    database_backup="$backup_root/opengauss.tar.gz"
+    tar -C /var/lib/healthdoc -czf "$database_backup" opengauss
+    chmod 600 "$database_backup"
+    docker start healthdoc-gaussdb >/dev/null
+    wait_for_database
+fi
+
+set -a
+# shellcheck disable=SC1091
+source "$env_file"
+set +a
+if [[ -z "${DATABASE_URL:-}" ]]; then
+    echo "DATABASE_URL is missing from the server environment file." >&2
+    restore_database_backup
+    start_current_services
+    exit 1
+fi
+if ! wait_for_database_connection || ! (
+    cd "$release/backend"
+    /opt/healthdoc/venv/bin/python scripts/migrate_schema_v9.py
+); then
+    echo "Schema v9 migration failed; restoring database and previous services." >&2
+    unset DATABASE_URL
+    restore_database_backup
+    restore_uploads_backup
+    start_current_services
+    exit 1
+fi
+unset DATABASE_URL
+
 install -d -o healthdoc -g www-data -m 750 \
     "$rag_root" "$rag_root/qdrant" "$rag_root/models" \
     "$rag_root/cache" "$rag_root/huggingface"
@@ -292,6 +335,7 @@ systemctl daemon-reload
 systemctl enable healthdoc-notifications.service >/dev/null
 systemctl restart healthdoc.service
 systemctl restart healthdoc-notifications.service
+systemctl restart apache2
 healthy=0
 for _ in $(seq 1 30); do
     if curl -fsS http://127.0.0.1:5050/api/health >/dev/null; then
@@ -300,6 +344,11 @@ for _ in $(seq 1 30); do
     fi
     sleep 1
 done
+
+if ! systemctl is-active --quiet apache2 || ! curl -fsS http://127.0.0.1/ >/dev/null; then
+    journalctl -u apache2 -n 80 --no-pager >&2 || true
+    healthy=0
+fi
 
 if ! systemctl is-active --quiet healthdoc-notifications.service; then
     journalctl -u healthdoc-notifications.service -n 80 --no-pager >&2 || true

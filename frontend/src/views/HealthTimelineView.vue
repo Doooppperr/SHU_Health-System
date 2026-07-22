@@ -14,7 +14,7 @@
       <div class="timeline-filter-grid">
         <label class="filter-field">
           <span class="filter-field-label">查看谁的记录</span>
-          <el-select v-model="filters.owner_id" clearable>
+          <el-select v-model="filters.owner_id">
             <el-option v-for="owner in owners" :key="String(owner.value)" :label="owner.label" :value="owner.value" />
           </el-select>
         </label>
@@ -115,7 +115,7 @@ import { fetchFriends } from "../api/friends";
 import { fetchTimeline } from "../api/health";
 import { fetchInstitutions } from "../api/institutions";
 import { useAuthStore } from "../stores/auth";
-import { buildHealthOwnerOptions } from "../utils/healthOwners";
+import { buildHealthOwnerOptions, ownerRequestParams, SELF_OWNER_VALUE } from "../utils/healthOwners";
 import {
   APPOINTMENT_STATUS,
   appointmentMeta,
@@ -141,7 +141,7 @@ const recordTypeOptions = [
 ];
 const filters = reactive({
   record_type: ["all", "exam", "self"].includes(route.query.record_type) ? route.query.record_type : "all",
-  owner_id: route.query.owner_id ? Number(route.query.owner_id) : null,
+  owner_id: route.query.owner_id ? String(route.query.owner_id) : SELF_OWNER_VALUE,
   institution_id: route.query.institution_id ? Number(route.query.institution_id) : null,
   status: route.query.status || null,
   page: Number(route.query.page) || 1,
@@ -163,7 +163,7 @@ function openDetail(record) {
   router.push({
     name: "health-data-detail",
     params: { id: record.detailId },
-    query: filters.owner_id ? { owner_id: filters.owner_id } : {},
+    query: ownerRequestParams(filters.owner_id),
   });
 }
 
@@ -189,7 +189,7 @@ async function load() {
   error.value = "";
   try {
     const params = cleanParams({
-      owner_id: filters.owner_id,
+      ...ownerRequestParams(filters.owner_id),
       start_date: dateRange.value?.[0],
       end_date: dateRange.value?.[1],
       page: filters.page,
@@ -211,6 +211,7 @@ async function load() {
 async function apply() {
   const query = cleanParams({
     ...filters,
+    owner_id: filters.owner_id === SELF_OWNER_VALUE ? undefined : filters.owner_id,
     start_date: dateRange.value?.[0],
     end_date: dateRange.value?.[1],
   });
@@ -220,10 +221,7 @@ async function apply() {
 
 onMounted(async () => {
   const [friendResponse, institutionResponse] = await Promise.all([fetchFriends(), fetchInstitutions()]);
-  owners.value = buildHealthOwnerOptions(friendResponse.data, auth.user).map((item) => ({
-    ...item,
-    value: item.value === "self" ? null : Number(item.value),
-  }));
+  owners.value = buildHealthOwnerOptions(friendResponse.data, auth.user);
   institutions.value = institutionResponse.data.items || [];
   await load();
 });

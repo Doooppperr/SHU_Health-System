@@ -33,7 +33,7 @@ describe("health owner options", () => {
     );
 
     expect(result).toEqual([
-      { value: SELF_OWNER_VALUE, ownerId: null, label: "我本人（test1）" },
+      { value: SELF_OWNER_VALUE, ownerId: null, label: "本人" },
       { value: "2", ownerId: 2, label: "test2（家人）" },
     ]);
   });

@@ -37,7 +37,16 @@ def _email_content(row):
     appointment_date = _display_date(payload.get("appointment_date"))
     party_size = max(1, int(payload.get("party_size") or 1))
 
-    if row.event_type == "booking_group_created":
+    if row.event_type == "password_verification_code":
+        purpose = "找回密码" if payload.get("purpose") == "reset" else "修改密码"
+        subject = f"HealthDoc {purpose}验证码"
+        body = (
+            f"{payload.get('username') or '用户'}，您好，您正在进行{purpose}操作。"
+            f"本次验证码为{payload.get('verification_code') or '验证码生成失败'}，"
+            f"验证码在{int(payload.get('expires_minutes') or 10)}分钟内有效，请勿转发给他人。"
+            "如果不是您本人操作，请忽略本邮件并尽快检查账号安全。"
+        )
+    elif row.event_type == "booking_group_created":
         subject = "HealthDoc 新预约提醒"
         body = (
             f"您好，{institution_label}刚刚收到一笔新的体检预约。"
@@ -151,6 +160,8 @@ def run_batch(app, limit=50):
         try:
             provider_id = _send(app, row)
             row.status = "sent"; row.sent_at = datetime.now(timezone.utc)
+            if row.event_type == "password_verification_code":
+                row.payload = {"challenge_id": (row.payload or {}).get("challenge_id"), "sensitive_content_cleared": True}
             db.session.add(NotificationDelivery(outbox_id=row.id, success=True, provider_message_id=provider_id))
             delivered += 1
         except Exception as exc:

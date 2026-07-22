@@ -13,7 +13,7 @@
       <div class="health-data-filter-grid">
         <label class="filter-field">
           <span class="filter-field-label">查看谁的资料</span>
-          <el-select v-model="filters.owner_id" clearable>
+          <el-select v-model="filters.owner_id">
             <el-option v-for="item in owners" :key="String(item.value)" :label="item.label" :value="item.value" />
           </el-select>
         </label>
@@ -96,7 +96,7 @@ import { fetchFriends } from "../api/friends";
 import { fetchHealthData, fetchHealthDomains } from "../api/health";
 import { fetchInstitutions } from "../api/institutions";
 import { useAuthStore } from "../stores/auth";
-import { buildHealthOwnerOptions } from "../utils/healthOwners";
+import { buildHealthOwnerOptions, ownerRequestParams, SELF_OWNER_VALUE } from "../utils/healthOwners";
 import { sourceLabel } from "../utils/userPlatform";
 
 const route = useRoute();
@@ -111,7 +111,7 @@ const owners = ref([]);
 const dateRange = ref([]);
 const pagination = reactive({ page: 1, page_size: 15, total: 0 });
 const filters = reactive({
-  owner_id: route.query.owner_id ? Number(route.query.owner_id) : null,
+  owner_id: route.query.owner_id ? String(route.query.owner_id) : SELF_OWNER_VALUE,
   institution_id: route.query.institution_id ? Number(route.query.institution_id) : null,
   domain_id: route.query.domain_id ? Number(route.query.domain_id) : null,
   page: Number(route.query.page) || 1,
@@ -127,7 +127,9 @@ function cleanParams(value) {
 }
 
 function dateParts(value) {
-  const date = new Date(`${value}T00:00:00`);
+  const matched = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!matched) return { day: "—", month: "日期待核对" };
+  const date = new Date(Number(matched[1]), Number(matched[2]) - 1, Number(matched[3]));
   return {
     day: String(date.getDate()).padStart(2, "0"),
     month: date.toLocaleDateString("zh-CN", { month: "short", year: "numeric" }),
@@ -142,7 +144,7 @@ function openDetail(item) {
   router.push({
     name: "health-data-detail",
     params: { id: item.health_data_id },
-    query: filters.owner_id ? { owner_id: filters.owner_id } : {},
+    query: ownerRequestParams(filters.owner_id),
   });
 }
 
@@ -152,6 +154,8 @@ async function load() {
   try {
     const params = cleanParams({
       ...filters,
+      ...ownerRequestParams(filters.owner_id),
+      owner_id: undefined,
       start_date: dateRange.value?.[0],
       end_date: dateRange.value?.[1],
     });
@@ -168,6 +172,7 @@ async function load() {
 async function applyFilters() {
   const query = cleanParams({
     ...filters,
+    owner_id: filters.owner_id === SELF_OWNER_VALUE ? undefined : filters.owner_id,
     start_date: dateRange.value?.[0],
     end_date: dateRange.value?.[1],
   });
@@ -183,10 +188,12 @@ onMounted(async () => {
   ]);
   domains.value = domainResponse.data.items || [];
   institutions.value = institutionResponse.data.items || [];
-  owners.value = buildHealthOwnerOptions(friendResponse.data, auth.user).map((item) => ({
-    ...item,
-    value: item.value === "self" ? null : Number(item.value),
-  }));
+  owners.value = buildHealthOwnerOptions(friendResponse.data, auth.user);
   await load();
 });
 </script>
+
+<style scoped>
+.health-record-grid { grid-template-columns: minmax(0, 1fr); }
+.health-record-card { width: 100%; }
+</style>

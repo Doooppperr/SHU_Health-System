@@ -35,6 +35,14 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="机构回复" min-width="320">
+          <template #default="scope">
+            <template v-if="scope.row.reply">
+              <el-tag v-if="scope.row.reply.is_unread" type="danger" effect="dark">收到机构新回复</el-tag>
+              <p style="margin:8px 0 0"><strong>机构回复：</strong>{{ scope.row.reply.content }}</p>
+            </template><span v-else>暂无回复</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="created_at" label="提交时间" min-width="180" />
         <el-table-column label="操作" width="100" fixed="right">
           <template #default="scope">
@@ -51,7 +59,7 @@ import { onMounted, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
 import MainNavActions from "../components/MainNavActions.vue";
-import { deleteComment, fetchMyComments } from "../api/comments";
+import { deleteComment, fetchMyComments, markCommentRepliesRead } from "../api/comments";
 
 const loading = ref(false);
 const comments = ref([]);
@@ -91,5 +99,9 @@ const removeComment = async (row) => {
 
 onMounted(async () => {
   await loadComments();
+  if (comments.value.some((item) => item.reply?.is_unread)) {
+    await markCommentRepliesRead().catch(() => {});
+    window.dispatchEvent(new CustomEvent("healthdoc-comment-replies-read"));
+  }
 });
 </script>

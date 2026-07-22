@@ -20,6 +20,7 @@
           </el-form-item>
           <el-form-item label="密码">
             <el-input v-model="form.password" size="large" type="password" show-password placeholder="请输入密码" autocomplete="current-password" />
+            <div style="width:100%;text-align:right;margin-top:6px"><router-link to="/forgot-password">忘记密码？</router-link></div>
           </el-form-item>
           <el-form-item label="图片验证码">
             <div class="captcha-row">

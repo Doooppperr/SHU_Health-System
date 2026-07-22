@@ -42,6 +42,7 @@
         <el-button type="primary" :loading="saving" @click="save">保存资料</el-button>
       </el-form>
     </el-card>
+    <AccountSecurityPanel :email="form.email" />
   </div>
 </template>
 
@@ -49,6 +50,7 @@
 import { onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
 import { fetchProfile, updateProfile } from "../api/profile";
+import AccountSecurityPanel from "../components/AccountSecurityPanel.vue";
 
 const loading = ref(false);
 const saving = ref(false);

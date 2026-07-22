@@ -1276,6 +1276,13 @@ def analyze_trends_stream():
     start_date, end_date = parse_day("start_date"), parse_day("end_date")
     if start_date is False or end_date is False or (start_date and end_date and start_date > end_date):
         return _json_error("日期范围不正确", "invalid_date_range", 400)
+    source_type = str(payload.get("source_type") or "all")
+    if source_type not in {"all", "self", "institution"}:
+        return _json_error("趋势来源筛选不正确", "invalid_source_type", 400)
+    try:
+        institution_id = int(payload["institution_id"]) if payload.get("institution_id") not in {None, ""} else None
+    except (TypeError, ValueError):
+        return _json_error("体检机构筛选不正确", "invalid_institution_id", 400)
 
     from app.health.routes import effective_points
     links = IndicatorDomainLink.query.filter_by(health_domain_id=domain.id).order_by(
@@ -1283,7 +1290,9 @@ def analyze_trends_stream():
     indicators = []
     for link in links:
         definition = link.indicator
-        points = effective_points(owner.id, definition.id, start_date, end_date)[-120:]
+        points = effective_points(owner.id, definition.id, start_date, end_date,
+                                  source_type=source_type, institution_id=institution_id,
+                                  domain_id=domain.id)[-120:]
         if not points:
             continue
         indicators.append({

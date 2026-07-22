@@ -100,7 +100,7 @@ def test_reports_require_appointments_and_submit_rechecks_active_user(app, clien
     user_headers = login(client, "test3")
     day = date.today() + timedelta(days=20)
     direct = client.post("/api/org/reports", headers=org, json={"subject_name": "不存在用户", "subject_health_id": "HID-UNKNOWN1", "exam_date": day.isoformat()})
-    assert direct.status_code == 400 and "appointment_id" in direct.get_json()["message"]
+    assert direct.status_code == 400 and "预约" in direct.get_json()["message"]
 
     locked_id = create_locked_report(client, user_headers, org, institution_id, package_id, indicator_id, day + timedelta(days=1))
     with app.app_context():
@@ -109,7 +109,7 @@ def test_reports_require_appointments_and_submit_rechecks_active_user(app, clien
         db.session.commit()
     response = client.post(f"/api/org/reports/{locked_id}/submit", headers=org)
     assert response.status_code == 409
-    assert "registered user not found" in response.get_json()["message"]
+    assert "已注册普通用户" in response.get_json()["message"]
     with app.app_context():
         report = db.session.get(InstitutionReport, locked_id)
         assert report.status == "locked"
