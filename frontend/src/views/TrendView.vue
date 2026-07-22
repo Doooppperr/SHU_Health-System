@@ -60,14 +60,17 @@
 
           <div class="trend-chart-platform">
             <HealthTrendChart :points="entry.points" :reference="entry.reference" :unit="entry.indicator.unit || ''" :indicator-name="entry.indicator.name" :source-name="selectedSourceLabel" />
-            <div class="trend-reference-note">
-              <strong>{{ entry.reference?.label || "暂无统一参考范围" }}</strong>
-              <span v-if="entry.reference?.low != null && entry.reference?.high != null">{{ entry.reference.low }}–{{ entry.reference.high }} {{ entry.indicator.unit }}</span>
-              <span v-else-if="entry.reference?.low != null">不低于 {{ entry.reference.low }} {{ entry.indicator.unit }}</span>
-              <span v-else-if="entry.reference?.high != null">低于 {{ entry.reference.high }} {{ entry.indicator.unit }}</span>
-              <p>{{ entry.reference?.context }}</p>
+            <aside class="trend-reference-note" aria-label="参考范围说明">
+              <div class="trend-reference-note__heading">
+                <span v-if="entry.reference?.low != null || entry.reference?.high != null" class="trend-reference-note__swatch" aria-hidden="true"></span>
+                <strong>{{ entry.reference?.label || "暂无统一参考范围" }}</strong>
+              </div>
+              <span v-if="entry.reference?.low != null && entry.reference?.high != null" class="trend-reference-note__value">{{ entry.reference.low }}–{{ entry.reference.high }} {{ entry.indicator.unit }}</span>
+              <span v-else-if="entry.reference?.low != null" class="trend-reference-note__value">不低于 {{ entry.reference.low }} {{ entry.indicator.unit }}</span>
+              <span v-else-if="entry.reference?.high != null" class="trend-reference-note__value">低于 {{ entry.reference.high }} {{ entry.indicator.unit }}</span>
+              <p v-if="entry.reference?.context">{{ entry.reference.context }}</p>
               <a v-if="entry.reference?.source_url" :href="entry.reference.source_url" target="_blank" rel="noopener noreferrer">{{ entry.reference.source_title || "查看参考来源" }}</a>
-            </div>
+            </aside>
           </div>
         </section>
       </article>

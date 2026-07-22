@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildTrendChartOption, resolveTrendChartAppearance } from "./chartAppearance";
+import { buildTrendChartOption, buildTrendReferenceArea, resolveTrendAxisBounds, resolveTrendChartAppearance } from "./chartAppearance";
 
 describe("trend chart appearance", () => {
   it("uses the light user palette by default", () => {
@@ -17,6 +17,8 @@ describe("trend chart appearance", () => {
     expect(option.tooltip.backgroundColor).toBe("#ffffff");
     expect(option.xAxis.data).toEqual(["2026-07-12"]);
     expect(option.yAxis.splitLine.lineStyle.color).toBe("rgba(210, 210, 215, 0.72)");
+    expect(option.yAxis.scale).toBe(true);
+    expect(option.series[0].label).toEqual({ show: false });
   });
 
   it("uses the dark institution palette throughout the chart", () => {
@@ -54,6 +56,41 @@ describe("trend chart appearance", () => {
       label: { show: false, color: "#f0b35f" },
     });
     expect(referenceLines).toEqual([{ yAxis: 60, name: "参考下限" }]);
+  });
+
+  it("keeps reference text outside the plot and preserves the reference palette", () => {
+    const appearance = resolveTrendChartAppearance({ theme: "dark" });
+    const area = buildTrendReferenceArea({ low: 57.3, high: 74, label: "成人 BMI 参考体重" }, appearance);
+
+    expect(area).toMatchObject({
+      silent: true,
+      label: { show: false },
+      itemStyle: { color: "rgba(240, 179, 95, 0.16)" },
+      data: [[{ yAxis: 57.3 }, { yAxis: 74 }]],
+    });
+    expect(JSON.stringify(area)).not.toContain("成人 BMI 参考体重");
+  });
+
+  it("does not build a shaded band from an incomplete range", () => {
+    expect(buildTrendReferenceArea({ low: 60 })).toBeUndefined();
+  });
+
+  it("keeps both measurements and the full reference range inside the y axis", () => {
+    const bounds = resolveTrendAxisBounds({
+      yAxisData: [{ value: 65.1 }, { value: 73.8 }, { value: 71.9 }],
+      referenceLines: [{ yAxis: 57.3 }, { yAxis: 74 }],
+    });
+    const option = buildTrendChartOption({
+      yAxisData: [{ value: 65.1 }, { value: 73.8 }],
+      referenceLines: [{ yAxis: 57.3 }, { yAxis: 74 }],
+    });
+
+    expect(bounds).toEqual({ min: 55, max: 76 });
+    expect(option.yAxis).toMatchObject({ min: 55, max: 76, scale: true });
+  });
+
+  it("gives a single measurement a readable non-zero axis span", () => {
+    expect(resolveTrendAxisBounds({ yAxisData: [72] })).toEqual({ min: 68.4, max: 75.6 });
   });
 
   it("falls back safely for unsupported theme and accent values", () => {

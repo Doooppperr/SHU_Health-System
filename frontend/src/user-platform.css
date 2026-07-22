@@ -7,6 +7,13 @@
   --user-muted: var(--color-surface-muted, #f5f7f6);
   --user-text: var(--color-text, #203438);
   --user-text-soft: var(--color-text-secondary, #687779);
+  --trend-reference: #a55b00;
+  --trend-reference-area: rgb(230 159 0 / 13%);
+}
+
+:root[data-theme="dark"] .user-platform-page {
+  --trend-reference: #f0b35f;
+  --trend-reference-area: rgb(240 179 95 / 16%);
 }
 
 .user-kicker,
@@ -887,6 +894,7 @@
 @keyframes trend-pulse { 50% { opacity: .35; transform: scale(.75); } }
 
 .trend-story-card {
+  container: trend-card / inline-size;
   min-width: 0;
   padding: 24px;
   border: 1px solid var(--user-border);
@@ -947,21 +955,64 @@
 }
 
 .trend-chart-platform {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
   margin-top: 12px;
 }
 
 .trend-reference-note {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px 12px;
-  padding: 12px 14px;
+  display: grid;
+  align-content: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--trend-reference) 28%, var(--user-border));
+  border-left: 3px solid var(--trend-reference);
   border-radius: 12px;
-  background: var(--user-muted);
+  background: color-mix(in srgb, var(--trend-reference-area) 72%, var(--user-muted));
   color: var(--user-text-soft);
 }
-.trend-reference-note p { flex-basis: 100%; margin: 0; }
-.trend-reference-note a { color: var(--user-accent); }
+
+.trend-reference-note__heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--user-text);
+}
+
+.trend-reference-note__swatch {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 11px;
+  border-block: 1px dashed var(--trend-reference);
+  border-radius: 2px;
+  background: var(--trend-reference-area);
+}
+
+.trend-reference-note__value {
+  color: var(--trend-reference);
+  font-size: 1.05em;
+  font-weight: 750;
+}
+
+.trend-reference-note p {
+  margin: 0;
+  line-height: 1.65;
+}
+
+.trend-reference-note a {
+  color: var(--user-accent);
+  overflow-wrap: anywhere;
+}
+
+@container trend-card (min-width: 920px) {
+  .trend-chart-platform {
+    grid-template-columns: minmax(0, 1fr) minmax(220px, 260px);
+    gap: 18px;
+  }
+}
 
 .trend-chart-platform svg {
   width: 100%;

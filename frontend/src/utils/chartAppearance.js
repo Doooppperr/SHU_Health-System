@@ -65,6 +65,45 @@ export function resolveTrendChartAppearance({
   };
 }
 
+export function buildTrendReferenceArea(reference = {}, appearance = resolveTrendChartAppearance()) {
+  const low = Number(reference?.low);
+  const high = Number(reference?.high);
+  if (!Number.isFinite(low) || !Number.isFinite(high)) return undefined;
+
+  return {
+    silent: true,
+    label: { show: false },
+    emphasis: { disabled: true },
+    itemStyle: { color: appearance.referenceArea },
+    // The explanation belongs in the adjacent reference card. Keeping names
+    // out of markArea prevents ECharts from drawing them over measurements.
+    data: [[{ yAxis: low }, { yAxis: high }]],
+  };
+}
+
+export function resolveTrendAxisBounds({ yAxisData = [], referenceLines = [] } = {}) {
+  const seriesValues = yAxisData.map((item) => Number(item && typeof item === "object" ? item.value : item));
+  const referenceValues = referenceLines.map((line) => Number(line?.yAxis));
+  const values = [...seriesValues, ...referenceValues].filter(Number.isFinite);
+  if (!values.length) return {};
+
+  const rawMin = Math.min(...values);
+  const rawMax = Math.max(...values);
+  if (rawMin === rawMax) {
+    const padding = Math.max(Math.abs(rawMin) * 0.05, 1);
+    return { min: rawMin - padding, max: rawMax + padding };
+  }
+
+  const span = rawMax - rawMin;
+  const rounding = span >= 10 ? 1 : span >= 1 ? 0.1 : span >= 0.1 ? 0.01 : 0.001;
+  const padding = Math.max(span * 0.08, rounding);
+  const round = (value) => Number(value.toFixed(Math.max(0, -Math.floor(Math.log10(rounding)))));
+  return {
+    min: round(Math.floor((rawMin - padding) / rounding) * rounding),
+    max: round(Math.ceil((rawMax + padding) / rounding) * rounding),
+  };
+}
+
 export function buildTrendChartOption({
   theme = "light",
   careMode = false,
@@ -75,6 +114,7 @@ export function buildTrendChartOption({
   referenceLines = [],
 } = {}) {
   const appearance = resolveTrendChartAppearance({ theme, careMode, accent });
+  const axisBounds = resolveTrendAxisBounds({ yAxisData, referenceLines });
   const axisLabel = {
     color: appearance.secondaryText,
     fontFamily: appearance.fontFamily,
@@ -143,6 +183,11 @@ export function buildTrendChartOption({
     },
     yAxis: {
       type: "value",
+      // Health trends are about changes within a meaningful clinical range.
+      // Starting every positive series at zero flattens those changes and
+      // wastes most of the plot area.
+      scale: true,
+      ...axisBounds,
       name: unit,
       nameLocation: "end",
       nameGap: appearance.careMode ? 18 : 14,
@@ -166,6 +211,7 @@ export function buildTrendChartOption({
         smooth: true,
         data: yAxisData,
         connectNulls: false,
+        label: { show: false },
         symbolSize: appearance.symbolSize,
         itemStyle: { color: appearance.accent },
         lineStyle: { color: appearance.accent, width: appearance.lineWidth },
