@@ -21,7 +21,7 @@ const container = ref(null);
 let chart;
 let resizeObserver;
 
-const ariaLabel = computed(() => `${props.indicatorName}，${props.sourceName}，共 ${props.points.length} 次记录，每个点均显示具体数值`);
+const ariaLabel = computed(() => `${props.indicatorName}，${props.sourceName}，共 ${props.points.length} 次记录；首末值和需关注值直接标注，其余数值可悬浮查看`);
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char]));
@@ -59,15 +59,18 @@ function render() {
     fontSize: appearance.careMode ? 16 : 13,
     color: appearance.effectiveTheme === "dark" ? "#f5f5f7" : "#1d1d1f",
     formatter: ({ value, dataIndex, data }) => {
-      if (props.points.length > 8 && dataIndex !== 0 && dataIndex !== props.points.length - 1 && data?.point?.is_abnormal !== true) return "";
+      const showAll = props.points.length <= 4;
+      const isEdge = dataIndex === 0 || dataIndex === props.points.length - 1;
+      if (!showAll && !isEdge && data?.point?.is_abnormal !== true) return "";
       return `${Number(value).toLocaleString("zh-CN", { maximumFractionDigits: 2 })}${props.unit ? ` ${props.unit}` : ""}`;
     },
   };
   option.series[0].labelLayout = { hideOverlap: true, moveOverlap: "shiftY" };
   if (Number.isFinite(props.reference?.low) && Number.isFinite(props.reference?.high)) {
+    const referenceAppearance = option.__appearance;
     option.series[0].markArea = {
       silent: true,
-      itemStyle: { color: appearance.effectiveTheme === "dark" ? "rgba(76,217,100,.10)" : "rgba(52,199,89,.10)" },
+      itemStyle: { color: referenceAppearance.referenceArea },
       data: [[{ yAxis: props.reference.low, name: props.reference.label || "参考范围" }, { yAxis: props.reference.high }]],
     };
   }

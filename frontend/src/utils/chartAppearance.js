@@ -10,7 +10,8 @@ const THEME_PALETTES = {
     tooltipBackground: "#ffffff",
     tooltipBorder: "#d2d2d7",
     tooltipShadow: "0 10px 30px rgba(0, 0, 0, 0.12)",
-    referenceLine: "#86868b",
+    referenceLine: "#a55b00",
+    referenceArea: "rgba(230, 159, 0, 0.13)",
   },
   dark: {
     text: "#f5f5f7",
@@ -20,7 +21,8 @@ const THEME_PALETTES = {
     tooltipBackground: "#2c2c2e",
     tooltipBorder: "#3a3a3c",
     tooltipShadow: "0 10px 30px rgba(0, 0, 0, 0.36)",
-    referenceLine: "#b8b8bd",
+    referenceLine: "#f0b35f",
+    referenceArea: "rgba(240, 179, 95, 0.16)",
   },
 };
 
@@ -82,7 +84,8 @@ export function buildTrendChartOption({
   const styledReferenceLines = referenceLines.map((line) => ({
     ...line,
     label: {
-      color: appearance.secondaryText,
+      show: false,
+      color: appearance.referenceLine,
       fontFamily: appearance.fontFamily,
       fontSize: appearance.axisFontSize,
       ...(line.label || {}),
@@ -96,6 +99,9 @@ export function buildTrendChartOption({
   }));
 
   return {
+    // Component-level additions (such as markArea) reuse the exact palette
+    // resolved here so light/dark/care modes cannot drift apart.
+    __appearance: appearance,
     backgroundColor: "transparent",
     textStyle: {
       color: appearance.text,
@@ -163,7 +169,10 @@ export function buildTrendChartOption({
         symbolSize: appearance.symbolSize,
         itemStyle: { color: appearance.accent },
         lineStyle: { color: appearance.accent, width: appearance.lineWidth },
-        areaStyle: { color: appearance.area },
+        // Keep the measured series visually separate from the reference band.
+        // The line and symbols encode observations; the low-saturation band
+        // encodes the standard range.
+        areaStyle: undefined,
         emphasis: { focus: "series" },
         markLine: styledReferenceLines.length
           ? { symbol: "none", silent: true, data: styledReferenceLines }

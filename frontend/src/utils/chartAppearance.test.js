@@ -29,7 +29,8 @@ describe("trend chart appearance", () => {
     });
     expect(option.xAxis.axisLabel.color).toBe("#b8b8bd");
     expect(option.series[0].lineStyle.color).toBe("#d9a066");
-    expect(option.series[0].areaStyle.color).toBe("rgba(217, 160, 102, 0.16)");
+    expect(option.series[0].areaStyle).toBeUndefined();
+    expect(option.__appearance.referenceArea).toBe("rgba(240, 179, 95, 0.16)");
   });
 
   it("increases chart text and controls for care mode", () => {
@@ -49,8 +50,8 @@ describe("trend chart appearance", () => {
 
     expect(option.series[0].markLine.data[0]).toMatchObject({
       yAxis: 60,
-      lineStyle: { color: "#b8b8bd", type: "dashed" },
-      label: { color: "#b8b8bd" },
+      lineStyle: { color: "#f0b35f", type: "dashed" },
+      label: { show: false, color: "#f0b35f" },
     });
     expect(referenceLines).toEqual([{ yAxis: 60, name: "参考下限" }]);
   });

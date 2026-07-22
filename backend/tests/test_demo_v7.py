@@ -4,6 +4,7 @@ from app.demo_v7 import (
     ACCOUNT_IDENTITY_FIELDS,
     DemoResetSafetyError,
     account_identity_snapshot,
+    ensure_v7_demo_accounts,
     rebuild_v7_demo_data,
     validate_reset_target,
 )
@@ -138,6 +139,28 @@ def test_v7_demo_reset_also_refuses_unknown_admin_accounts(app):
         db.session.commit()
         with pytest.raises(DemoResetSafetyError, match="unknown accounts"):
             validate_reset_target()
+
+
+def test_demo_mail_sync_only_updates_the_fixed_demo_account_allowlist(app):
+    requested_mailbox = "shared-demo-mailbox@example.test"
+    with app.app_context():
+        demo = User.query.filter_by(username="test1").one()
+        outsider = User(
+            username="real-mail-owner",
+            role="user",
+            health_id="HID-REALMAIL1",
+            email="keep-this-address@example.test",
+        )
+        outsider.set_password("not-a-demo-password")
+        db.session.add(outsider)
+        demo.email = "old-demo-address@example.test"
+        db.session.commit()
+
+        app.config["DEMO_SHARED_EMAIL"] = requested_mailbox
+        ensure_v7_demo_accounts()
+
+        assert User.query.filter_by(username="test1").one().email == requested_mailbox
+        assert User.query.filter_by(username="real-mail-owner").one().email == "keep-this-address@example.test"
 
 
 def test_v7_demo_has_multi_year_and_same_day_multi_source_health_data(app):

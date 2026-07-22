@@ -537,19 +537,29 @@ def _create_demo_images(institutions: list[Institution]) -> None:
 
 
 def ensure_v7_demo_accounts(*, commit: bool = True) -> bool:
-    """Create fixed demo credentials without changing an existing account row."""
+    """Create fixed demo credentials and keep only whitelisted demo mailboxes in sync."""
     institutions = Institution.query.order_by(Institution.id).all()
     if len(institutions) != 15:
         raise RuntimeError("the schema v8 fifteen-branch catalog must exist before demo accounts")
     now = datetime.now(timezone.utc)
     shared_email = current_app.config.get("DEMO_SHARED_EMAIL") or "demo-shared@example.test"
     changed = False
-    if User.query.filter_by(username="demo_admin").first() is None:
+    demo_admin = User.query.filter_by(username="demo_admin").first()
+    if demo_admin is None:
         demo_admin = User(username="demo_admin", role="admin", email=shared_email, email_verified_at=now)
         demo_admin.set_password(DEMO_PASSWORD)
         db.session.add(demo_admin); changed = True
+    elif demo_admin.email != shared_email:
+        demo_admin.email = shared_email
+        demo_admin.email_verified_at = now
+        changed = True
     for index, username in enumerate(DEMO_USERNAMES, start=1):
-        if User.query.filter_by(username=username).first() is not None:
+        existing = User.query.filter_by(username=username).first()
+        if existing is not None:
+            if existing.email != shared_email:
+                existing.email = shared_email
+                existing.email_verified_at = now
+                changed = True
             continue
         name, birth_date, gender, allergy, history = PROFILE_SCENARIOS[username]
         user = User(
@@ -571,7 +581,12 @@ def ensure_v7_demo_accounts(*, commit: bool = True) -> bool:
         staff_indexes = (1, 2) if institution_index <= 3 else (1,)
         for staff_index in staff_indexes:
             username = f"institution{institution_index}_staff{staff_index}"
-            if User.query.filter_by(username=username).first() is not None:
+            existing = User.query.filter_by(username=username).first()
+            if existing is not None:
+                if existing.email != shared_email:
+                    existing.email = shared_email
+                    existing.email_verified_at = now
+                    changed = True
                 continue
             user = User(
                 username=username,

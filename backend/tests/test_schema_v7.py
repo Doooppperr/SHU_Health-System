@@ -6,9 +6,17 @@ from app.models import (
     InstitutionReport, NotificationOutbox, Package, ReportAccessLog, User,
     WaitlistSubscription,
 )
+from app.health_data_v7.routes import _numeric_reference
 
 
 PASSWORD = "Shuhealthdoc！"
+
+
+def test_report_reference_parser_keeps_institution_one_sided_ranges():
+    assert _numeric_reference("< 5.2 mmol/L") == (None, 5.2)
+    assert _numeric_reference("不低于 1.0") == (1.0, None)
+    assert _numeric_reference("60-100 次/分") == (60.0, 100.0)
+    assert _numeric_reference("60–100 次/分") == (60.0, 100.0)
 
 
 def login(client, username):
@@ -36,6 +44,49 @@ def test_health_data_read_models_are_domain_based_and_paginated(app, client):
     domain_id = domains.get_json()["items"][0]["id"]
     trend = client.get(f"/api/health-trends/{domain_id}", headers=headers)
     assert trend.status_code == 200 and "series_by_indicator" in trend.get_json()
+
+
+def test_personal_trends_are_not_hidden_when_the_domain_has_institution_reports(app, client):
+    headers = login(client, "test1")
+    with app.app_context():
+        domain_id = HealthDomain.query.filter_by(code="basic").one().id
+
+    response = client.get(
+        f"/api/health-trends/{domain_id}?source_type=self",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    series = response.get_json()["series_by_indicator"]
+    weight = next(item for item in series if item["indicator"]["code"] == "WEIGHT")
+    assert len(weight["points"]) >= 2
+    assert {point["source"]["type"] for point in weight["points"]} == {"self"}
+
+
+def test_trend_reference_prefers_report_and_falls_back_to_public_guideline(app, client):
+    headers = login(client, "test1")
+    with app.app_context():
+        cardio_id = HealthDomain.query.filter_by(code="cardio").one().id
+
+    report_response = client.get(
+        f"/api/health-trends/{cardio_id}?source_type=institution",
+        headers=headers,
+    )
+    assert report_response.status_code == 200
+    report_series = report_response.get_json()["series_by_indicator"]
+    heart_rate = next(item for item in report_series if item["indicator"]["code"] == "HR")
+    assert heart_rate["reference"]["kind"] == "report"
+    assert heart_rate["reference"]["low"] is not None
+    assert heart_rate["reference"]["high"] is not None
+
+    self_response = client.get(
+        f"/api/health-trends/{cardio_id}?source_type=self",
+        headers=headers,
+    )
+    self_series = self_response.get_json()["series_by_indicator"]
+    self_heart_rate = next(item for item in self_series if item["indicator"]["code"] == "HR")
+    assert self_heart_rate["reference"]["kind"] == "guideline"
+    assert self_heart_rate["reference"]["source_url"].startswith("https://")
 
 
 def test_same_organization_published_reports_are_read_only_and_audited(app, client):
