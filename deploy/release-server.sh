@@ -49,15 +49,32 @@ fi
 release="/opt/healthdoc/releases/$release_id"
 previous=$(readlink -f /opt/healthdoc/current 2>/dev/null || true)
 env_file=/etc/healthdoc/healthdoc.env
+apache_config=/etc/apache2/sites-available/healthdoc.conf
 rag_root=/var/lib/healthdoc/rag
 env_backup=$(mktemp /tmp/healthdoc-env.XXXXXX)
-trap 'rm -f "$env_backup" "$mail_settings" "$demo_assets" "$demo_database"' EXIT
+apache_backup=$(mktemp /tmp/healthdoc-apache.XXXXXX)
+apache_config_prepared=0
+apache_config_committed=0
+
+cleanup() {
+    local status=$?
+    if [[ "$status" != 0 && "$apache_config_prepared" == 1 && "$apache_config_committed" == 0 ]]; then
+        cp -p "$apache_backup" "$apache_config"
+    fi
+    rm -f "$env_backup" "$apache_backup" "$mail_settings" "$demo_assets" "$demo_database"
+}
+trap cleanup EXIT
 
 if [[ ! -f "$env_file" ]]; then
     echo "Production environment file is missing: $env_file" >&2
     exit 2
 fi
+if [[ ! -f "$apache_config" ]]; then
+    echo "Production Apache configuration is missing: $apache_config" >&2
+    exit 2
+fi
 cp -p "$env_file" "$env_backup"
+cp -p "$apache_config" "$apache_backup"
 
 upsert_env() {
     local key=$1
@@ -95,9 +112,21 @@ install -d -o root -g root -m 755 "$release"
 tar -xzf "$archive" -C "$release"
 test -f "$release/backend/wsgi.py"
 test -f "$release/frontend/dist/index.html"
+test -f "$release/deploy/apache-healthdoc.conf"
 
 /opt/healthdoc/venv/bin/python -m pip install -r "$release/backend/requirements.txt"
 /opt/healthdoc/venv/bin/python -m pip check
+
+# Install and validate the versioned Apache configuration before switching the
+# live release. This guarantees the browser receives the latest SPA shell.
+install -o root -g root -m 644 "$release/deploy/apache-healthdoc.conf" "$apache_config"
+apache_config_prepared=1
+if ! apache2ctl configtest; then
+    cp -p "$apache_backup" "$apache_config"
+    rm -rf "$release"
+    echo "Apache configuration validation failed; the current release was not changed." >&2
+    exit 1
+fi
 
 database_backup=""
 wait_for_database() {
@@ -363,8 +392,8 @@ rag_sync_status=$?
 set -e
 if [[ "$rag_sync_status" != 0 ]]; then
     cp -p "$env_backup" "$env_file"
+    cp -p "$apache_backup" "$apache_config"
     rm -rf "$release"
-    rm -f "$env_backup"
     if [[ -n "$database_backup" && -f "$database_backup" ]]; then
         restore_database_backup
         restore_uploads_backup
@@ -424,6 +453,7 @@ if [[ "$healthy" != 1 ]]; then
         restore_uploads_backup
     fi
     cp -p "$env_backup" "$env_file"
+    cp -p "$apache_backup" "$apache_config"
     if [[ -n "$previous" && -d "$previous" ]]; then
         ln -sfn "$previous" /opt/healthdoc/current.rollback
         mv -Tf /opt/healthdoc/current.rollback /opt/healthdoc/current
@@ -437,6 +467,7 @@ if [[ "$healthy" != 1 ]]; then
             systemctl disable healthdoc-notifications.service >/dev/null 2>&1 || true
         fi
     fi
+    systemctl restart apache2
     echo "Health check failed; the previous release was restored." >&2
     exit 1
 fi
@@ -445,5 +476,5 @@ rm -f "$archive"
 if [[ -n "$demo_database" ]]; then
     rm -f "$demo_database"
 fi
-rm -f "$env_backup"
+apache_config_committed=1
 echo "Released $release_id successfully."

@@ -15,6 +15,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash -n deploy/release-server.sh
+      - run: grep -q 'no-store, no-cache, must-revalidate' deploy/apache-healthdoc.conf
+      - run: grep -q 'max-age=31536000, immutable' deploy/apache-healthdoc.conf
+      - run: grep -q 'release/deploy/apache-healthdoc.conf' deploy/release-server.sh
       - shell: pwsh
         run: "[void][ScriptBlock]::Create((Get-Content -Raw scripts/deploy-server.ps1))"
 
