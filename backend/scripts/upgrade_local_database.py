@@ -94,6 +94,62 @@ def validate(connection):
         raise RuntimeError(f"schema v10 validation failed: {report}")
 
 
+def repair_result_statuses(connection):
+    """Remove false normal labels from measurements without a usable rule."""
+    if not {"report_indicators", "indicator_dicts", "indicator_reference_rules"} <= table_names(connection):
+        return
+    connection.execute(
+        """
+        UPDATE report_indicators
+        SET result_status='unknown', is_abnormal=0
+        WHERE indicator_dict_id IN (
+            SELECT id FROM indicator_dicts WHERE code IN ('HEIGHT','WEIGHT','HIP')
+        )
+        """
+    )
+    connection.execute(
+        """
+        UPDATE report_indicators
+        SET value=CASE
+                WHEN indicator_dict_id=(SELECT id FROM indicator_dicts WHERE code='HEIGHT') THEN '172'
+                WHEN indicator_dict_id=(SELECT id FROM indicator_dicts WHERE code='WEIGHT') THEN '68'
+                ELSE value
+            END,
+            original_value=CASE
+                WHEN indicator_dict_id=(SELECT id FROM indicator_dicts WHERE code='HEIGHT') THEN '172'
+                WHEN indicator_dict_id=(SELECT id FROM indicator_dicts WHERE code='WEIGHT') THEN '68'
+                ELSE original_value
+            END
+        WHERE method_snapshot='v10 合成体检演示'
+          AND indicator_dict_id IN (
+              SELECT id FROM indicator_dicts WHERE code IN ('HEIGHT','WEIGHT')
+          )
+        """
+    )
+    connection.execute(
+        """
+        UPDATE report_indicators
+        SET result_status='unknown', is_abnormal=0
+        WHERE result_status='normal'
+          AND COALESCE(TRIM(reference_text),'')=''
+          AND COALESCE(LOWER(TRIM(abnormal_flag)),'') IN ('','normal','正常')
+          AND indicator_dict_id IN (
+              SELECT indicator.id
+              FROM indicator_dicts AS indicator
+              WHERE indicator.reference_low IS NULL
+                AND indicator.reference_high IS NULL
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM indicator_reference_rules AS rule
+                    WHERE rule.indicator_dict_id=indicator.id
+                      AND (rule.reference_low IS NOT NULL OR rule.reference_high IS NOT NULL)
+                )
+          )
+        """
+    )
+    return connection.total_changes
+
+
 def read_admin(connection):
     if "users" not in table_names(connection):
         return None
@@ -146,8 +202,22 @@ def rebuild_database(database_path):
             raise RuntimeError("source SQLite integrity_check failed")
         report = inspect_schema(source)
         if report.is_current:
-            validate(source)
-            return None
+            backup = backup_path(database_path)
+            shutil.copy2(database_path, backup)
+            before_changes = source.total_changes
+            try:
+                repair_result_statuses(source)
+                changed = source.total_changes > before_changes
+                validate(source)
+                source.commit()
+            except Exception:
+                source.rollback()
+                backup.unlink(missing_ok=True)
+                raise
+            if not changed:
+                backup.unlink(missing_ok=True)
+                return None
+            return backup
         admin = read_admin(source)
         available_tables = table_names(source)
 
@@ -166,6 +236,7 @@ def rebuild_database(database_path):
             )
             with closing(sqlite3.connect(temporary)) as target:
                 target.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                repair_result_statuses(target)
                 target.commit()
                 validate(target)
             shutil.copy2(database_path, backup)

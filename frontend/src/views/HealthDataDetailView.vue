@@ -38,7 +38,7 @@
               <strong>{{ indicator.value }}</strong>
               <span>{{ indicator.normalized_unit || indicator.unit || indicator.indicator?.unit || "" }}</span>
             </div>
-            <el-tag v-if="item.source_type !== 'self'" :type="resultStatusMeta(indicator.result_status, indicator.indicator, indicator.value).type" effect="light">
+            <el-tag v-if="item.source_type !== 'self' && shouldDisplayResultStatus(indicator.result_status)" :type="resultStatusMeta(indicator.result_status, indicator.indicator, indicator.value).type" effect="light">
               {{ resultStatusMeta(indicator.result_status, indicator.indicator, indicator.value).label }}
             </el-tag>
             <el-button v-if="canEditSelf" link type="primary" @click="openEditMeasurement(indicator)">修改</el-button>
@@ -81,7 +81,7 @@ import { ElMessage } from "element-plus";
 import { useRoute, useRouter } from "vue-router";
 import MeasurementDrawer from "../components/MeasurementDrawer.vue";
 import { fetchHealthAssetContent, fetchHealthDataDetail } from "../api/health";
-import { formatDate, formatDateTime, resultStatusMeta, sourceLabel } from "../utils/userPlatform";
+import { formatDate, formatDateTime, resultStatusMeta, shouldDisplayResultStatus, sourceLabel } from "../utils/userPlatform";
 
 const route = useRoute();
 const router = useRouter();

@@ -5,6 +5,7 @@ from sqlalchemy.orm import synonym
 
 from app.extensions import db
 from app.services.dates import calendar_date_iso
+from app.services.indicator_values import evaluate_result_status, result_status_is_displayable
 
 
 def utc_now():
@@ -170,14 +171,32 @@ class ReportIndicator(db.Model):
     record_id = synonym("report_id")
     source = synonym("input_source")
 
+    def resolved_result_status(self):
+        if self.indicator_dict is None:
+            return "unknown"
+        fallback_flag = self.abnormal_flag
+        if not fallback_flag and self.result_status in {"high", "low", "positive", "negative", "abnormal"}:
+            fallback_flag = self.result_status
+        report = self.report
+        return evaluate_result_status(
+            self.indicator_dict,
+            self.value,
+            subject=report.owner if report else None,
+            on_date=report.exam_date if report else None,
+            abnormal_flag=fallback_flag,
+            reference_text=self.reference_text,
+        )
+
     def to_dict(self):
+        result_status = self.resolved_result_status()
         return {
             "id": self.id,
             "report_id": self.report_id,
             "indicator_dict_id": self.indicator_dict_id,
             "value": self.value,
-            "is_abnormal": self.is_abnormal,
-            "result_status": self.result_status,
+            "is_abnormal": result_status in {"high", "low", "positive", "abnormal"},
+            "result_status": result_status,
+            "status_displayable": result_status_is_displayable(result_status),
             "input_source": self.input_source,
             "source": self.input_source,
             "indicator": self.indicator_dict.to_dict() if self.indicator_dict else None,

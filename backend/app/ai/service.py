@@ -10,7 +10,7 @@ from typing import Iterator
 
 import requests
 
-from app.services.indicator_values import parse_numeric_value
+from app.services.indicator_values import parse_numeric_value, result_status_is_displayable
 
 
 SYSTEM_GUIDE = """
@@ -684,12 +684,21 @@ def build_analysis_facts(
                 if definition.value_type == "numeric"
                 else None
             )
+            result_status = item.resolved_result_status()
+            status_label = {
+                "normal": "正常",
+                "high": "偏高",
+                "low": "偏低",
+                "positive": "阳性",
+                "negative": "阴性",
+                "abnormal": "异常",
+            }.get(result_status)
             observation = {
                 "record_display_id": record.display_id,
                 "exam_date": record.exam_date.isoformat(),
                 "value": item.value,
                 "numeric_value": _number(numeric_decimal),
-                "abnormal": bool(item.is_abnormal),
+                "abnormal": result_status in {"high", "low", "positive", "abnormal"},
             }
             indicator_fact = {
                 "code": definition.code,
@@ -698,9 +707,10 @@ def build_analysis_facts(
                 "unit": item.normalized_unit or definition.unit,
                 "value_type": definition.value_type,
                 "reference": item.reference_text or reference,
-                "status": "异常" if item.is_abnormal else "正常",
                 "source": "institution_report",
             }
+            if result_status_is_displayable(result_status):
+                indicator_fact["status"] = status_label
             record_fact["indicators"].append(indicator_fact)
             definitions[definition.code] = {
                 "code": definition.code,

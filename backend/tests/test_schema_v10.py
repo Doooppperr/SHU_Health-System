@@ -7,11 +7,21 @@ from app.extensions import db
 from app.models import (
     Appointment,
     FriendRelation,
+    IndicatorDict,
     Institution,
+    InstitutionReport,
     NotificationOutbox,
+    ReportIndicator,
     ReportAssetType,
     User,
     UserNotification,
+)
+from app.services.indicator_values import (
+    IndicatorValueError,
+    evaluate_result_status,
+    parse_reference_bounds,
+    result_status_is_displayable,
+    validate_indicator_plausibility,
 )
 
 
@@ -96,6 +106,50 @@ def test_booking_intake_defaults_do_not_block_appointment_initialization(app, cl
     response = client.get("/api/booking-intake-defaults", headers=headers)
     assert response.status_code == 200, response.get_json()
     assert set(response.get_json()["item"]).issubset({"height_cm", "weight_kg"})
+
+
+def test_descriptive_body_measurements_are_not_labelled_normal_or_abnormal(app):
+    with app.app_context():
+        height = IndicatorDict.query.filter_by(code="HEIGHT").one()
+        weight = IndicatorDict.query.filter_by(code="WEIGHT").one()
+        assert evaluate_result_status(height, "11.7", abnormal_flag="normal") == "unknown"
+        assert evaluate_result_status(weight, "68", reference_text="50—80 kg") == "unknown"
+        assert result_status_is_displayable("unknown") is False
+        for definition, value in ((height, "11.7"), (weight, "12.7")):
+            try:
+                validate_indicator_plausibility(definition, value)
+            except IndicatorValueError:
+                pass
+            else:
+                raise AssertionError("implausible adult body measurement was accepted")
+
+
+def test_report_range_precedes_catalog_and_unknown_status_is_hidden(app):
+    with app.app_context():
+        heart_rate = IndicatorDict.query.filter_by(code="HR").one()
+        assert parse_reference_bounds("参考范围 50-70 次/分") == (50, 70)
+        assert evaluate_result_status(
+            heart_rate,
+            "75",
+            reference_text="参考范围 50-70 次/分",
+        ) == "high"
+
+        height = IndicatorDict.query.filter_by(code="HEIGHT").one()
+        report = InstitutionReport.query.filter_by(status="published").first()
+        row = ReportIndicator(
+            report=report,
+            indicator_dict=height,
+            value="11.7",
+            result_status="normal",
+            is_abnormal=False,
+            display_domain_id=height.domain_links[0].health_domain_id,
+            abnormal_flag="normal",
+        )
+        with db.session.no_autoflush:
+            payload = row.to_dict()
+        assert payload["result_status"] == "unknown"
+        assert payload["status_displayable"] is False
+        assert payload["is_abnormal"] is False
 
 
 def test_institution_cancellation_notifies_user_with_sibling_snapshot(app, client):

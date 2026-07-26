@@ -41,6 +41,7 @@ from app.ai.rag import (
 )
 from app.extensions import db
 from app.models import Appointment, FriendRelation, HealthDomain, HealthIndicator, HealthRecord, IndicatorDict, IndicatorDomainLink, Institution, ReportAsset, User
+from app.services.indicator_values import result_status_is_displayable
 
 
 _rate_buckets = defaultdict(deque)
@@ -476,9 +477,19 @@ def _format_record_context(user, records):
                     f" ~ {definition.reference_high if definition.reference_high is not None else '+∞'}"
                     f" {definition.unit or ''}"
                 ).strip()
+            result_status = item.resolved_result_status()
+            status_label = {
+                "normal": "正常", "high": "偏高", "low": "偏低",
+                "positive": "阳性", "negative": "阴性", "abnormal": "异常",
+            }.get(result_status)
+            status_text = (
+                f"；机构/系统判定 {status_label}"
+                if result_status_is_displayable(result_status)
+                else ""
+            )
             lines.append(
                 f"- {definition.name}（{definition.code}）：{item.value} {definition.unit or ''}；"
-                f"参考范围 {reference}；系统标记{'异常' if item.is_abnormal else '正常'}。"
+                f"参考范围 {item.reference_text or reference}{status_text}。"
             )
         sections.append("\n".join(lines))
     from app.health.routes import effective_points

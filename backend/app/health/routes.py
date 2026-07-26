@@ -12,7 +12,7 @@ from app.models import (
     SelfMeasurement, User, WaitlistSubscription,
 )
 from app.services.permissions import ROLE_USER, roles_required
-from app.services.indicator_values import evaluate_result_status
+from app.services.indicator_values import IndicatorValueError, evaluate_result_status, validate_indicator_plausibility
 
 
 APPOINTMENT_TIMELINE_STATUS = {
@@ -120,6 +120,10 @@ def measurement_payload(row, payload):
     if value < 0: return {"message": "测量数值不能小于0"}, 400
     if value != value.quantize(Decimal("0.01")):
         return {"message": "测量数值最多保留小数点后两位"}, 400
+    try:
+        validate_indicator_plausibility(definition, str(value))
+    except IndicatorValueError as exc:
+        return {"message": str(exc)}, 400
     measured_at = parse_datetime(payload.get("measured_at", row.measured_at.isoformat() if row else None))
     if not measured_at: return {"message": "请选择有效的测量时间"}, 400
     if row is None: row = SelfMeasurement(user_id=g.current_user.id)
@@ -194,16 +198,14 @@ def effective_points(owner_id, indicator_id, start_date=None, end_date=None, *, 
         try: value = float(indicator.value)
         except (TypeError, ValueError): continue
         report_day = as_calendar_date(report.exam_date)
+        result_status = indicator.resolved_result_status()
         points[report_day] = {
             "date": report_day.isoformat(),
             "value": value,
             "source": "institution_report",
             "report_id": report.id,
             "institution": report.institution.name if report.institution else None,
-            "result_status": indicator.result_status or (
-                evaluate_result_status(definition, indicator.value, subject=owner, on_date=report_day)
-                if definition else "unknown"
-            ),
+            "result_status": result_status,
             "indicator_code": definition.code if definition else None,
         }
     return [points[key] for key in sorted(points)]

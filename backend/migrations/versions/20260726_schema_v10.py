@@ -40,7 +40,7 @@ def upgrade():
         "report_indicators",
         sa.Column("result_status", sa.String(20), nullable=False, server_default="unknown"),
     )
-    op.execute("UPDATE report_indicators SET result_status=CASE WHEN is_abnormal THEN 'abnormal' ELSE 'normal' END")
+    op.execute("UPDATE report_indicators SET result_status=CASE WHEN is_abnormal THEN 'abnormal' ELSE 'unknown' END")
     op.create_check_constraint(
         "ck_report_indicators_result_status",
         "report_indicators",

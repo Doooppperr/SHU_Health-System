@@ -14,6 +14,15 @@ _OCR_REFERENCE_SUFFIX_RE = re.compile(
     r"\s*[:：]?\s*.*$",
     flags=re.IGNORECASE,
 )
+_REFERENCE_NUMBER_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)")
+_NON_CLASSIFIABLE_CODES = frozenset({"HEIGHT", "WEIGHT", "HIP"})
+_PLAUSIBLE_INPUT_BOUNDS = {
+    "HEIGHT": (Decimal("80"), Decimal("250"), "成人身高应填写 80–250 cm"),
+    "WEIGHT": (Decimal("20"), Decimal("500"), "成人体重应填写 20–500 kg"),
+}
+_DEFINITE_RESULT_STATUSES = frozenset(
+    {"normal", "high", "low", "positive", "negative", "abnormal"}
+)
 
 
 def _normalize_unit_aliases(text: str) -> str:
@@ -120,6 +129,16 @@ def normalize_ocr_indicator_value(indicator_dict, raw_value) -> str:
         return normalize_indicator_value(indicator_dict, primary_result)
 
 
+def validate_indicator_plausibility(indicator_dict, normalized_value: str) -> None:
+    bounds = _PLAUSIBLE_INPUT_BOUNDS.get(getattr(indicator_dict, "code", None))
+    if bounds is None:
+        return
+    value = parse_numeric_value(normalized_value)
+    low, high, message = bounds
+    if value is None or value < low or value > high:
+        raise IndicatorValueError(message)
+
+
 def resolve_reference_rule(indicator_dict, *, subject=None, on_date=None):
     if subject is None:
         return None
@@ -143,6 +162,40 @@ def resolve_reference_rule(indicator_dict, *, subject=None, on_date=None):
     return candidates[0] if candidates else None
 
 
+def parse_reference_bounds(reference_text):
+    """Return numeric bounds carried by an institution report, if usable."""
+    text = unicodedata.normalize("NFKC", str(reference_text or "")).strip()
+    if not text:
+        return None
+    numbers = _REFERENCE_NUMBER_RE.findall(text)
+    if not numbers:
+        return None
+    try:
+        if len(numbers) == 1:
+            bound = Decimal(numbers[0])
+            if re.search(r"(?:>=|>|≥|不低于|高于|大于)", text):
+                return bound, None
+            if re.search(r"(?:<=|<|≤|不超过|低于|小于)", text):
+                return None, bound
+            return None
+        # Reference text can contain digits in the unit (for example 10^9/L).
+        # The first two values are the range endpoints.
+        low = Decimal(numbers[0])
+        high_text = numbers[1]
+        if high_text.startswith("-") and not numbers[0].startswith("-") and re.search(
+            r"\d\s*[-—–~至]\s*\d", text
+        ):
+            high_text = high_text[1:]
+        high = Decimal(high_text)
+    except (InvalidOperation, ValueError):
+        return None
+    return (low, high) if low <= high else None
+
+
+def result_status_is_displayable(status) -> bool:
+    return str(status or "").strip().lower() in _DEFINITE_RESULT_STATUSES
+
+
 def evaluate_result_status(
     indicator_dict,
     normalized_value: str,
@@ -150,7 +203,14 @@ def evaluate_result_status(
     subject=None,
     on_date=None,
     abnormal_flag=None,
+    reference_text=None,
 ) -> str:
+    # Raw height, weight and hip circumference describe body dimensions. They
+    # are not independently labelled normal/abnormal; derived indicators such
+    # as BMI or a properly configured waist/WHR rule carry that interpretation.
+    if getattr(indicator_dict, "code", None) in _NON_CLASSIFIABLE_CODES:
+        return "unknown"
+
     flag = unicodedata.normalize("NFKC", str(abnormal_flag or "")).strip().lower()
     if flag in {"h", "↑", "high", "偏高", "升高"}:
         return "high"
@@ -174,9 +234,13 @@ def evaluate_result_status(
     value = parse_numeric_value(normalized_value)
     if value is None:
         return "unknown"
-    rule = resolve_reference_rule(indicator_dict, subject=subject, on_date=on_date)
-    low = rule.reference_low if rule is not None else indicator_dict.reference_low
-    high = rule.reference_high if rule is not None else indicator_dict.reference_high
+    report_bounds = parse_reference_bounds(reference_text)
+    if report_bounds is not None:
+        low, high = report_bounds
+    else:
+        rule = resolve_reference_rule(indicator_dict, subject=subject, on_date=on_date)
+        low = rule.reference_low if rule is not None else indicator_dict.reference_low
+        high = rule.reference_high if rule is not None else indicator_dict.reference_high
     if low is not None and value < low:
         return "low"
     if high is not None and value > high:

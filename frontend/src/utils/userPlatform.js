@@ -22,8 +22,11 @@ export function resultStatusMeta(status, indicator = {}, value = null) {
     positive: { label: "阳性", type: "danger" },
     negative: { label: "阴性", type: "success" },
     abnormal: { label: "异常", type: "danger" },
-    unknown: { label: "未判定", type: "info" },
-  })[status] || { label: "未判定", type: "info" };
+  })[status] || { label: "", type: "info" };
+}
+
+export function shouldDisplayResultStatus(status) {
+  return ["normal", "high", "low", "positive", "negative", "abnormal"].includes(status);
 }
 
 export const GENDER_LABELS = {

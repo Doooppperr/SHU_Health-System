@@ -1148,6 +1148,17 @@ def _expand_v8_demo_data(users, institutions, packages, indicators, domains, tod
 def _demo_indicator_value(definition, sequence):
     if definition.value_type == "text":
         return ("阳性", "positive") if sequence in {2, 7} else ("阴性", "negative")
+    descriptive_values = {
+        "HEIGHT": Decimal("172") + Decimal(sequence % 3),
+        "WEIGHT": Decimal("66") + Decimal(sequence) * Decimal("0.8"),
+        "WAIST": Decimal("76") + Decimal(sequence) * Decimal("1.2"),
+        "HIP": Decimal("94") + Decimal(sequence) * Decimal("0.5"),
+        "WHR": Decimal("0.81") + Decimal(sequence) * Decimal("0.01"),
+        "BODY_FAT": Decimal("19") + Decimal(sequence) * Decimal("0.6"),
+    }
+    if definition.code in descriptive_values:
+        normalized = descriptive_values[definition.code].quantize(Decimal("0.01"))
+        return (format(normalized, "f").rstrip("0").rstrip("."), None)
     low = Decimal(str(definition.reference_low)) if definition.reference_low is not None else None
     high = Decimal(str(definition.reference_high)) if definition.reference_high is not None else None
     if sequence == 0 and low is not None:

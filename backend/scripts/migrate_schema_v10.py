@@ -66,7 +66,45 @@ def migrate(database_url: str) -> None:
                 "ALTER TABLE appointments ADD CONSTRAINT ck_appointments_termination_party "
                 "CHECK (termination_party is null or termination_party in ('user','institution','subject'))"
             ))
-            connection.execute(text("UPDATE report_indicators SET result_status=CASE WHEN is_abnormal THEN 'abnormal' ELSE 'normal' END WHERE result_status='unknown'"))
+            # An old boolean ``is_abnormal = false`` does not prove a result is
+            # normal. Keep such rows unknown until a real institution range,
+            # demographic rule or catalog range can classify them.
+            connection.execute(text(
+                "UPDATE report_indicators SET result_status='abnormal' "
+                "WHERE result_status='unknown' AND is_abnormal"
+            ))
+            connection.execute(text(
+                "UPDATE report_indicators SET result_status='unknown', is_abnormal=FALSE "
+                "WHERE indicator_dict_id IN "
+                "(SELECT id FROM indicator_dicts WHERE code IN ('HEIGHT','WEIGHT','HIP'))"
+            ))
+            connection.execute(text(
+                "UPDATE report_indicators SET result_status='unknown', is_abnormal=FALSE "
+                "WHERE result_status='normal' "
+                "AND COALESCE(TRIM(reference_text),'')='' "
+                "AND COALESCE(LOWER(TRIM(abnormal_flag)),'') IN ('','normal','正常') "
+                "AND indicator_dict_id IN ("
+                "SELECT indicator.id FROM indicator_dicts indicator "
+                "WHERE indicator.reference_low IS NULL AND indicator.reference_high IS NULL "
+                "AND NOT EXISTS (SELECT 1 FROM indicator_reference_rules rule "
+                "WHERE rule.indicator_dict_id=indicator.id "
+                "AND (rule.reference_low IS NOT NULL OR rule.reference_high IS NOT NULL))"
+                ")"
+            ))
+            connection.execute(text(
+                "UPDATE report_indicators "
+                "SET value=CASE "
+                "WHEN indicator_dict_id=(SELECT id FROM indicator_dicts WHERE code='HEIGHT') THEN '172' "
+                "WHEN indicator_dict_id=(SELECT id FROM indicator_dicts WHERE code='WEIGHT') THEN '68' "
+                "ELSE value END, "
+                "original_value=CASE "
+                "WHEN indicator_dict_id=(SELECT id FROM indicator_dicts WHERE code='HEIGHT') THEN '172' "
+                "WHEN indicator_dict_id=(SELECT id FROM indicator_dicts WHERE code='WEIGHT') THEN '68' "
+                "ELSE original_value END "
+                "WHERE method_snapshot='v10 合成体检演示' "
+                "AND indicator_dict_id IN "
+                "(SELECT id FROM indicator_dicts WHERE code IN ('HEIGHT','WEIGHT'))"
+            ))
             connection.execute(text("ALTER TABLE report_indicators DROP CONSTRAINT IF EXISTS ck_report_indicators_result_status"))
             connection.execute(text(
                 "ALTER TABLE report_indicators ADD CONSTRAINT ck_report_indicators_result_status "

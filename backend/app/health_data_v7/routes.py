@@ -14,6 +14,7 @@ from app.models import (
 )
 from app.services.permissions import ROLE_ADMIN, ROLE_INSTITUTION_ADMIN, ROLE_USER, roles_required
 from app.services.dates import calendar_date_iso
+from app.services.indicator_values import evaluate_result_status
 
 
 BUSINESS_TZ = ZoneInfo("Asia/Shanghai")
@@ -102,6 +103,10 @@ def _guideline_bounds(owner, definition):
 
 
 def _track_reference(owner, definition, points):
+    if definition.code in {"HEIGHT", "WEIGHT", "HIP"}:
+        return {"kind": "none", "low": None, "high": None, "label": "描述性测量值",
+                "context": "该数值不单独判定正常或异常；体重相关风险请结合 BMI 等指标查看",
+                "varies": False}
     # Prefer the most recent usable range carried by an institution report.
     # Historical institutions can legitimately use different ranges, so the
     # latest range is drawn while every point keeps its original range in the
@@ -123,17 +128,6 @@ def _track_reference(owner, definition, points):
             if varies else "优先采用机构报告提供的参考范围",
             "varies": varies,
         }
-    if definition.code == "WEIGHT":
-        height = IndicatorDict.query.filter_by(code="HEIGHT").first()
-        latest = None if height is None else SelfMeasurement.query.filter_by(
-            user_id=owner.id, indicator_dict_id=height.id).order_by(SelfMeasurement.measured_at.desc()).first()
-        age = _owner_age(owner)
-        if latest and age is not None and age >= 18 and float(latest.value) > 0:
-            metres = float(latest.value) / 100
-            return {"kind": "derived", "low": round(18.5 * metres * metres, 1),
-                    "high": round(23.9 * metres * metres, 1), "label": "按成人 BMI 换算的参考体重",
-                    "context": f"根据最近身高 {float(latest.value):g} cm 换算，仅作健康管理参考", "varies": False,
-                    **REFERENCE_SOURCES["BMI"]}
     meta = REFERENCE_SOURCES.get(definition.code)
     low, high = _guideline_bounds(owner, definition)
     if meta and (low is not None or high is not None):
@@ -339,13 +333,15 @@ def health_trends(domain_id):
         for result, report in reports.order_by(InstitutionReport.exam_date, InstitutionReport.published_at, InstitutionReport.id).all():
             try: numeric = float(result.value)
             except (TypeError, ValueError): continue
+            result_payload = result.to_dict()
             source = {"type": "institution", "id": report.institution_id,
                       "name": report.institution.name, "branch_name": report.institution.branch_name}
             available_institutions[report.institution_id] = source
             day = calendar_date_iso(report.exam_date)
             daily_reports[day].append({"date": day, "value": numeric,
                 "unit": result.normalized_unit or definition.unit, "reference": result.reference_text,
-                "is_abnormal": result.is_abnormal, "result_status": result.result_status,
+                "is_abnormal": result_payload["is_abnormal"],
+                "result_status": result_payload["result_status"],
                 "indicator_code": definition.code,
                 "health_data_id": report_key(report), "source": source,
                 "published_at": report.published_at.isoformat() if report.published_at else None})
@@ -357,6 +353,9 @@ def health_trends(domain_id):
                 day = _measurement_day(row.measured_at)
                 daily_self[day.isoformat()] = {"date": day.isoformat(), "value": float(row.value),
                     "unit": definition.unit, "measured_at": row.measured_at.isoformat(),
+                    "result_status": evaluate_result_status(
+                        definition, str(row.value), subject=owner, on_date=day,
+                    ),
                     "health_data_id": self_key(owner.id, day),
                     "source": {"type": "self", "id": None, "name": "个人日常测量"}}
         points = []

@@ -7,7 +7,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useAppearanceStore } from "../stores/appearance";
 import { initTrendChart } from "../utils/echartsRuntime";
 import { buildTrendChartOption, buildTrendReferenceArea } from "../utils/chartAppearance";
-import { formatBusinessDate, resultStatusMeta } from "../utils/userPlatform";
+import { formatBusinessDate, resultStatusMeta, shouldDisplayResultStatus } from "../utils/userPlatform";
 
 const props = defineProps({
   points: { type: Array, default: () => [] },
@@ -47,8 +47,12 @@ function render() {
     const item = Array.isArray(items) ? items[0] : items;
     const point = item?.data?.point || {};
     const originalReference = point.reference ? `<br>报告参考：${escapeHtml(point.reference)}` : "";
-    const status = resultStatusMeta(point.result_status, { code: point.indicator_code }, point.value);
-    const abnormal = point.source?.type !== "self" ? `<br><strong>报告判定：${escapeHtml(status.label)}</strong>` : "";
+    const status = shouldDisplayResultStatus(point.result_status)
+      ? resultStatusMeta(point.result_status, { code: point.indicator_code }, point.value)
+      : null;
+    const abnormal = point.source?.type !== "self" && status
+      ? `<br><strong>报告判定：${escapeHtml(status.label)}</strong>`
+      : "";
     const source = point.source?.type === "self" ? "个人日常测量" : [point.source?.name, point.source?.branch_name].filter(Boolean).join(" · ") || props.sourceName;
     const other = point.same_day_other_count ? `<br>同日另有 ${point.same_day_other_count} 条机构记录，已采用最后归档结果` : "";
     return `${escapeHtml(point.date || "日期待核对")}<br>${escapeHtml(props.indicatorName)}：<strong>${escapeHtml(point.value)} ${escapeHtml(props.unit)}</strong><br>来源：${escapeHtml(source)}${originalReference}${abnormal}${other}`;

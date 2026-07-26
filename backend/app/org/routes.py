@@ -20,7 +20,13 @@ from app.models import (
 )
 from app.org import org_bp
 from app.services import get_ocr_provider, get_storage_backend
-from app.services.indicator_values import IndicatorValueError, evaluate_result_status, normalize_indicator_value, normalize_ocr_indicator_value
+from app.services.indicator_values import (
+    IndicatorValueError,
+    evaluate_result_status,
+    normalize_indicator_value,
+    normalize_ocr_indicator_value,
+    validate_indicator_plausibility,
+)
 from app.services.notifications import enqueue_user_notification
 from app.services.institution_management import (
     ManagementValidationError, apply_institution_payload, apply_package_payload,
@@ -779,12 +785,16 @@ def add_indicator(report_id):
     except DomainAdmissionError as exc: return {"message": str(exc), "code": "DOMAIN_NOT_ALLOWED"}, 400
     try: value = normalize_indicator_value(definition, payload.get("value"))
     except IndicatorValueError as exc: return {"message": str(exc)}, 400
+    try: validate_indicator_plausibility(definition, value)
+    except IndicatorValueError as exc: return {"message": str(exc)}, 400
+    reference_text = (payload.get("reference_text") or "").strip() or None
     result_status = evaluate_result_status(
         definition,
         value,
         subject=report.owner,
         on_date=report.exam_date,
         abnormal_flag=payload.get("abnormal_flag"),
+        reference_text=reference_text,
     )
     row = ReportIndicator(report_id=report.id, indicator_dict_id=definition.id, value=value,
         is_abnormal=result_status in {"high", "low", "positive", "abnormal"},
@@ -793,7 +803,7 @@ def add_indicator(report_id):
         display_domain_id=display_domain_id, original_name=(payload.get("original_name") or definition.name).strip(),
         original_value=str(payload.get("original_value", payload.get("value"))),
         original_unit=(payload.get("original_unit") or definition.unit), normalized_unit=definition.unit,
-        reference_text=(payload.get("reference_text") or "").strip() or None,
+        reference_text=reference_text,
         method_snapshot=(payload.get("method") or "").strip() or None,
         abnormal_flag=(payload.get("abnormal_flag") or "").strip() or None,
         mapping_confidence=payload.get("mapping_confidence"), mapping_status="confirmed")
@@ -818,20 +828,26 @@ def update_indicator(report_id, indicator_id):
     except DomainAdmissionError as exc: return {"message": str(exc), "code": "DOMAIN_NOT_ALLOWED"}, 400
     try: value = normalize_indicator_value(definition, payload.get("value", row.value))
     except IndicatorValueError as exc: return {"message": str(exc)}, 400
+    try: validate_indicator_plausibility(definition, value)
+    except IndicatorValueError as exc: return {"message": str(exc)}, 400
+    reference_text = (payload.get("reference_text", row.reference_text) or "").strip() or None
+    abnormal_flag = (payload.get("abnormal_flag", row.abnormal_flag) or "").strip() or None
     row.indicator_dict_id = definition.id; row.value = value
     row.result_status = evaluate_result_status(
         definition,
         value,
         subject=report.owner,
         on_date=report.exam_date,
-        abnormal_flag=payload.get("abnormal_flag", row.abnormal_flag),
+        abnormal_flag=abnormal_flag,
+        reference_text=reference_text,
     )
     row.is_abnormal = row.result_status in {"high", "low", "positive", "abnormal"}
     row.display_domain_id = display_domain_id
     row.original_name = (payload.get("original_name") or row.original_name or definition.name).strip()
     row.original_value = str(payload.get("original_value", payload.get("value", row.original_value or value)))
     row.original_unit = payload.get("original_unit", row.original_unit or definition.unit); row.normalized_unit = definition.unit
-    row.reference_text = payload.get("reference_text", row.reference_text); row.method_snapshot = payload.get("method", row.method_snapshot)
+    row.reference_text = reference_text; row.abnormal_flag = abnormal_flag
+    row.method_snapshot = payload.get("method", row.method_snapshot)
     try: db.session.commit()
     except IntegrityError: db.session.rollback(); return {"message": "indicator already exists in report"}, 409
     return {"item": row.to_dict()}, 200
@@ -1067,12 +1083,17 @@ def ocr_report():
                 excluded.append({"field": candidate.get("raw_name") or definition.name, "reason": "outside_package_domain"}); continue
             try: value = normalize_ocr_indicator_value(definition, candidate["value"])
             except IndicatorValueError: continue
+            try: validate_indicator_plausibility(definition, value)
+            except IndicatorValueError:
+                excluded.append({"field": candidate.get("raw_name") or definition.name, "reason": "implausible_value"})
+                continue
             result_status = evaluate_result_status(
                 definition,
                 value,
                 subject=report.owner,
                 on_date=report.exam_date,
                 abnormal_flag=candidate.get("abnormal_flag"),
+                reference_text=candidate.get("reference_text"),
             )
             report.indicators.append(ReportIndicator(indicator_dict_id=definition.id, value=value,
                 is_abnormal=result_status in {"high", "low", "positive", "abnormal"},

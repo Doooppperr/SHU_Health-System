@@ -9,6 +9,8 @@ import {
   genderLabel,
   normalizeTimelineEntry,
   packageTypeLabel,
+  resultStatusMeta,
+  shouldDisplayResultStatus,
 } from "./userPlatform";
 
 describe("user platform presentation helpers", () => {
@@ -53,6 +55,14 @@ describe("user platform presentation helpers", () => {
     expect(appointmentMeta("awaiting_report").label).toBe("待出结果");
     expect(genderLabel("female_all")).toBe("女性全龄");
     expect(packageTypeLabel("combined")).toBe("综合组合");
+  });
+
+  it("renders only statuses backed by an actual determination", () => {
+    expect(shouldDisplayResultStatus("normal")).toBe(true);
+    expect(shouldDisplayResultStatus("high")).toBe(true);
+    expect(shouldDisplayResultStatus("unknown")).toBe(false);
+    expect(shouldDisplayResultStatus(undefined)).toBe(false);
+    expect(resultStatusMeta("unknown").label).toBe("");
   });
 
   it("never renders the browser Invalid Date marker", () => {
