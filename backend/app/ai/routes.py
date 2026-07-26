@@ -1078,8 +1078,13 @@ def _resolve_chat_locally(user, chat_request):
             "client": None,
         }
 
+    # A record-backed question must reach the analysis pipeline even when it
+    # contains generic product words such as “趋势” or “历史指标”.  The FAQ
+    # entry for the Health Trend page is useful only when no record context is
+    # active; otherwise it hides the requested indicator analysis while the
+    # resolver has already selected the correct reports.
     faq_answer = find_faq_answer(message)
-    if faq_answer:
+    if faq_answer and not chat_request.get("record_context"):
         return {
             "result": {"reply": faq_answer, "decision": "answer", "usage": {}},
             "source": "faq",
