@@ -6,7 +6,6 @@
         <h2>沿着时间，看见每一次健康行动</h2>
         <p>体检按一次行程完整保留，日常测量按天收拢，不让零散数据淹没真正重要的变化。</p>
       </div>
-      <el-button type="primary" @click="router.push({ name: 'dashboard', query: { quick: 'measurement' } })">记录今日测量</el-button>
     </section>
 
     <el-card shadow="never" class="user-panel timeline-filter-card">
@@ -91,8 +90,7 @@
 
       <div v-if="!loading && !visibleItems.length" class="user-empty-state user-empty-state--page">
         <span class="user-empty-state__icon">历</span>
-        <div><strong>这段时间还没有健康记录</strong><p>可以调整筛选范围，或从一次日常测量开始。</p></div>
-        <el-button type="primary" plain @click="router.push({ name: 'dashboard', query: { quick: 'measurement' } })">记录测量</el-button>
+        <div><strong>这段时间还没有健康记录</strong><p>可以调整成员、日期或记录类型后重新查看。</p></div>
       </div>
     </section>
 

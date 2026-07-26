@@ -26,7 +26,7 @@ beforeEach(()=>{
   healthApi.fetchHealthDomains.mockResolvedValue({data:{items:[{id:1,name:"心脑血管"},{id:2,name:"代谢"}]}});
   indicatorApi.fetchIndicatorDicts.mockResolvedValue({data:{items:[]}});
   orgApi.fetchOrgAppointmentCapacity.mockResolvedValue({data:{unlimited:false,daily_appointment_limit:20}});
-  orgApi.fetchOrgReports.mockResolvedValue({data:{items:[]}});
+  orgApi.fetchOrgReports.mockResolvedValue({data:{items:[],total:0,filtered_total:0}});
   orgApi.fetchOrgAppointments.mockResolvedValue({data:{items:[]}});
 });
 afterEach(()=>{wrappers.splice(0).forEach((wrapper)=>wrapper.unmount());document.body.innerHTML="";});
@@ -52,5 +52,32 @@ describe("institution platform views",()=>{
     expect(wrapper.text()).toContain("今日接待");expect(wrapper.text()).toContain("待归档");expect(wrapper.text()).toContain("本院归档");expect(wrapper.text()).toContain("机构共享档案");
     const archiveTab=wrapper.findAll(".report-tabs button").find((item)=>item.text().includes("待归档"));await archiveTab.trigger("click");await flushPromises();
     expect(wrapper.text()).toContain("都市年度基础体检");expect(wrapper.text()).toContain("导入体检报告并识别");expect(wrapper.text()).not.toContain("OCR 上传");
+  });
+
+  it("filters both archive tabs and shows a readable exam date",async()=>{
+    orgApi.fetchOrgReports.mockImplementation((params)=>Promise.resolve({data:{
+      total:params.scope==="branch"?12:8,
+      filtered_total:1,
+      items:[{
+        id:3,subject_name_snapshot:"林国安",subject_username:"test3",
+        exam_date:"2026-07-23T00:00:00",indicator_count:6,
+        access_mode:params.scope==="organization"?"cross_branch_read_only":"branch",
+        source_branch:{name:"澄心健康管理中心",branch_name:"徐汇综合院区"},
+      }],
+    }}));
+    const wrapper=mountView(OrgReportsView);await flushPromises();
+    const historyTab=wrapper.findAll(".report-tabs button").find((item)=>item.text().includes("本院归档"));
+    await historyTab.trigger("click");await flushPromises();
+    expect(wrapper.text()).toContain("体检日期：2026年7月23日");
+    expect(wrapper.text()).toContain("用户名：test3");
+    expect(wrapper.text()).toContain("共 12 份，当前显示 1 份");
+    const subject=wrapper.find(".archive-toolbar .el-input__inner");
+    await subject.setValue("test3");
+    const filterButton=wrapper.findAll(".archive-toolbar .el-button").find((item)=>item.text().includes("筛选档案"));
+    await filterButton.trigger("click");await flushPromises();
+    expect(orgApi.fetchOrgReports).toHaveBeenCalledWith(expect.objectContaining({scope:"branch",subject:"test3"}));
+    const sharedTab=wrapper.findAll(".report-tabs button").find((item)=>item.text().includes("机构共享档案"));
+    await sharedTab.trigger("click");await flushPromises();
+    expect(orgApi.fetchOrgReports).toHaveBeenCalledWith(expect.objectContaining({scope:"organization",access:"cross_branch",subject:"test3"}));
   });
 });

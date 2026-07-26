@@ -15,6 +15,7 @@ from app.models import (
     WaitlistSubscriptionParticipant, AvailabilityNotificationEvent,
 )
 from app.services.domain_rules import current_package_version
+from app.services.account_email import effective_account_email
 from app.services.permissions import ROLE_USER, roles_required
 
 
@@ -189,8 +190,9 @@ def enqueue_available(institution, day, slot):
                                               remaining_snapshot=remaining)
         db.session.add(event)
         key = f"waitlist:{sub.id}:revision:{slot.revision}"
+        subscriber = db.session.get(User, sub.subscriber_user_id)
         db.session.add(NotificationOutbox(event_type="waitlist_available", idempotency_key=key,
-            recipient=sub.notification_email, payload={"subscription_id": sub.id,
+            recipient=effective_account_email(subscriber) or sub.notification_email, payload={"subscription_id": sub.id,
                 "institution": institution.name, "branch": institution.branch_name,
                 "appointment_date": day.isoformat(), "party_size": sub.party_size,
                 "message": "名额先到先得，本邮件不代表预约成功或已经保留名额。", "login_url": "/login"}))
@@ -237,7 +239,7 @@ def create_group():
         appointment_date=day, party_size=len(participants), package_name_snapshot=version.name_snapshot,
         package_price_snapshot=version.price_snapshot, domain_snapshot=domain_snapshot,
         booking_notice_snapshot=version.booking_notice_snapshot, notice_version_snapshot=version.version_number,
-        notice_confirmed_at=datetime.now(timezone.utc), contact_snapshot={"email": g.current_user.email, "phone": g.current_user.phone})
+        notice_confirmed_at=datetime.now(timezone.utc), contact_snapshot={"email": effective_account_email(g.current_user), "phone": g.current_user.phone})
     db.session.add(group); db.session.flush()
     now = datetime.now(timezone.utc)
     for user, _authorized_at in participants:
@@ -246,7 +248,7 @@ def create_group():
             package_version_id=version.id, appointment_date=day, active_date_key=day, status="unfulfilled",
             user_name_snapshot=user.real_name or user.username, user_health_id_snapshot=user.health_id,
             user_birth_date_snapshot=user.birth_date, user_gender_snapshot=user.gender,
-            user_contact_snapshot=user.phone or user.email, package_name_snapshot=version.name_snapshot,
+            user_contact_snapshot=user.phone or effective_account_email(user), package_name_snapshot=version.name_snapshot,
             package_price_snapshot=version.price_snapshot)
         db.session.add(appointment); db.session.flush()
         db.session.add(AppointmentEvent(appointment_id=appointment.id, event_type="booked",
@@ -255,7 +257,10 @@ def create_group():
     slot.revision += 1
     after = _remaining(institution, day)
     _reset_unsatisfied(institution.id, day, after)
-    recipient = institution.notification_email or next((admin.email for admin in institution.administrators if admin.email), None)
+    recipient = institution.notification_email or next(
+        (effective_account_email(admin) for admin in institution.administrators if effective_account_email(admin)),
+        None,
+    )
     if institution.notification_enabled and recipient:
         db.session.add(NotificationOutbox(event_type="booking_group_created",
             idempotency_key=f"booking-group:{group.id}:created", recipient=recipient,
@@ -278,14 +283,15 @@ def create_group():
         for user, _authorized_at in participants
     ]
     for notification_user in notification_users.values():
-        if not notification_user.email:
+        notification_email = effective_account_email(notification_user)
+        if not notification_email:
             continue
         is_organizer = notification_user.id == g.current_user.id
         own = participant_by_id.get(notification_user.id)
         db.session.add(NotificationOutbox(
             event_type="booking_user_confirmed",
             idempotency_key=f"booking-group:{group.id}:user:{notification_user.id}:confirmed",
-            recipient=notification_user.email,
+            recipient=notification_email,
             payload={
                 "group_code": group.group_code,
                 "institution": institution.name,
@@ -363,7 +369,7 @@ def create_waitlist():
     if package is None: return result
     participants, error = _participants(g.current_user, payload.get("participant_user_ids"))
     if error: return error
-    if not g.current_user.email:
+    if not effective_account_email(g.current_user):
         return {"message": "订阅空位提醒前，请先绑定通知邮箱"}, 400
     _lock_capacity(institution, day)
     remaining = _remaining(institution, day)
@@ -376,7 +382,7 @@ def create_waitlist():
     if existing: db.session.rollback(); return {"message": "equivalent active subscription already exists"}, 409
     sub = WaitlistSubscription(subscriber_user_id=g.current_user.id, institution_id=institution.id,
         package_id=package.id, package_version_id=version.id, appointment_date=day,
-        party_size=len(participants), notification_email=g.current_user.email)
+        party_size=len(participants), notification_email=effective_account_email(g.current_user))
     db.session.add(sub); db.session.flush()
     for user, authorized_at in participants:
         db.session.add(WaitlistSubscriptionParticipant(subscription_id=sub.id, subject_user_id=user.id,

@@ -111,6 +111,50 @@ def test_same_organization_published_reports_are_read_only_and_audited(app, clie
         assert ReportAccessLog.query.filter_by(report_id=report_id, access_type="detail").count() >= 1
 
 
+def test_org_archives_filter_by_account_identity_and_exam_date(app, client):
+    headers = login(client, "institution1_staff1")
+    with app.app_context():
+        report = (
+            InstitutionReport.query
+            .filter_by(institution_id=1, status="published")
+            .filter(InstitutionReport.matched_user_id.isnot(None))
+            .first()
+        )
+        assert report is not None
+        username = report.owner.username
+        real_name = report.subject_name_snapshot
+        health_id = report.subject_health_id
+        exam_date = report.exam_date.isoformat()
+        report_id = report.id
+
+    for subject in (username, real_name[:1], health_id):
+        response = client.get(
+            "/api/org/reports",
+            headers=headers,
+            query_string={
+                "scope": "branch",
+                "status": "published",
+                "subject": subject,
+                "start_date": exam_date,
+                "end_date": exam_date,
+            },
+        )
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert payload["total"] >= payload["filtered_total"] >= 1
+        assert report_id in {item["id"] for item in payload["items"]}
+        assert all(item["exam_date"] == exam_date for item in payload["items"])
+        assert next(item for item in payload["items"] if item["id"] == report_id)["subject_username"] == username
+
+    invalid = client.get(
+        "/api/org/reports",
+        headers=headers,
+        query_string={"scope": "branch", "start_date": "2026-08-01", "end_date": "2026-07-01"},
+    )
+    assert invalid.status_code == 400
+    assert "不能晚于" in invalid.get_json()["message"]
+
+
 def test_booking_group_is_atomic_and_proxy_booking_is_separate(app, client):
     booker = login(client, "test1")
     with app.app_context():

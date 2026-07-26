@@ -30,10 +30,10 @@
           </el-form-item>
           <el-form-item label="手机号"><el-input v-model="form.phone" /></el-form-item>
           <el-form-item label="通知邮箱">
-            <el-input v-model="form.email" placeholder="空位提醒需要绑定并验证邮箱" />
+            <el-input :model-value="form.email" disabled />
             <div class="email-status">
               <el-tag v-if="form.email" type="success" effect="plain">已绑定</el-tag>
-              <span v-else>邮箱为注册和通知必填项</span>
+              <span>{{ form.email ? "请在下方修改绑定邮箱" : "邮箱为注册和通知必填项" }}</span>
             </div>
           </el-form-item>
         </div>
@@ -42,6 +42,7 @@
         <el-button type="primary" :loading="saving" @click="save">保存资料</el-button>
       </el-form>
     </el-card>
+    <AccountEmailPanel :email="form.email" @changed="emailChanged" />
     <AccountSecurityPanel :email="form.email" />
   </div>
 </template>
@@ -51,6 +52,7 @@ import { onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
 import { fetchProfile, updateProfile } from "../api/profile";
 import AccountSecurityPanel from "../components/AccountSecurityPanel.vue";
+import AccountEmailPanel from "../components/AccountEmailPanel.vue";
 
 const loading = ref(false);
 const saving = ref(false);
@@ -82,6 +84,7 @@ async function save() {
     const payload = { ...form };
     delete payload.health_id;
     delete payload.email_verified_at;
+    delete payload.email;
     await updateProfile(payload);
     ElMessage.success("个人资料已保存");
     await load();
@@ -90,6 +93,11 @@ async function save() {
   } finally {
     saving.value = false;
   }
+}
+
+function emailChanged(user) {
+  form.email = user?.email || "";
+  form.email_verified_at = user?.email_verified_at || null;
 }
 
 async function copyHealthId() {

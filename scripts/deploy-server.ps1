@@ -5,6 +5,7 @@ param(
     [string]$SshUser = "ubuntu",
     [switch]$SkipTests,
     [switch]$SyncDemoDatabase,
+    [switch]$SyncDemoMedia,
     [switch]$SyncMailSettings
 )
 
@@ -77,6 +78,7 @@ try {
             backend/migrations `
             backend/rag_sources `
             backend/scripts `
+            backend/demo_media_manifest.json `
             backend/.env.example `
             backend/README.md `
             backend/requirements.txt `
@@ -100,7 +102,7 @@ try {
     if ($SyncDemoDatabase) {
         $sourceDatabase = Join-Path $projectRoot "backend\instance\health_system.db"
         if (-not (Test-Path -LiteralPath $sourceDatabase -PathType Leaf)) {
-            throw "Synthetic demo database not found: $sourceDatabase"
+            throw "Demo database not found: $sourceDatabase"
         }
         Remove-Item -LiteralPath $demoSnapshotPath -Force -ErrorAction SilentlyContinue
         $snapshotCode = @"
@@ -125,6 +127,9 @@ finally:
         Assert-LastExitCode "Demo database upload"
         $remoteDatabaseArgument = " '$remoteDemoSnapshot'"
 
+    }
+
+    if ($SyncDemoDatabase -or $SyncDemoMedia) {
         $uploadsRoot = Join-Path $projectRoot "backend\uploads"
         $requiredDemoAssetDirectories = @(
             (Join-Path $uploadsRoot "institutions\demo-v8"),
@@ -132,9 +137,12 @@ finally:
         )
         foreach ($directory in $requiredDemoAssetDirectories) {
             if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
-                throw "Synthetic demo asset directory not found: $directory"
+                throw "Open-license demo asset directory not found: $directory"
             }
         }
+        & (Join-Path $projectRoot "backend\.venv\Scripts\python.exe") `
+            (Join-Path $projectRoot "backend\scripts\refresh_demo_media.py") --check-only
+        Assert-LastExitCode "Demo media validation"
         Remove-Item -LiteralPath $demoAssetsPath -Force -ErrorAction SilentlyContinue
         tar -czf $demoAssetsPath -C $uploadsRoot institutions/demo-v8 health-assets/demo-v8
         Assert-LastExitCode "Demo asset packaging"

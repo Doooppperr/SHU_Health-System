@@ -39,7 +39,7 @@
     </el-dialog>
 
     <el-drawer v-model="packageDrawerVisible" :title="`${selectedInstitution?.name || ''} · 当前套餐`" size="min(760px, 94vw)">
-      <el-alert title="管理员在“审核记录”中通过或驳回机构申请，不能在这里直接修改套餐。" type="info" show-icon :closable="false" />
+      <el-alert title="管理员在“机构审核记录”中通过或驳回机构申请，不能在这里直接修改套餐。" type="info" show-icon :closable="false" />
       <el-table :data="packages" v-loading="packagesLoading" empty-text="暂无套餐">
         <el-table-column prop="name" label="套餐" min-width="160" /><el-table-column prop="focus_area" label="重点方向" min-width="140" /><el-table-column label="价格" width="100"><template #default="scope">¥{{ Number(scope.row.price || 0).toFixed(2) }}</template></el-table-column><el-table-column label="状态" width="90"><template #default="scope"><el-tag :type="scope.row.is_active ? 'success' : 'info'">{{ scope.row.is_active ? "启用" : "停用" }}</el-tag></template></el-table-column><el-table-column label="详情" width="100"><template #default="scope"><el-button link type="primary" @click="openPackageDetail(scope.row)">查看详情</el-button></template></el-table-column>
       </el-table>

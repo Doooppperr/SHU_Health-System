@@ -42,7 +42,7 @@ if [[ -n "$mail_settings" ]]; then
     fi
 fi
 if [[ -n "$demo_database" && -z "$demo_assets" ]]; then
-    echo "Demo database sync requires the matching synthetic asset archive." >&2
+    echo "Demo database sync requires the matching open-license asset archive." >&2
     exit 2
 fi
 
@@ -280,6 +280,62 @@ if ! wait_for_database_connection || ! (
     exit 1
 fi
 unset DATABASE_URL
+
+# The media-only path refreshes exactly the two demo-v8 directories and their
+# existing report-asset metadata. It never imports a local database or removes
+# any other upload. The full uploads/database backups above cover rollback.
+if [[ -n "$demo_assets" && -z "$demo_database" ]]; then
+    unexpected_assets=$(tar -tzf "$demo_assets" | grep -Ev '^(institutions/demo-v8|health-assets/demo-v8)(/|/[^/]+\.png)?$' || true)
+    asset_count=$(tar -tzf "$demo_assets" | grep -Ec '\.png$' || true)
+    if [[ -n "$unexpected_assets" || "$asset_count" != "30" ]]; then
+        echo "Demo asset archive contains an unexpected path; restoring the previous release." >&2
+        restore_database_backup
+        restore_uploads_backup
+        start_current_services
+        exit 1
+    fi
+    media_stage=$(mktemp -d /tmp/healthdoc-demo-media.XXXXXX)
+    if ! tar -xzf "$demo_assets" -C "$media_stage"; then
+        rm -rf "$media_stage"
+        restore_database_backup
+        restore_uploads_backup
+        start_current_services
+        exit 1
+    fi
+    install -d -o healthdoc -g www-data -m 750 \
+        /var/lib/healthdoc/uploads/institutions \
+        /var/lib/healthdoc/uploads/health-assets
+    rm -rf \
+        /var/lib/healthdoc/uploads/institutions/demo-v8 \
+        /var/lib/healthdoc/uploads/health-assets/demo-v8
+    cp -a "$media_stage/institutions/demo-v8" /var/lib/healthdoc/uploads/institutions/
+    cp -a "$media_stage/health-assets/demo-v8" /var/lib/healthdoc/uploads/health-assets/
+    rm -rf "$media_stage"
+    chown -R healthdoc:www-data \
+        /var/lib/healthdoc/uploads/institutions/demo-v8 \
+        /var/lib/healthdoc/uploads/health-assets/demo-v8
+    find /var/lib/healthdoc/uploads/institutions/demo-v8 /var/lib/healthdoc/uploads/health-assets/demo-v8 \
+        -type d -exec chmod 750 {} +
+    find /var/lib/healthdoc/uploads/institutions/demo-v8 /var/lib/healthdoc/uploads/health-assets/demo-v8 \
+        -type f -exec chmod 640 {} +
+    set -a
+    # shellcheck disable=SC1091
+    source "$env_file"
+    set +a
+    if ! (
+        cd "$release/backend"
+        /opt/healthdoc/venv/bin/python scripts/refresh_demo_media.py \
+            --upload-dir /var/lib/healthdoc/uploads --apply --yes
+    ); then
+        unset DATABASE_URL
+        restore_database_backup
+        restore_uploads_backup
+        start_current_services
+        exit 1
+    fi
+    unset DATABASE_URL
+    rm -f "$demo_assets"
+fi
 
 install -d -o healthdoc -g www-data -m 750 \
     "$rag_root" "$rag_root/qdrant" "$rag_root/models" \

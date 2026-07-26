@@ -248,11 +248,11 @@ npm audit --omit=dev
 - `backend/uploads/`
 - `backend/.env`（单独加密保存，不进入 Git）
 
-仓库只对 `backend/uploads/` 中 30 个 `demo-v8` 合成素材开放跟踪例外，其中 15 个是私有报告附件、15 个是分院封面，用于保证 fresh clone 与演示数据库引用一致；其余上传和运行时文件仍由 `.gitignore` 排除。
+仓库只对 `backend/uploads/` 中 30 个 `demo-v8` 开放授权演示素材开放跟踪例外，其中 15 个是带“非诊断依据”水印的医学附件、15 个是机构医疗场景封面。来源、许可、处理方式和哈希记录在 `backend/demo_media_manifest.json`；其余上传和运行时文件仍由 `.gitignore` 排除。
 
 ## 服务器状态
 
-仓库包含 Apache、Waitress、API/通知 worker 双 systemd 服务、openGauss 和带回滚的发布脚本。普通发布保留服务器数据库；显式 `-SyncDemoDatabase` 会先离线备份 openGauss 与上传目录，再全量导入仓库中的 schema v8 合成演示快照及 30 个水印素材并核对完整性。本轮发布保留服务器 root-only SMTP 配置，不从本机同步 `.env`。开发文档不进入服务器运行目录，但完整保留在 GitHub。详见[服务器部署与同步](项目文档/服务器部署与同步.md)。
+仓库包含 Apache、Waitress、API/通知 worker 双 systemd 服务、openGauss 和带回滚的发布脚本。普通发布保留服务器数据库；`-SyncDemoMedia` 只刷新 30 个经清单校验的演示素材及对应附件元数据，不覆盖数据库；仅显式 `-SyncDemoDatabase` 才会全量导入演示快照。本轮发布保留服务器 root-only SMTP 配置，不从本机同步 `.env`。开发文档不进入服务器运行目录，但完整保留在 GitHub。详见[服务器部署与同步](项目文档/服务器部署与同步.md)。
 
 ## 文档
 

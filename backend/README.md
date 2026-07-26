@@ -204,4 +204,4 @@ Waitress 本机演示推荐从项目根目录运行：
   --source .\instance\health_system.db --target-url $env:TARGET_DATABASE_URL --replace
 ```
 
-脚本验证源库完整性与外键，创建完整目标 schema，复制全部表、重置生成序列并逐表核对行数。`--replace` 会清空目标应用表，只能在已备份且明确允许覆盖的演示环境使用；服务器演示发布入口为 `scripts/deploy-server.ps1 -SyncDemoDatabase`，会同步 30 个 demo-v8 合成素材并安装独立通知 worker 服务，同时保留服务器 SMTP 配置。
+脚本验证源库完整性与外键，创建完整目标 schema，复制全部表、重置生成序列并逐表核对行数。`--replace` 会清空目标应用表，只能在已备份且明确允许覆盖的隔离演示环境使用。普通服务器素材更新使用 `scripts/deploy-server.ps1 -SyncDemoMedia`，只同步 30 个清单限定的开放授权 `demo-v8` 素材；完整演示库覆盖才使用 `-SyncDemoDatabase`。

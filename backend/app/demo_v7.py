@@ -307,7 +307,7 @@ def _package_key(institution_index: int, name: str) -> tuple[int, str]:
 
 
 def _write_png(path: Path, palette: tuple[tuple[int, int, int], ...], width=480, height=270) -> bytes:
-    """Create a deterministic synthetic PNG with an unmistakable demo watermark."""
+    """Create a tiny deterministic raster fixture used only by automated tests."""
     if current_app.config.get("TESTING", False):
         # Unit tests validate metadata and permissions, not raster rendering.
         # Keeping the in-memory fixture tiny avoids repeatedly generating six
@@ -383,6 +383,31 @@ def _write_png(path: Path, palette: tuple[tuple[int, int, int], ...], width=480,
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(raw)
     return raw
+
+
+def _load_demo_media(
+    storage_key: str,
+    destination: Path,
+    palette: tuple[tuple[int, int, int], ...],
+    *,
+    test_width: int = 480,
+    test_height: int = 270,
+) -> tuple[bytes, int, int]:
+    """Copy a checked-in open-license demo asset without regenerating it."""
+    if current_app.config.get("TESTING", False):
+        raw = _write_png(destination, palette, test_width, test_height)
+        return raw, 2, 2
+    source = Path(__file__).resolve().parents[1] / "uploads" / storage_key
+    if not source.is_file():
+        raise DemoResetSafetyError(f"缺少开放授权演示素材：{storage_key}")
+    raw = source.read_bytes()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.resolve() != source.resolve():
+        destination.write_bytes(raw)
+    from PIL import Image
+    with Image.open(BytesIO(raw)) as image:
+        width, height = image.size
+    return raw, width, height
 
 
 def _create_catalog(institutions: list[Institution]) -> dict[tuple[int, str], Package]:
@@ -527,7 +552,7 @@ def _create_demo_images(institutions: list[Institution]) -> None:
     for index, institution in enumerate(institutions, start=1):
         palette = palettes[(index - 1) % len(palettes)]
         key = f"institutions/demo-v8/branch-{index}-cover.png"
-        _write_png(upload_root / key, palette, 720, 405)
+        _load_demo_media(key, upload_root / key, palette, test_width=720, test_height=405)
         db.session.add(InstitutionImage(
             institution_id=institution.id,
             storage_key=key,
@@ -836,17 +861,19 @@ def _create_report(
     if asset:
         domain_code, title, palette, annotation = asset
         key = f"health-assets/demo-v8/report-{report.id}-{domain_code}.png"
-        raw = _write_png(Path(current_app.config["UPLOAD_DIR"]) / key, palette)
+        raw, width, height = _load_demo_media(
+            key, Path(current_app.config["UPLOAD_DIR"]) / key, palette,
+        )
         row = ReportAsset(
             report_id=report.id,
             health_domain_id=domains[domain_code].id,
-            modality="synthetic_demo_image",
+            modality="open_license_demo_image",
             title=title,
             storage_key=key,
             mime_type="image/png",
             byte_size=len(raw),
-            width=480,
-            height=270,
+            width=width,
+            height=height,
             sha256=hashlib.sha256(raw).hexdigest(),
             annotation_text=annotation,
             sort_order=0,
@@ -924,26 +951,30 @@ def _create_imported_historical_report(
     return report
 
 
-def _add_synthetic_report_asset(report, staff, domain, sequence):
+def _add_demo_report_asset(report, staff, domain, sequence):
     palettes = (
         ((21, 96, 91), (60, 150, 139), (214, 241, 236)),
         ((43, 78, 132), (86, 137, 190), (220, 235, 248)),
         ((91, 58, 126), (145, 104, 171), (238, 226, 246)),
     )
     key = f"health-assets/demo-v8/report-{report.id}-{domain.code}.png"
-    raw = _write_png(Path(current_app.config["UPLOAD_DIR"]) / key, palettes[sequence % len(palettes)])
+    raw, width, height = _load_demo_media(
+        key,
+        Path(current_app.config["UPLOAD_DIR"]) / key,
+        palettes[sequence % len(palettes)],
+    )
     row = ReportAsset(
         report_id=report.id,
         health_domain_id=domain.id,
-        modality="synthetic_demo_image",
-        title=f"{domain.name}检查示意图（合成演示）",
+        modality="open_license_demo_image",
+        title=f"{domain.name}开放授权演示附件",
         storage_key=key,
         mime_type="image/png",
         byte_size=len(raw),
-        width=480,
-        height=270,
+        width=width,
+        height=height,
         sha256=hashlib.sha256(raw).hexdigest(),
-        annotation_text="本附件仅用于演示跨分院只读查看，不包含真实患者信息。",
+        annotation_text="开放授权演示附件，仅用于系统功能展示，不作为诊断依据。",
         sort_order=0,
         uploaded_by_user_id=staff.id,
     )
@@ -1017,7 +1048,7 @@ def _expand_v8_demo_data(users, institutions, packages, indicators, domains, tod
                 body="该合成记录用于演示同机构不同分院之间的已归档报告衔接，源分院继续保留内容责任。",
             )
             if ReportAsset.query.count() < asset_target:
-                _add_synthetic_report_asset(report, staff_by_branch[branch_index], domain, sequence)
+                _add_demo_report_asset(report, staff_by_branch[branch_index], domain, sequence)
             sequence += 1
 
     group_sequence = 0
@@ -1339,7 +1370,7 @@ def seed_v7_demo_experience(*, commit: bool = True) -> bool:
         ("WEIGHT", "71.9", "metabolic", False), ("FBG", "5.2", "metabolic", False),
         ("TC", "4.8", "metabolic", False), ("TG", "1.4", "metabolic", False),
     ), (("metabolic", "代谢评估摘要", "本次糖脂代谢结果总体平稳，可结合个人自测继续观察体重与空腹血糖趋势。"),),
-       ("metabolic", "代谢趋势示意图（合成演示）", ((31, 91, 145), (70, 145, 180), (199, 233, 238)), "蓝色区域为本次合成演示图，不替代机构正式诊断。")))
+       ("metabolic", "代谢检查开放授权演示附件", ((31, 91, 145), (70, 145, 180), (199, 233, 238)), "开放授权演示附件，仅用于系统功能展示，不作为诊断依据。")))
     for hour, value in ((8, 72.2), (20, 72.0)):
         _add_measurement(users["test1"], indicators["WEIGHT"], value, _utc(today - timedelta(days=4), hour))
     _add_measurement(users["test1"], indicators["HR"], 78, _utc(today - timedelta(days=4), 21))
@@ -1375,7 +1406,7 @@ def seed_v7_demo_experience(*, commit: bool = True) -> bool:
         ("FBG", "4.9", "metabolic", False), ("TC", "4.6", "metabolic", False),
         ("ALT", "22", "digestive", False), ("AST", "20", "digestive", False),
     ), (("digestive", "肝胆检查结论", "本次肝功能相关指标未见明显异常，建议保持规律饮食。"),),
-       ("digestive", "腹部超声示意图（合成演示）", ((76, 63, 111), (125, 105, 154), (222, 210, 232)), "该图片为合成演示附件，用于验证机构批注与权限读取。")))
+       ("digestive", "腹部超声开放授权演示附件", ((76, 63, 111), (125, 105, 154), (222, 210, 232)), "开放授权演示附件，仅用于系统功能展示，不作为诊断依据。")))
 
     _, appointments = _create_booking_group(
         booker=users["test5"], participants=[users["test5"]], institution=institutions[2],
@@ -1385,7 +1416,7 @@ def seed_v7_demo_experience(*, commit: bool = True) -> bool:
     completed.append((appointments[0], staff[3], (
         ("SPO2", "95", "respiratory", False),
     ), (("respiratory", "肺功能检查摘要", "本次静息血氧处于参考范围下沿，建议减少吸烟暴露并按需复查。"),),
-       ("respiratory", "肺功能曲线（合成演示）", ((45, 75, 89), (79, 131, 144), (205, 226, 225)), "曲线仅用于平台演示，正式解释以机构文字结论为准。")))
+       ("respiratory", "肺功能开放授权演示附件", ((45, 75, 89), (79, 131, 144), (205, 226, 225)), "开放授权演示附件，仅用于系统功能展示，不作为诊断依据。")))
 
     for appointment, creator, values, texts, asset in completed:
         _create_report(

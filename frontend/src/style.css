@@ -2094,6 +2094,32 @@ a {
 }
 
 @media (max-width: 720px) {
+  .workspace-topbar {
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .workspace-topbar > div:nth-child(2) {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .workspace-topbar h1 {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .workspace-top-actions {
+    flex-basis: 100%;
+    justify-content: flex-end;
+    margin-left: 0;
+  }
+
+  :root[data-care="on"] .workspace-topbar h1 {
+    font-size: 28px;
+  }
+
   .portal-header {
     width: calc(100% - 28px);
   }

@@ -92,4 +92,14 @@ describe("健康成员筛选请求", () => {
     await flushPromises();
     expect(mocks.fetchHealthTrends).toHaveBeenCalledWith(1, expect.objectContaining({ owner_id: 12, source_type: "all" }));
   });
+
+  it("时间线和趋势页不再残留测量入口", async () => {
+    const timeline = mountView(HealthTimelineView);
+    const trend = mountView(TrendView, { domain_id: "1" });
+    await flushPromises();
+    expect(timeline.text()).not.toContain("记录今日测量");
+    expect(timeline.text()).not.toContain("记录测量");
+    expect(trend.text()).not.toContain("记录新测量");
+    expect(trend.text()).not.toContain("开始记录");
+  });
 });

@@ -46,6 +46,20 @@ def _email_content(row):
             f"验证码在{int(payload.get('expires_minutes') or 10)}分钟内有效，请勿转发给他人。"
             "如果不是您本人操作，请忽略本邮件并尽快检查账号安全。"
         )
+    elif row.event_type == "account_email_changed_old":
+        subject = "HealthDoc 绑定邮箱变更提醒"
+        body = (
+            f"{payload.get('account_label') or payload.get('username') or '用户'}，您好，"
+            f"您的HealthDoc绑定邮箱已经更换为{payload.get('new_email') or '新的邮箱地址'}。"
+            "如果这不是您本人或本分院管理员的操作，请立即联系平台管理员处理。"
+        )
+    elif row.event_type == "account_email_changed_new":
+        subject = "HealthDoc 邮箱换绑成功"
+        body = (
+            f"{payload.get('account_label') or payload.get('username') or '用户'}，您好，"
+            "该邮箱现已成为您的HealthDoc绑定邮箱。后续预约、空位提醒、"
+            "账户安全及其他平台邮件都会发送到这里。"
+        )
     elif row.event_type == "booking_group_created":
         subject = "HealthDoc 新预约提醒"
         body = (

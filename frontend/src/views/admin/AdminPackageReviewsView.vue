@@ -1,9 +1,9 @@
 <template>
   <div class="workspace-page">
-    <section class="page-intro"><div><p>机构套餐治理</p><h2>审核记录</h2><span>查看完整套餐内容和变更前后对比后再作出审核决定。</span></div></section>
+    <section class="page-intro"><div><p>机构套餐治理</p><h2>机构审核记录</h2><span>查看完整套餐内容和变更前后对比后再作出审核决定。</span></div></section>
     <el-card shadow="never">
-      <el-select v-model="status" @change="load"><el-option label="全部状态" value=""/><el-option label="待审核" value="pending"/><el-option label="已通过" value="approved"/><el-option label="已驳回" value="rejected"/><el-option label="已撤回" value="withdrawn"/></el-select>
-      <el-table :data="items" v-loading="loading" empty-text="暂无审核记录">
+      <el-select v-model="status" placeholder="全部状态" @change="load"><el-option label="全部状态" value=""/><el-option label="待审核" value="pending"/><el-option label="已通过" value="approved"/><el-option label="已驳回" value="rejected"/><el-option label="已撤回" value="withdrawn"/></el-select>
+      <el-table :data="items" v-loading="loading" empty-text="暂无机构审核记录">
         <el-table-column label="机构" min-width="190"><template #default="s">{{s.row.institution?.name}} · {{s.row.institution?.branch_name}}</template></el-table-column>
         <el-table-column prop="package_name" label="套餐" min-width="150"/><el-table-column label="变更类型" width="110"><template #default="s">{{s.row.action_label||actionLabel(s.row.action)}}</template></el-table-column>
         <el-table-column label="状态" width="100"><template #default="s"><el-tag :type="statusType(s.row.status)">{{s.row.status_label||statusLabel(s.row.status)}}</el-tag></template></el-table-column>

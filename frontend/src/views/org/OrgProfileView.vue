@@ -22,6 +22,7 @@
       </el-form>
     </el-card>
 
+    <AccountEmailPanel :email="authStore.user?.email || ''" />
     <AccountSecurityPanel :email="authStore.user?.email || ''" />
 
     <section id="institution-gallery"><OrgGalleryView /></section>
@@ -36,6 +37,7 @@ import { ElMessage } from "element-plus";
 import { useRoute } from "vue-router";
 import { fetchOrgInstitution, updateOrgInstitution } from "../../api/org";
 import AccountSecurityPanel from "../../components/AccountSecurityPanel.vue";
+import AccountEmailPanel from "../../components/AccountEmailPanel.vue";
 import { useAuthStore } from "../../stores/auth";
 import OrgGalleryView from "./OrgGalleryView.vue";
 

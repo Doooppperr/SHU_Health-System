@@ -128,7 +128,7 @@ const menus = {
     { name: "admin-invites", label: "邀请码", icon: "邀" },
     { name: "admin-users", label: "用户与角色", icon: "用" },
     { name: "admin-comments", label: "评论审核", icon: "评" },
-    { name: "admin-package-reviews", label: "审核记录", icon: "审" },
+    { name: "admin-package-reviews", label: "机构审核记录", icon: "审" },
   ],
 };
 

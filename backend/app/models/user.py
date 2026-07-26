@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import bcrypt
 
 from app.extensions import db
+from app.services.account_email import effective_account_email
 
 
 def utc_now():
@@ -93,7 +94,7 @@ class User(db.Model):
         result = {
             "id": self.id,
             "username": self.username,
-            "email": self.email,
+            "email": effective_account_email(self),
             "email_verified_at": self.email_verified_at.isoformat() if self.email_verified_at else None,
             "phone": self.phone,
             "role": self.role,

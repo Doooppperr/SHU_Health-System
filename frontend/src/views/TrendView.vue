@@ -6,7 +6,6 @@
         <h2>看看身体在一段时间里的变化</h2>
         <p>同一指标汇总个人日常测量和各机构体检结果，每天只保留一个最有效的趋势点。</p>
       </div>
-      <el-button type="primary" @click="router.push({ name: 'dashboard', query: { quick: 'measurement' } })">记录新测量</el-button>
     </section>
 
     <el-card shadow="never" class="user-panel user-filter-panel">
@@ -95,8 +94,7 @@
 
     <div v-if="!loading && !series.length" class="user-empty-state user-empty-state--page">
       <span class="user-empty-state__icon">趋</span>
-      <div><strong>这个健康方向还没有足够的数据</strong><p>连续记录几次后，就能在这里看见自己的变化。</p></div>
-      <el-button type="primary" plain @click="router.push({ name: 'dashboard', query: { quick: 'measurement' } })">开始记录</el-button>
+      <div><strong>这个健康方向还没有足够的数据</strong><p>可以调整成员、日期、健康方向或数据来源后重新查看。</p></div>
     </div>
   </div>
 </template>

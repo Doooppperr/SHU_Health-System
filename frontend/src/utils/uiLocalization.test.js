@@ -21,5 +21,9 @@ describe("用户界面中文验收", () => {
       }
     }
     expect(failures).toEqual([]);
+    const packageReviews = fs.readFileSync(
+      path.join(root, "views", "admin", "AdminPackageReviewsView.vue"), "utf8",
+    );
+    expect(packageReviews).toContain('placeholder="全部状态"');
   });
 });

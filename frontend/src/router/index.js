@@ -46,7 +46,7 @@ const routes = [
     { path: "invites", name: "admin-invites", component: () => import("../views/admin/AdminInvitesView.vue"), meta: { title: "邀请码管理" } },
     { path: "users", name: "admin-users", component: () => import("../views/admin/AdminUsersView.vue"), meta: { title: "账号管理" } },
     { path: "comments", name: "admin-comments", component: () => import("../views/CommentModerationView.vue"), meta: { title: "评论审核" } },
-    { path: "package-reviews", name: "admin-package-reviews", component: () => import("../views/admin/AdminPackageReviewsView.vue"), meta: { title: "审核记录" } },
+    { path: "package-reviews", name: "admin-package-reviews", component: () => import("../views/admin/AdminPackageReviewsView.vue"), meta: { title: "机构审核记录" } },
   ] },
   { path: "/403", name: "forbidden", component: () => import("../views/ForbiddenView.vue"), meta: { title: "无权访问" } },
   { path: "/:pathMatch(.*)*", name: "not-found", component: () => import("../views/NotFoundView.vue"), meta: { title: "页面不存在" } },

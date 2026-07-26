@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from app.auth import auth_bp
 from app.extensions import db
 from app.models import InstitutionInvite, NotificationOutbox, PasswordVerificationChallenge, User
+from app.services.account_email import effective_account_email, synchronize_institution_email
 from app.services.contact import is_valid_email, normalize_email
 
 
@@ -180,10 +181,11 @@ def _create_password_challenge(user, purpose):
         user_id=user.id, purpose=purpose, consumed_at=None
     ).update({"consumed_at": now}, synchronize_session=False)
     code = f"{secrets.randbelow(1_000_000):06d}"
+    email = effective_account_email(user)
     challenge = PasswordVerificationChallenge(
         user_id=user.id,
         purpose=purpose,
-        email_snapshot=user.email,
+        email_snapshot=email,
         request_ip_hash=ip_hash,
         expires_at=now + timedelta(minutes=10),
     )
@@ -193,7 +195,7 @@ def _create_password_challenge(user, purpose):
     db.session.add(NotificationOutbox(
         event_type="password_verification_code",
         idempotency_key=f"password-code:{challenge.public_id}",
-        recipient=user.email,
+        recipient=email,
         payload={
             "challenge_id": challenge.public_id,
             "verification_code": code,
@@ -221,7 +223,7 @@ def _verify_password_challenge(public_id, code, purpose, *, user=None):
         challenge.attempt_count += 1
         db.session.commit()
         return None, ({"message": "验证码不正确，请检查后重试", "code": "PASSWORD_CODE_INCORRECT"}, 400)
-    if normalize_email(challenge.user.email) != normalize_email(challenge.email_snapshot):
+    if effective_account_email(challenge.user) != normalize_email(challenge.email_snapshot):
         challenge.consumed_at = now
         db.session.commit()
         return None, ({"message": "绑定邮箱已经变更，请重新获取验证码", "code": "PASSWORD_EMAIL_CHANGED"}, 409)
@@ -276,6 +278,10 @@ def register():
             return {"message": "邀请码不正确或已失效", "code": "INVITATION_UNAVAILABLE"}, 400
         if invite.institution is None or not invite.institution.is_active:
             return {"message": "该邀请码所属分院已停用", "code": "INSTITUTION_INACTIVE"}, 400
+        if invite.institution.notification_email:
+            email = normalize_email(invite.institution.notification_email)
+        else:
+            invite.institution.notification_email = email
         expected_invite_hash = invite.code_hash
 
     user = User(
@@ -361,7 +367,7 @@ def request_password_reset_code():
     user = User.query.filter_by(username=username).first()
     if (
         user is None or user.role not in {"user", "institution_admin"} or not user.is_active
-        or normalize_email(user.email) != email
+        or effective_account_email(user) != email
     ):
         return _password_code_response()
     challenge, code = _create_password_challenge(user, "reset")
@@ -396,7 +402,7 @@ def request_password_change_code():
     user = db.session.get(User, int(get_jwt_identity()))
     if user is None or user.role not in {"user", "institution_admin"} or not user.is_active:
         return {"message": "账号当前不可使用", "code": "ACCOUNT_UNAVAILABLE"}, 403
-    if not user.email:
+    if not effective_account_email(user):
         return {"message": "当前账号尚未绑定邮箱，请先联系管理员完善账号资料"}, 409
     challenge, code = _create_password_challenge(user, "change")
     if challenge is None:
@@ -429,6 +435,66 @@ def confirm_password_change():
     challenge.consumed_at = datetime.now(timezone.utc)
     db.session.commit()
     return {"message": "密码修改成功，请重新登录"}, 200
+
+
+@auth_bp.put("/email")
+@jwt_required()
+def change_account_email():
+    user = db.session.get(User, int(get_jwt_identity()))
+    if user is None or not user.is_active:
+        return {"message": "账号当前不可使用", "code": "ACCOUNT_UNAVAILABLE"}, 403
+    if user.role not in {"user", "institution_admin"}:
+        return {"message": "系统管理员不能自助修改绑定邮箱", "code": "EMAIL_CHANGE_FORBIDDEN"}, 403
+
+    new_email = normalize_email((request.get_json(silent=True) or {}).get("email"))
+    if not new_email or not is_valid_email(new_email):
+        return {"message": "请输入有效的新邮箱地址", "code": "INVALID_EMAIL"}, 400
+    old_email = effective_account_email(user)
+    if new_email == old_email:
+        return {"message": "新邮箱不能与当前绑定邮箱相同", "code": "EMAIL_UNCHANGED"}, 409
+    if user.role == "institution_admin" and user.managed_institution is None:
+        return {"message": "当前机构账号未绑定分院，请联系系统管理员", "code": "INSTITUTION_UNAVAILABLE"}, 409
+
+    changed_at = datetime.now(timezone.utc)
+    change_id = uuid4().hex
+    if user.role == "institution_admin":
+        institution = user.managed_institution
+        synchronize_institution_email(institution, new_email)
+        account_label = (
+            f"{institution.organization.name}·{institution.branch_name}"
+            if institution.organization else institution.branch_name
+        )
+    else:
+        user.email = new_email
+        user.email_verified_at = None
+        account_label = user.username
+
+    common_payload = {
+        "username": user.username,
+        "account_label": account_label,
+        "old_email": old_email,
+        "new_email": new_email,
+        "changed_at": changed_at.isoformat(),
+    }
+    if old_email:
+        db.session.add(NotificationOutbox(
+            event_type="account_email_changed_old",
+            idempotency_key=f"email-change:{change_id}:old",
+            recipient=old_email,
+            payload=common_payload,
+        ))
+    db.session.add(NotificationOutbox(
+        event_type="account_email_changed_new",
+        idempotency_key=f"email-change:{change_id}:new",
+        recipient=new_email,
+        payload=common_payload,
+    ))
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return {"message": "邮箱修改冲突，请稍后重试", "code": "EMAIL_CHANGE_CONFLICT"}, 409
+    return {"message": "绑定邮箱已修改，通知邮件正在发送", "user": user.to_dict()}, 200
 
 
 @auth_bp.post("/refresh")

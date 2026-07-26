@@ -52,6 +52,41 @@ def upgrade():
         sa.CheckConstraint("status in ('pending', 'approved', 'rejected')", name="ck_comment_replies_status"),
         sa.UniqueConstraint("comment_id", name="uq_comment_replies_comment"),
     )
+    op.execute("""
+        UPDATE institutions
+        SET notification_email = (
+            SELECT users.email
+            FROM users
+            WHERE users.managed_institution_id = institutions.id
+              AND users.role = 'institution_admin'
+              AND users.email IS NOT NULL
+              AND TRIM(users.email) <> ''
+            ORDER BY users.is_active DESC, users.id ASC
+            LIMIT 1
+        )
+        WHERE notification_email IS NULL OR TRIM(notification_email) = ''
+    """)
+    op.execute("""
+        UPDATE users
+        SET email = (
+            SELECT institutions.notification_email
+            FROM institutions
+            WHERE institutions.id = users.managed_institution_id
+        ),
+        email_verified_at = NULL
+        WHERE role = 'institution_admin'
+          AND managed_institution_id IS NOT NULL
+          AND EXISTS (
+              SELECT 1 FROM institutions
+              WHERE institutions.id = users.managed_institution_id
+                AND institutions.notification_email IS NOT NULL
+                AND TRIM(institutions.notification_email) <> ''
+                AND (
+                    users.email IS NULL
+                    OR LOWER(users.email) <> LOWER(institutions.notification_email)
+                )
+          )
+    """)
 
 
 def downgrade():

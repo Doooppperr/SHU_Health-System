@@ -15,6 +15,7 @@ from app.models import (
     Appointment, AppointmentEvent, HealthDomain, IndicatorDict, Institution,
     InstitutionReport, Package, PackageChangeRequest, ReportAsset,
     ReportAccessLog, ReportIndicator, ReportTextResult, WaitlistSubscription,
+    User,
 )
 from app.org import org_bp
 from app.services import get_ocr_provider, get_storage_backend
@@ -99,6 +100,7 @@ def report_payload(report, current_institution, *, include_indicators=False):
         },
         "access_mode": "editable" if own_branch else "cross_branch_read_only",
         "can_edit": own_branch and report.status != "published",
+        "subject_username": report.owner.username if report.owner else None,
     })
     return payload
 
@@ -492,6 +494,11 @@ def list_reports():
             InstitutionReport.institution_id.in_(branch_ids),
             InstitutionReport.status == "published",
         )
+        access = (request.args.get("access") or "").strip().lower()
+        if access not in {"", "cross_branch"}:
+            return {"message": "档案访问范围不正确"}, 400
+        if access == "cross_branch":
+            query = query.filter(InstitutionReport.institution_id != institution.id)
     else:
         query = InstitutionReport.query.filter_by(institution_id=institution.id)
     status = (request.args.get("status") or "").strip()
@@ -502,14 +509,24 @@ def list_reports():
         if source_branch_id not in allowed:
             return {"message": "source branch is outside this organization"}, 403
         query = query.filter(InstitutionReport.institution_id == source_branch_id)
+    total = query.count()
     subject = (request.args.get("subject") or "").strip()
     if subject:
         query = query.filter(db.or_(
             InstitutionReport.subject_name_snapshot.ilike(f"%{subject}%"),
             InstitutionReport.subject_health_id.ilike(f"%{subject}%"),
+            InstitutionReport.owner.has(User.username.ilike(f"%{subject}%")),
         ))
-    start = parse_date(request.args.get("start_date")) if request.args.get("start_date") else None
-    end = parse_date(request.args.get("end_date")) if request.args.get("end_date") else None
+    start_raw = request.args.get("start_date")
+    end_raw = request.args.get("end_date")
+    start = parse_date(start_raw) if start_raw else None
+    end = parse_date(end_raw) if end_raw else None
+    if start_raw and start is None:
+        return {"message": "体检开始日期格式不正确"}, 400
+    if end_raw and end is None:
+        return {"message": "体检结束日期格式不正确"}, 400
+    if start and end and start > end:
+        return {"message": "体检开始日期不能晚于结束日期"}, 400
     if start: query = query.filter(InstitutionReport.exam_date >= start)
     if end: query = query.filter(InstitutionReport.exam_date <= end)
     domain_id = request.args.get("domain_id", type=int)
@@ -519,8 +536,14 @@ def list_reports():
             InstitutionReport.text_results.any(health_domain_id=domain_id),
             InstitutionReport.assets.any(health_domain_id=domain_id),
         ))
+    filtered_total = query.count()
     rows = query.order_by(InstitutionReport.exam_date.desc(), InstitutionReport.id.desc()).all()
-    return {"scope": scope, "items": [report_payload(row, institution) for row in rows]}, 200
+    return {
+        "scope": scope,
+        "total": total,
+        "filtered_total": filtered_total,
+        "items": [report_payload(row, institution) for row in rows],
+    }, 200
 
 
 @org_bp.post("/reports")

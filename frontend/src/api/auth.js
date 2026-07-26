@@ -43,3 +43,7 @@ export function requestPasswordChangeCode() {
 export function confirmPasswordChange(payload) {
   return http.post("/auth/password-change/confirm", payload);
 }
+
+export function changeAccountEmail(email) {
+  return http.put("/auth/email", { email });
+}

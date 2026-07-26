@@ -38,6 +38,44 @@ def migrate(database_url: str) -> None:
                 connection.execute(text('ALTER TABLE "users" ADD COLUMN "token_version" INTEGER NOT NULL DEFAULT 0'))
             for name in ("password_verification_challenges", "comment_replies"):
                 db.metadata.tables[name].create(bind=connection, checkfirst=True)
+            # A branch has one canonical mailbox. Fill a missing branch address
+            # from its first active administrator, then align every institution
+            # administrator compatibility row with that canonical destination.
+            connection.execute(text("""
+                UPDATE institutions
+                SET notification_email = (
+                    SELECT users.email
+                    FROM users
+                    WHERE users.managed_institution_id = institutions.id
+                      AND users.role = 'institution_admin'
+                      AND users.email IS NOT NULL
+                      AND TRIM(users.email) <> ''
+                    ORDER BY users.is_active DESC, users.id ASC
+                    LIMIT 1
+                )
+                WHERE notification_email IS NULL OR TRIM(notification_email) = ''
+            """))
+            connection.execute(text("""
+                UPDATE users
+                SET email = (
+                    SELECT institutions.notification_email
+                    FROM institutions
+                    WHERE institutions.id = users.managed_institution_id
+                ),
+                email_verified_at = NULL
+                WHERE role = 'institution_admin'
+                  AND managed_institution_id IS NOT NULL
+                  AND EXISTS (
+                      SELECT 1 FROM institutions
+                      WHERE institutions.id = users.managed_institution_id
+                        AND institutions.notification_email IS NOT NULL
+                        AND TRIM(institutions.notification_email) <> ''
+                        AND (
+                            users.email IS NULL
+                            OR LOWER(users.email) <> LOWER(institutions.notification_email)
+                        )
+                  )
+            """))
             if "alembic_version" in inspector.get_table_names():
                 current = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
                 if current == "20260720_schema_v8":
