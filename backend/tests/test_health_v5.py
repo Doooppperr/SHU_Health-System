@@ -184,33 +184,48 @@ def test_friend_read_only_privacy_and_role_isolation(app, client):
     assert client.get("/api/health/timeline", headers=login(client, "admin", "admin123")).status_code == 403
 
 
-def test_ai_requires_per_request_consent_and_excludes_identity(app, client):
+def test_ai_record_analysis_is_transparent_and_excludes_identity(app, client):
     headers = login(client, "test1")
     available = client.get("/api/ai/records", headers=headers)
     assert available.status_code == 200 and available.get_json()["items"]
     report_id = available.get_json()["items"][0]["id"]
-    denied = client.post("/api/ai/analyze/stream", headers=headers, json={"selected_record_ids": [report_id]})
-    assert denied.status_code == 400
-    allowed = client.post("/api/ai/analyze/stream", headers=headers, json={"selected_record_ids": [report_id], "consent": True}, buffered=True)
-    assert allowed.status_code == 200
-    body = allowed.get_data(as_text=True)
+    transparent = client.post(
+        "/api/ai/analyze/stream",
+        headers=headers,
+        json={"selected_record_ids": [report_id]},
+        buffered=True,
+    )
+    assert transparent.status_code == 200
+    body = transparent.get_data(as_text=True)
+    assert "event: done" in body
+
+    # Old clients may continue sending the consent flag during a rolling
+    # upgrade; it remains accepted but is no longer a blocking prerequisite.
+    compatible = client.post(
+        "/api/ai/analyze/stream",
+        headers=headers,
+        json={"selected_record_ids": [report_id], "consent": True},
+        buffered=True,
+    )
+    assert compatible.status_code == 200
     with app.app_context():
         user = User.query.filter_by(username="test1").first()
         assert user.health_id not in body
         assert user.real_name not in body
 
 
-def test_ai_trend_analysis_requires_page_consent_and_uses_server_data(app, client):
+def test_ai_trend_analysis_is_transparent_and_uses_server_data(app, client):
     headers = login(client, "test1")
     with app.app_context():
         domain_id = HealthDomain.query.filter_by(code="basic").one().id
-    denied = client.post("/api/ai/trends/stream", headers=headers, json={"domain_id": domain_id})
-    assert denied.status_code == 400
-    assert denied.get_json()["error"]["code"] == "trend_consent_required"
-    allowed = client.post("/api/ai/trends/stream", headers=headers,
-                          json={"domain_id": domain_id, "consent": True}, buffered=True)
-    assert allowed.status_code == 200
-    body = allowed.get_data(as_text=True)
+    transparent = client.post(
+        "/api/ai/trends/stream",
+        headers=headers,
+        json={"domain_id": domain_id},
+        buffered=True,
+    )
+    assert transparent.status_code == 200
+    body = transparent.get_data(as_text=True)
     assert '"mode":"trend_analysis"' in body
     assert 'event: done' in body
 

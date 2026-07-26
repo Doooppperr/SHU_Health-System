@@ -1148,30 +1148,32 @@ def _expand_v8_demo_data(users, institutions, packages, indicators, domains, tod
 
 def _demo_indicator_value(definition, sequence):
     if definition.value_type == "text":
-        return ("阳性", "positive") if sequence in {2, 7} else ("阴性", "negative")
+        return ("阳性", "positive") if sequence in {2, 10} else ("阴性", "negative")
     realistic_value = demo_realistic_value(definition.code, sequence)
     if realistic_value is not None:
         return (realistic_value, None)
     low = Decimal(str(definition.reference_low)) if definition.reference_low is not None else None
     high = Decimal(str(definition.reference_high)) if definition.reference_high is not None else None
-    if sequence == 0 and low is not None:
-        value = low * Decimal("0.80") if low > 0 else Decimal("-1")
-    elif sequence == 7 and high is not None:
-        value = high * Decimal("1.20") if high > 0 else Decimal("1")
-    elif low is not None and high is not None:
-        value = low + (high - low) * Decimal(str((sequence + 1) / 10))
+    story_phase = (
+        Decimal("0.62"), Decimal("0.60"), Decimal("0.58"), Decimal("0.56"),
+        Decimal("0.54"), Decimal("0.52"), Decimal("0.50"), Decimal("0.48"),
+        Decimal("0.46"), Decimal("0.45"), Decimal("0.50"), Decimal("0.59"),
+        Decimal("0.55"), Decimal("0.51"), Decimal("0.48"), Decimal("0.46"),
+    )[sequence % 16]
+    if low is not None and high is not None:
+        value = low + (high - low) * story_phase
     elif low is not None:
-        value = low * (Decimal("1.05") + Decimal(sequence) / Decimal("100"))
+        value = low * (Decimal("1.12") + story_phase / Decimal("5"))
     elif high is not None:
-        value = high * (Decimal("0.65") + Decimal(sequence) / Decimal("50"))
+        value = high * (Decimal("0.52") + story_phase / Decimal("4"))
     else:
-        value = Decimal("10") + Decimal(definition.id % 17) + Decimal(sequence) / Decimal("10")
+        value = Decimal("10") + Decimal(definition.id % 17) + story_phase
     normalized = value.quantize(Decimal("0.01"))
     return (format(normalized, "f").rstrip("0").rstrip("."), None)
 
 
 def _expand_v10_test1(users, institutions, packages, indicators, domains, today, now):
-    """Give test1 eight broad adult-exam snapshots across roughly 18 months."""
+    """Build test1's coherent four-year, sixteen-exam adult health story."""
     if current_app.config.get("TESTING", False):
         return
     user = users["test1"]
@@ -1184,7 +1186,30 @@ def _expand_v10_test1(users, institutions, packages, indicators, domains, today,
             asset.asset_type_id = matched_type.id
             asset.modality = matched_type.modality
             asset.title = matched_type.name
-    dates = [today - timedelta(days=days) for days in (548, 470, 390, 310, 230, 150, 70, 70)]
+    dates = [
+        today - timedelta(days=days)
+        for days in (1460, 1320, 1180, 1040, 900, 760, 620, 500,
+                     380, 280, 190, 120, 70, 35, 14, 2)
+    ]
+    comprehensive_sequences = {0, 4, 8, 12, 15}
+    targeted_domains = {
+        1: {"cardio", "basic", "metabolic"},
+        2: {"digestive", "renal", "hematology"},
+        3: {"respiratory", "other", "cardio"},
+        5: {"basic", "metabolic", "digestive"},
+        6: {"renal", "hematology", "respiratory"},
+        7: {"other", "cardio", "basic"},
+        9: {"metabolic", "digestive", "renal"},
+        10: {"hematology", "respiratory", "other"},
+        11: {"cardio", "metabolic", "hematology"},
+        13: {"basic", "digestive", "respiratory"},
+        14: {"renal", "other", "metabolic"},
+    }
+    core_trend_codes = {
+        "BMI", "WEIGHT", "WAIST", "SBP", "DBP", "FBG", "HBA1C",
+        "TC", "TG", "HDL", "LDL", "ALT", "AST", "GGT", "UA", "CREA",
+    }
+    ocr_sequences = {2, 6, 10, 14}
     reports = []
     for sequence, exam_date in enumerate(dates):
         institution = institutions[sequence % 3]
@@ -1205,9 +1230,14 @@ def _expand_v10_test1(users, institutions, packages, indicators, domains, today,
             matched_user_id=user.id,
             status="published",
             ocr_diagnostics={
-                "import_kind": "v10_full_scale_demo",
+                "import_kind": (
+                    "v10_comprehensive_exam"
+                    if sequence in comprehensive_sequences
+                    else "v10_targeted_follow_up"
+                ),
                 "sequence": sequence + 1,
-                "contains_ocr_rows": sequence in {1, 5},
+                "contains_ocr_rows": sequence in ocr_sequences,
+                "synthetic_story": "early_risk_to_improvement_with_brief_relapse",
             },
             locked_at=published_at - timedelta(hours=1),
             submitted_at=published_at,
@@ -1216,7 +1246,19 @@ def _expand_v10_test1(users, institutions, packages, indicators, domains, today,
         )
         db.session.add(report)
         db.session.flush()
-        for definition in sorted(indicators.values(), key=lambda item: item.id):
+        definitions = sorted(indicators.values(), key=lambda item: item.id)
+        if sequence not in comprehensive_sequences:
+            selected_domains = targeted_domains[sequence]
+            definitions = [
+                definition
+                for definition in definitions
+                if definition.code in core_trend_codes
+                or any(
+                    link.domain and link.domain.code in selected_domains
+                    for link in definition.domain_links
+                )
+            ]
+        for definition in definitions:
             value, explicit_status = _demo_indicator_value(definition, sequence)
             status = explicit_status or evaluate_result_status(
                 definition,
@@ -1233,7 +1275,7 @@ def _expand_v10_test1(users, institutions, packages, indicators, domains, today,
                 value=value,
                 is_abnormal=status in {"high", "low", "positive", "abnormal"},
                 result_status=status,
-                input_source="ocr" if sequence in {1, 5} and definition.id % 3 == 0 else "manual",
+                input_source="ocr" if sequence in ocr_sequences and definition.id % 3 == 0 else "manual",
                 display_domain_id=domain.id,
                 original_name=(definition.aliases or [definition.name])[-1],
                 original_value=value,
@@ -1242,13 +1284,17 @@ def _expand_v10_test1(users, institutions, packages, indicators, domains, today,
                 reference_text=_reference_text(definition),
                 method_snapshot="v10 合成体检演示",
                 abnormal_flag={"high": "H", "low": "L", "positive": "+"}.get(status),
-                mapping_confidence=Decimal("0.9900") if sequence in {1, 5} else Decimal("1.0000"),
+                mapping_confidence=Decimal("0.9900") if sequence in ocr_sequences else Decimal("1.0000"),
                 mapping_status="confirmed",
             ))
+        report_kind = "综合体检" if sequence in comprehensive_sequences else "专项复查"
         report.text_results.append(ReportTextResult(
             health_domain_id=domains["basic"].id,
-            title=f"第 {sequence + 1} 次全量成人体检演示",
-            body="本报告及全部数值均为合成测试内容，仅用于分页、OCR、异常方向和趋势功能验收，不作为诊断依据。",
+            title=f"第 {sequence + 1} 次{report_kind}演示",
+            body=(
+                "本报告及全部数值均为合成测试内容。四年故事用于演示早期轻度代谢风险、"
+                "生活方式改善、短期反弹和近期稳定，仅用于功能验收，不作为诊断依据。"
+            ),
             source_snapshot="v10 合成演示数据",
             sort_order=0,
             created_by_user_id=staff.id,

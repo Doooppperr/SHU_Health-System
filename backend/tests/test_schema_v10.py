@@ -147,6 +147,23 @@ def test_full_scale_demo_vitals_stay_within_plausible_measurement_limits():
     assert demo_realistic_status("TEMP", "38.5") == "high"
 
 
+def test_four_year_demo_story_is_dense_coherent_and_non_diagnostic():
+    assert all(len(values) == 16 for values in DEMO_REALISTIC_SERIES.values())
+    weights = [float(value) for value in DEMO_REALISTIC_SERIES["WEIGHT"]]
+    ldl = [float(value) for value in DEMO_REALISTIC_SERIES["LDL"]]
+    alt = [float(value) for value in DEMO_REALISTIC_SERIES["ALT"]]
+    assert weights[0] > weights[9]
+    assert weights[11] > weights[9]
+    assert weights[-1] < weights[11]
+    assert ldl[0] > ldl[9]
+    assert ldl[11] > ldl[9]
+    assert ldl[-1] < ldl[11]
+    assert alt[0] > alt[9]
+    assert alt[11] > alt[9]
+    assert alt[-1] < alt[11]
+    assert len(set(DEMO_REALISTIC_SERIES["HEIGHT"])) == 1
+
+
 def test_report_range_precedes_catalog_and_unknown_status_is_hidden(app):
     with app.app_context():
         heart_rate = IndicatorDict.query.filter_by(code="HR").one()

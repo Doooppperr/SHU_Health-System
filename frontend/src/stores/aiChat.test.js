@@ -76,7 +76,7 @@ describe("AI chat store", () => {
     expect(store.recordsLoaded).toBe(false);
   });
 
-  it("keeps a confirmed manual selection for exactly the next message", async () => {
+  it("keeps a confirmed manual selection for the whole conversation", async () => {
     const store = useAiChatStore();
     store.initialize(10);
     store.showRecordPicker({ mode: "manual" });
@@ -91,14 +91,20 @@ describe("AI chat store", () => {
 
     await store.sendMessage("结合档案解释", true);
     expect(api.streamAiChat).toHaveBeenCalledWith(
-      expect.objectContaining({ selected_record_ids: [record.id], consent: true }),
+      expect.objectContaining({
+        active_record_context: expect.objectContaining({
+          owner_id: record.owner_id,
+          anchor_record_ids: [record.id],
+        }),
+        consent: true,
+      }),
       expect.any(Object)
     );
-    expect(store.selectedRecordIds).toEqual([]);
-    expect(store.consentGiven).toBe(false);
+    expect(store.selectedRecordIds).toEqual([record.id]);
+    expect(store.activeRecordContext).not.toBeNull();
   });
 
-  it("sends an owner-wide scope once and resets its consent", async () => {
+  it("keeps an owner-wide scope active for follow-up turns", async () => {
     api.fetchAiRecords.mockResolvedValueOnce({
       data: {
         items: [record],
@@ -127,8 +133,11 @@ describe("AI chat store", () => {
     expect(payload.record_scope).toEqual({ owner_id: 10, mode: "all_confirmed" });
     expect(payload.selected_record_ids).toBeUndefined();
     expect(payload.consent).toBe(true);
-    expect(store.selectedOwnerId).toBeNull();
-    expect(store.consentGiven).toBe(false);
+    expect(store.selectedOwnerId).toBe(10);
+    expect(store.activeRecordContext).toMatchObject({
+      owner_id: 10,
+      scope_mode: "all_confirmed",
+    });
   });
 
   it("opens an action picker while streaming and reuses the original message pair", async () => {
@@ -180,10 +189,10 @@ describe("AI chat store", () => {
     expect(store.retryAnalysis(assistant)).toBe(true);
     expect(store.preparedAnalysis).toMatchObject({ ownerId: 10 });
     expect(store.selectedRecordIds).toEqual([record.id]);
-    expect(store.consentGiven).toBe(false);
+    expect(store.consentGiven).toBe(true);
   });
 
-  it("requires fresh record consent before retrying a failed record-aware chat", async () => {
+  it("retries a failed record-aware chat with the same active context", async () => {
     const failure = Object.assign(new Error("连接中断"), { retryable: true });
     api.streamAiChat
       .mockRejectedValueOnce(failure)
@@ -198,23 +207,17 @@ describe("AI chat store", () => {
 
     const failedAssistant = await store.sendMessage("这些指标是什么意思", true);
     expect(failedAssistant.retryRecordIds).toEqual([record.id]);
-    expect(store.selectedRecordIds).toEqual([]);
+    expect(store.selectedRecordIds).toEqual([record.id]);
 
     await store.retryMessage(failedAssistant.id, true);
     await flushPromises();
-    expect(api.streamAiChat).toHaveBeenCalledOnce();
-    expect(store.pickerContext).toMatchObject({
-      assistantId: failedAssistant.id,
-      mode: "action",
-    });
-    expect(store.selectedRecordIds).toEqual([record.id]);
-    expect(store.consentGiven).toBe(false);
-
-    store.setConsentGiven(true);
-    await store.confirmRecordPicker(true);
     expect(api.streamAiChat).toHaveBeenCalledTimes(2);
+    expect(store.pickerContext).toBeNull();
+    expect(store.selectedRecordIds).toEqual([record.id]);
     expect(api.streamAiChat.mock.calls[1][0]).toMatchObject({
-      selected_record_ids: [record.id],
+      active_record_context: expect.objectContaining({
+        anchor_record_ids: [record.id],
+      }),
       consent: true,
     });
   });

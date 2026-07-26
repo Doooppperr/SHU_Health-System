@@ -11,7 +11,7 @@ import { AI_SESSION_PREFIX } from "../utils/aiSession";
 
 const PANEL_WIDTH_KEY = "health-ai-panel-width";
 const MAX_STORED_MESSAGES = 40;
-const AI_SESSION_SCHEMA_VERSION = 3;
+const AI_SESSION_SCHEMA_VERSION = 4;
 const MAX_HISTORY_CONTENT_CHARS = 4000;
 const HISTORY_TRUNCATION_MARKER = "\n…（较早内容已在本地裁剪）…\n";
 let messageSequence = 0;
@@ -103,6 +103,8 @@ function normalizeMessages(rawMessages) {
         contextOwnerId,
         retryOwnerId,
         contextSources: Array.isArray(message.contextSources) ? message.contextSources : [],
+        recordResolution: message.recordResolution || null,
+        requestRecordContext: normalizeActiveRecordContext(message.requestRecordContext),
       };
     })
     .slice(-MAX_STORED_MESSAGES);
@@ -118,6 +120,34 @@ function recordMetadata(record) {
     institution_name:
       record.institution_name || record.institution?.name || "未填写机构",
     indicator_count: Number(record.indicator_count) || 0,
+  };
+}
+
+function normalizeActiveRecordContext(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const ownerId = positiveIntegerOrNull(raw.owner_id);
+  const scopeMode = ["selected_records", "all_confirmed", "indicator_history"].includes(
+    raw.scope_mode
+  )
+    ? raw.scope_mode
+    : "selected_records";
+  const anchorRecordIds = Array.isArray(raw.anchor_record_ids)
+    ? [...new Set(raw.anchor_record_ids.map(Number).filter(Number.isInteger))]
+    : [];
+  if (ownerId === null || (scopeMode === "selected_records" && !anchorRecordIds.length)) {
+    return null;
+  }
+  return {
+    owner_id: ownerId,
+    owner_name: String(raw.owner_name || "档案所有者"),
+    anchor_record_ids: anchorRecordIds,
+    scope_mode: scopeMode,
+    indicator_codes: Array.isArray(raw.indicator_codes)
+      ? [...new Set(raw.indicator_codes.map(String).filter(Boolean))]
+      : [],
+    source: raw.source || "manual",
+    display_summary: String(raw.display_summary || ""),
+    updated_at: Number(raw.updated_at) || Date.now(),
   };
 }
 
@@ -139,7 +169,7 @@ function clipHistoryContent(content) {
 function historyFrom(
   messages,
   endIndex = messages.length,
-  { sensitiveAssistantId = "", selectedRecordIds = [] } = {}
+  { sensitiveAssistantId = "", selectedRecordIds = [], selectedOwnerId = null } = {}
 ) {
   const history = [];
   const candidates = messages.slice(0, endIndex);
@@ -163,7 +193,10 @@ function historyFrom(
           assistantMessage.id === sensitiveAssistantId &&
           contextRecordIds.length > 0 &&
           contextRecordIds.every((id) => allowedRecordIds.has(id));
-        if (!explicitlyAllowed) {
+        const sameOwner =
+          Number.isInteger(selectedOwnerId) &&
+          Number(assistantMessage.contextOwnerId) === selectedOwnerId;
+        if (!explicitlyAllowed && !sameOwner) {
           index += 1;
           continue;
         }
@@ -196,6 +229,12 @@ function errorText(error) {
   return error?.message || "AI 暂时无法回复，请稍后再试。";
 }
 
+function messageMentionsRecords(message) {
+  return /(档案|报告|体检|检查|指标|趋势|变化|异常|参考范围|肝功能|肾功能|血脂|血糖|血压|继续|这个|这份|其中|刚才)/u.test(
+    String(message || "")
+  );
+}
+
 export const useAiChatStore = defineStore("ai-chat", {
   state: () => ({
     currentIdentity: "",
@@ -206,6 +245,7 @@ export const useAiChatStore = defineStore("ai-chat", {
       Math.min(640, Math.max(360, Math.round(window.innerWidth / 3))),
     messages: [],
     summary: "",
+    activeRecordContext: null,
     selectedRecordIds: [],
     consentGiven: false,
     autoSelectRecords: false,
@@ -241,7 +281,7 @@ export const useAiChatStore = defineStore("ai-chat", {
       this.currentIdentity = nextIdentity;
       this.messages = [];
       this.summary = "";
-      this.resetRecordContext();
+      this.resetRecordContext({ persistState: false });
       this.resetAvailableRecords();
       this.lastError = "";
       this.lastModel = "";
@@ -255,7 +295,10 @@ export const useAiChatStore = defineStore("ai-chat", {
           currentSchema && typeof saved.summary === "string" ? saved.summary : "";
         this.isOpen = saved.isOpen === true;
         this.lastModel = typeof saved.lastModel === "string" ? saved.lastModel : "";
-        this.autoSelectRecords = currentSchema && saved.autoSelectRecords === true;
+        this.activeRecordContext = currentSchema
+          ? normalizeActiveRecordContext(saved.activeRecordContext)
+          : null;
+        this.applyActiveContextSelection();
       }
       this.hydrated = true;
     },
@@ -270,12 +313,17 @@ export const useAiChatStore = defineStore("ai-chat", {
           summary: this.summary,
           isOpen: this.isOpen,
           lastModel: this.lastModel,
-          autoSelectRecords: this.autoSelectRecords,
+          activeRecordContext: this.activeRecordContext,
         })
       );
     },
 
     switchIdentity(userId = null) {
+      const nextIdentity = identityKey(userId);
+      if (this.currentIdentity && this.currentIdentity !== nextIdentity) {
+        sessionStorage.removeItem(sessionKey(this.currentIdentity));
+        sessionStorage.removeItem(sessionKey(nextIdentity));
+      }
       this.hydrated = false;
       this.initialize(userId);
     },
@@ -303,7 +351,6 @@ export const useAiChatStore = defineStore("ai-chat", {
       if (!sameSelection(this.selectedRecordIds, normalized)) {
         this.selectedRecordIds = normalized;
         if (normalized.length) this.selectedOwnerId = null;
-        this.consentGiven = false;
       }
       return true;
     },
@@ -314,13 +361,11 @@ export const useAiChatStore = defineStore("ai-chat", {
       this.recordSelectionMode = normalized;
       this.selectedRecordIds = [];
       this.selectedOwnerId = null;
-      this.consentGiven = false;
     },
 
     setSelectedOwnerId(ownerId) {
       this.selectedOwnerId = positiveIntegerOrNull(ownerId);
       if (this.selectedOwnerId !== null) this.selectedRecordIds = [];
-      this.consentGiven = false;
     },
 
     setConsentGiven(value) {
@@ -330,7 +375,6 @@ export const useAiChatStore = defineStore("ai-chat", {
 
     setAutoSelectRecords(value) {
       this.autoSelectRecords = value === true;
-      this.persist();
     },
 
     resetAvailableRecords() {
@@ -342,7 +386,30 @@ export const useAiChatStore = defineStore("ai-chat", {
       this.recordsError = "";
     },
 
-    resetRecordContext({ keepPicker = false } = {}) {
+    applyActiveContextSelection() {
+      const context = this.activeRecordContext;
+      if (!context) {
+        this.selectedRecordIds = [];
+        this.selectedOwnerId = null;
+        this.recordSelectionMode = "records";
+        return;
+      }
+      if (context.scope_mode === "all_confirmed") {
+        this.recordSelectionMode = "owner";
+        this.selectedOwnerId = context.owner_id;
+        this.selectedRecordIds = [];
+      } else {
+        this.recordSelectionMode = "records";
+        this.selectedOwnerId = null;
+        this.selectedRecordIds = [...context.anchor_record_ids];
+      }
+    },
+
+    resetRecordContext({
+      keepPicker = false,
+      clearActive = true,
+      persistState = true,
+    } = {}) {
       this.selectedRecordIds = [];
       this.selectedOwnerId = null;
       this.recordSelectionMode = "records";
@@ -350,6 +417,8 @@ export const useAiChatStore = defineStore("ai-chat", {
       this.preparedAnalysis = null;
       this.pendingSensitiveHistoryAssistantId = "";
       if (!keepPicker) this.pickerContext = null;
+      if (clearActive) this.activeRecordContext = null;
+      if (persistState) this.persist();
     },
 
     clearConversation({ close = true } = {}) {
@@ -359,7 +428,7 @@ export const useAiChatStore = defineStore("ai-chat", {
       if (this.currentIdentity) sessionStorage.removeItem(sessionKey(this.currentIdentity));
       this.messages = [];
       this.summary = "";
-      this.resetRecordContext();
+      this.resetRecordContext({ persistState: false });
       this.resetAvailableRecords();
       this.statusText = "";
       this.activeRequestId = "";
@@ -445,48 +514,92 @@ export const useAiChatStore = defineStore("ai-chat", {
         normalizedPreselectedOwnerId > 0;
       this.preparedAnalysis = null;
       this.pendingSensitiveHistoryAssistantId = "";
+      const active = this.activeRecordContext;
+      const effectiveIds = preselectedIds.length
+        ? preselectedIds
+        : active?.scope_mode !== "all_confirmed"
+          ? active?.anchor_record_ids || []
+          : [];
+      const effectiveOwnerId = hasPreselectedOwner
+        ? normalizedPreselectedOwnerId
+        : active?.scope_mode === "all_confirmed"
+          ? active.owner_id
+          : null;
       this.selectedRecordIds = [
-        ...new Set(preselectedIds.map(Number).filter(Number.isInteger)),
+        ...new Set(effectiveIds.map(Number).filter(Number.isInteger)),
       ];
-      this.recordSelectionMode = hasPreselectedOwner ? "owner" : "records";
-      this.selectedOwnerId = hasPreselectedOwner ? normalizedPreselectedOwnerId : null;
-      this.consentGiven = false;
+      this.recordSelectionMode = Number.isInteger(effectiveOwnerId)
+        ? "owner"
+        : "records";
+      this.selectedOwnerId = Number.isInteger(effectiveOwnerId)
+        ? effectiveOwnerId
+        : null;
       this.pickerContext = { assistantId, query, mode, historyAssistantId };
       void this.loadAvailableRecords({ force: true });
       return true;
     },
 
     closeRecordPicker() {
-      this.resetRecordContext();
+      this.pickerContext = null;
+      this.applyActiveContextSelection();
+      this.lastError = "";
     },
 
     async confirmRecordPicker(authenticated) {
       const ownerScope =
         this.recordSelectionMode === "owner" && Number.isInteger(this.selectedOwnerId);
       if (!this.pickerContext || (!ownerScope && this.selectedRecordIds.length === 0)) return null;
-      if (!this.consentGiven) {
-        this.lastError = "请先确认所选指标将发送至 DeepSeek API 处理。";
-        return null;
-      }
 
       const context = { ...this.pickerContext };
       this.pickerContext = null;
       this.lastError = "";
+      const selectedRecords = this.availableRecords.filter((record) =>
+        this.selectedRecordIds.includes(record.id)
+      );
+      const owner = ownerScope
+        ? this.availableOwners.find((item) => item.owner_id === this.selectedOwnerId)
+        : this.availableOwners.find(
+            (item) => item.owner_id === selectedRecords[0]?.owner_id
+          );
+      const dates = selectedRecords.map((record) => record.exam_date).filter(Boolean).sort();
+      this.activeRecordContext = normalizeActiveRecordContext({
+        owner_id: ownerScope ? this.selectedOwnerId : selectedRecords[0]?.owner_id,
+        owner_name: owner?.owner_name || selectedRecords[0]?.owner_name,
+        anchor_record_ids: ownerScope ? [] : [...this.selectedRecordIds],
+        scope_mode: ownerScope ? "all_confirmed" : "selected_records",
+        indicator_codes: [],
+        source: "manual",
+        display_summary: ownerScope
+          ? `${owner?.owner_name || "档案所有者"} · 全部历史 · ${owner?.record_count || 0}份报告`
+          : `${selectedRecords[0]?.owner_name || "档案所有者"} · ${
+              dates.length === 1 ? `${dates[0]} 体检报告` : `${selectedRecords.length}份体检报告`
+            }`,
+        updated_at: Date.now(),
+      });
+      this.applyActiveContextSelection();
+      this.persist();
       if (context.mode === "action" && context.assistantId) {
-        return this.retryMessage(context.assistantId, authenticated, {
-          selectedRecordIds: [...this.selectedRecordIds],
-          ownerId: ownerScope ? this.selectedOwnerId : null,
-          consent: true,
-          sensitiveHistoryAssistantId: context.historyAssistantId || "",
-        });
+        return this.retryMessage(context.assistantId, authenticated);
       }
 
-      // Manual references are intentionally kept for exactly the next message.
       this.pendingSensitiveHistoryAssistantId = context.historyAssistantId || "";
       return {
         selectedRecordIds: [...this.selectedRecordIds],
         ownerId: ownerScope ? this.selectedOwnerId : null,
       };
+    },
+
+    setActiveRecordContext(context) {
+      const normalized = normalizeActiveRecordContext(context);
+      if (!normalized) return false;
+      this.activeRecordContext = normalized;
+      this.applyActiveContextSelection();
+      this.persist();
+      return true;
+    },
+
+    clearActiveRecordContext() {
+      this.resetRecordContext({ clearActive: true });
     },
 
     prepareRecordAnalysis(records) {
@@ -506,7 +619,6 @@ export const useAiChatStore = defineStore("ai-chat", {
         dateRange: dates.length ? `${dates[0]} 至 ${dates.at(-1)}` : "日期未填写",
       };
       this.selectedRecordIds = normalized.map((record) => record.id);
-      this.consentGiven = false;
       this.lastError = "";
       this.isOpen = true;
       this.persist();
@@ -519,18 +631,15 @@ export const useAiChatStore = defineStore("ai-chat", {
         return null;
       }
 
-      const selectedRecordIds = authenticated ? [...this.selectedRecordIds] : [];
-      const selectedOwnerId =
-        authenticated && this.recordSelectionMode === "owner"
-          ? this.selectedOwnerId
-          : null;
-      const hasRecordContext =
-        selectedRecordIds.length > 0 || Number.isInteger(selectedOwnerId);
+      const requestRecordContext = authenticated
+        ? normalizeActiveRecordContext(this.activeRecordContext)
+        : null;
+      const selectedRecordIds = requestRecordContext?.anchor_record_ids || [];
+      const selectedOwnerId = requestRecordContext?.owner_id || null;
+      const hasRecordContext = Boolean(requestRecordContext);
+      const includeLegacyContext =
+        hasRecordContext && messageMentionsRecords(message);
       const sensitiveHistoryAssistantId = this.pendingSensitiveHistoryAssistantId;
-      if (hasRecordContext && !this.consentGiven) {
-        this.lastError = "请先确认所选指标将发送至 DeepSeek API 处理。";
-        return null;
-      }
 
       const userMessage = {
         id: newMessageId("user"),
@@ -555,6 +664,8 @@ export const useAiChatStore = defineStore("ai-chat", {
         contextOwnerId: selectedOwnerId,
         retryRecordIds: [],
         retryOwnerId: null,
+        requestRecordContext,
+        recordResolution: null,
       };
       const insertionIndex = this.messages.length;
       this.messages.push(userMessage, assistantMessage);
@@ -570,17 +681,21 @@ export const useAiChatStore = defineStore("ai-chat", {
           history: historyFrom(this.messages.slice(0, insertionIndex), undefined, {
             sensitiveAssistantId: sensitiveHistoryAssistantId,
             selectedRecordIds,
+            selectedOwnerId: includeLegacyContext ? selectedOwnerId : null,
           }),
           summary: this.summary,
-          selected_record_ids: Number.isInteger(selectedOwnerId)
-            ? undefined
-            : selectedRecordIds,
-          record_scope: Number.isInteger(selectedOwnerId)
-            ? { owner_id: selectedOwnerId, mode: "all_confirmed" }
-            : undefined,
-          consent: hasRecordContext && this.consentGiven,
-          auto_select_records: authenticated && this.autoSelectRecords,
-          ...(authenticated && this.autoSelectRecords ? { consent: true } : {}),
+          active_record_context: requestRecordContext || undefined,
+          selected_record_ids:
+            includeLegacyContext && requestRecordContext?.scope_mode !== "all_confirmed"
+              ? selectedRecordIds
+              : requestRecordContext?.scope_mode === "all_confirmed"
+                ? undefined
+                : [],
+          record_scope:
+            includeLegacyContext && requestRecordContext?.scope_mode === "all_confirmed"
+              ? { owner_id: selectedOwnerId, mode: "all_confirmed" }
+              : undefined,
+          consent: true,
         },
       });
       return reactiveAssistantMessage;
@@ -598,52 +713,20 @@ export const useAiChatStore = defineStore("ai-chat", {
         return null;
       }
 
-      if (
-        !requestContext &&
-        (this.pickerContext ||
-          this.preparedAnalysis ||
-          this.selectedRecordIds.length > 0 ||
-          this.consentGiven ||
-          this.pendingSensitiveHistoryAssistantId)
-      ) {
-        return null;
-      }
-
-      const requiredRecordIds = assistantMessage.retryRecordIds || [];
-      const requiredOwnerId = Number.isInteger(assistantMessage.retryOwnerId)
-        ? assistantMessage.retryOwnerId
+      if (this.pickerContext || this.preparedAnalysis) return null;
+      const retryContext = authenticated
+        ? normalizeActiveRecordContext(
+            requestContext?.activeRecordContext ||
+              assistantMessage.requestRecordContext ||
+              this.activeRecordContext
+          )
         : null;
-      if ((requiredRecordIds.length > 0 || requiredOwnerId !== null) && !requestContext) {
-        this.showRecordPicker({
-          assistantId: assistantMessage.id,
-          query: userMessage.content,
-          mode: "action",
-          preselectedIds: requiredRecordIds,
-          preselectedOwnerId: requiredOwnerId,
-        });
-        return null;
-      }
-
-      const selectedRecordIds =
-        authenticated && requestContext?.consent === true
-          ? [
-              ...new Set(
-                (requestContext.selectedRecordIds || [])
-                  .map(Number)
-                  .filter(Number.isInteger)
-              ),
-            ]
-          : [];
-      const selectedOwnerId =
-        authenticated && requestContext?.consent === true && Number.isInteger(requestContext.ownerId)
-          ? requestContext.ownerId
-          : null;
+      const selectedRecordIds = retryContext?.anchor_record_ids || [];
+      const selectedOwnerId = retryContext?.owner_id || null;
+      const includeLegacyContext =
+        Boolean(retryContext) && messageMentionsRecords(userMessage.content);
       const sensitiveHistoryAssistantId =
         requestContext?.sensitiveHistoryAssistantId || "";
-      if (requestContext && selectedRecordIds.length === 0 && selectedOwnerId === null) {
-        this.lastError = "请先确认所选指标将发送至 DeepSeek API 处理。";
-        return null;
-      }
       Object.assign(assistantMessage, {
         content: "",
         streaming: true,
@@ -658,6 +741,7 @@ export const useAiChatStore = defineStore("ai-chat", {
         contextOwnerId: selectedOwnerId,
         retryRecordIds: [],
         retryOwnerId: null,
+        requestRecordContext: retryContext,
       });
       userMessage.recordSensitive = selectedRecordIds.length > 0 || selectedOwnerId !== null;
       userMessage.contextRecordIds = [...selectedRecordIds];
@@ -672,15 +756,21 @@ export const useAiChatStore = defineStore("ai-chat", {
           history: historyFrom(this.messages, assistantIndex - 1, {
             sensitiveAssistantId: sensitiveHistoryAssistantId,
             selectedRecordIds,
+            selectedOwnerId: includeLegacyContext ? selectedOwnerId : null,
           }),
           summary: this.summary,
-          selected_record_ids: selectedOwnerId !== null ? undefined : selectedRecordIds,
-          record_scope: selectedOwnerId !== null
-            ? { owner_id: selectedOwnerId, mode: "all_confirmed" }
-            : undefined,
-          consent: (selectedRecordIds.length > 0 || selectedOwnerId !== null) && this.consentGiven,
-          auto_select_records: authenticated && this.autoSelectRecords,
-          ...(authenticated && this.autoSelectRecords ? { consent: true } : {}),
+          active_record_context: retryContext || undefined,
+          selected_record_ids:
+            includeLegacyContext && retryContext?.scope_mode !== "all_confirmed"
+              ? selectedRecordIds
+              : retryContext?.scope_mode === "all_confirmed"
+                ? undefined
+                : [],
+          record_scope:
+            includeLegacyContext && retryContext?.scope_mode === "all_confirmed"
+              ? { owner_id: selectedOwnerId, mode: "all_confirmed" }
+              : undefined,
+          consent: true,
         },
       });
       return assistantMessage;
@@ -688,13 +778,19 @@ export const useAiChatStore = defineStore("ai-chat", {
 
     async analyzePreparedRecords() {
       if (!this.preparedAnalysis || this.isSending) return null;
-      if (!this.consentGiven) {
-        this.lastError = "请先确认所选指标将发送至 DeepSeek API 处理。";
-        return null;
-      }
 
       const analysis = this.preparedAnalysis;
       const ids = [...this.selectedRecordIds];
+      this.setActiveRecordContext({
+        owner_id: analysis.ownerId,
+        owner_name: analysis.ownerName,
+        anchor_record_ids: ids,
+        scope_mode: "selected_records",
+        indicator_codes: [],
+        source: "manual",
+        display_summary: `${analysis.ownerName} · ${ids.length}份体检报告`,
+        updated_at: Date.now(),
+      });
       const userMessage = {
         id: newMessageId("user-analysis"),
         role: "user",
@@ -716,11 +812,15 @@ export const useAiChatStore = defineStore("ai-chat", {
         recordSensitive: true,
         contextRecordIds: [...ids],
         retryRecordIds: [],
+        requestRecordContext: this.activeRecordContext,
       };
       const insertionIndex = this.messages.length;
       this.messages.push(userMessage, assistantMessage);
       const reactiveUserMessage = this.messages[insertionIndex];
       const reactiveAssistantMessage = this.messages[insertionIndex + 1];
+      // The prepared-analysis card is a one-time UI action; the selected
+      // record context itself remains active for subsequent chat turns.
+      this.preparedAnalysis = null;
       await this.runStream({
         assistantMessage: reactiveAssistantMessage,
         userMessage: reactiveUserMessage,
@@ -806,11 +906,40 @@ export const useAiChatStore = defineStore("ai-chat", {
               assistantMessage.supportPhone = event.support_phone || "";
               assistantMessage.source = event.source || assistantMessage.source;
               assistantMessage.contextSources = Array.isArray(event.context_sources) ? event.context_sources : [];
-              if (event.auto_selected_records === true) {
+              assistantMessage.recordResolution = event.record_resolution || null;
+              if (event.next_active_record_context) {
+                this.setActiveRecordContext(event.next_active_record_context);
+              }
+              if (event.record_resolution) {
                 assistantMessage.recordSensitive = true;
-                assistantMessage.contextRecordIds = Array.isArray(event.selected_record_ids) ? event.selected_record_ids : [];
+                assistantMessage.contextRecordIds = Array.isArray(
+                  event.record_resolution.anchor_record_ids
+                )
+                  ? event.record_resolution.anchor_record_ids
+                  : [];
+                assistantMessage.contextOwnerId =
+                  positiveIntegerOrNull(event.record_resolution.owner?.id);
+                assistantMessage.requestRecordContext =
+                  normalizeActiveRecordContext(
+                    event.next_active_record_context
+                  ) || assistantMessage.requestRecordContext;
                 userMessage.recordSensitive = true;
                 userMessage.contextRecordIds = [...assistantMessage.contextRecordIds];
+                userMessage.contextOwnerId = assistantMessage.contextOwnerId;
+              } else if (event.auto_selected_records === true) {
+                assistantMessage.recordSensitive = true;
+                assistantMessage.contextRecordIds = Array.isArray(
+                  event.selected_record_ids
+                )
+                  ? event.selected_record_ids
+                  : [];
+                userMessage.recordSensitive = true;
+                userMessage.contextRecordIds = [
+                  ...assistantMessage.contextRecordIds,
+                ];
+              } else if (assistantMessage.kind !== "analysis") {
+                assistantMessage.recordSensitive = false;
+                userMessage.recordSensitive = false;
               }
               if (!assistantMessage.recordSensitive) {
                 this.summary = event.summary || this.summary;
@@ -862,7 +991,6 @@ export const useAiChatStore = defineStore("ai-chat", {
           this.statusText = "";
           this.activeRequestId = "";
           this.activeController = null;
-          this.resetRecordContext({ keepPicker: actionRequested });
           this.persist();
         }
       }

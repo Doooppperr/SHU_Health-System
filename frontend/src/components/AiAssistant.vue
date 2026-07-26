@@ -43,6 +43,13 @@
         </div>
       </header>
 
+      <div v-if="activeContextLabel" class="ai-active-record-context" data-testid="active-record-context">
+        <span class="ai-active-record-context-label">当前档案</span>
+        <span class="ai-active-record-context-value">{{ activeContextLabel }}</span>
+        <el-button link type="primary" size="small" @click="openManualPicker">更换</el-button>
+        <el-button link type="info" size="small" @click="clearActiveContext">清除</el-button>
+      </div>
+
       <section
         ref="messageArea"
         class="ai-message-area"
@@ -94,6 +101,10 @@
               <el-button v-for="source in message.contextSources" :key="source.action_url" link type="primary" @click="router.push(source.action_url)">
                 {{source.label}}
               </el-button>
+            </div>
+            <div v-if="message.recordResolution" class="ai-record-resolution" data-testid="record-resolution">
+              <el-tag size="small" type="success">本次参考</el-tag>
+              <span>{{ recordResolutionLabel(message.recordResolution) }}</span>
             </div>
             <a
               v-if="message.supportPhone"
@@ -219,24 +230,16 @@
               >
                 暂无带指标的已确认档案。
               </p>
-              <el-checkbox
-                v-if="hasRecordPickerSelection"
-                :model-value="aiStore.consentGiven"
-                class="ai-consent"
-                @change="aiStore.setConsentGiven"
-              >
-                {{ recordConsentLabel }}
-              </el-checkbox>
               <div class="ai-card-actions">
                 <el-button size="small" @click="aiStore.closeRecordPicker">取消</el-button>
                 <el-button
                   type="primary"
                   size="small"
-                  :disabled="!hasRecordPickerSelection || !aiStore.consentGiven || aiStore.isSending || aiStore.recordsLoading"
+                  :disabled="!hasRecordPickerSelection || aiStore.isSending || aiStore.recordsLoading"
                   data-testid="confirm-record-picker"
                   @click="confirmRecordPicker"
                 >
-                  {{ aiStore.pickerContext?.mode === "action" ? "选择并继续" : "引用到下一条消息" }}
+                  {{ aiStore.pickerContext?.mode === "action" ? "选择并继续" : "持续引用" }}
                 </el-button>
               </div>
             </div>
@@ -262,19 +265,11 @@
           <p class="ai-context-tip">
             单份档案将分析全部指标；多份档案还会分析指标变化和趋势。
           </p>
-          <el-checkbox
-            :model-value="aiStore.consentGiven"
-            class="ai-consent"
-            @change="aiStore.setConsentGiven"
-          >
-            我知晓所选指标将发送至 DeepSeek API 处理（仅本次）
-          </el-checkbox>
           <div class="ai-card-actions">
             <el-button size="small" @click="cancelRecordContext">取消</el-button>
             <el-button
               type="primary"
               size="small"
-              :disabled="!aiStore.consentGiven"
               data-testid="start-analysis"
               @click="startPreparedAnalysis"
             >
@@ -291,7 +286,7 @@
           data-testid="manual-record-picker"
         >
           <div class="ai-section-heading">
-            <span>引用档案到下一条消息</span>
+            <span>选择持续引用的档案</span>
             <span class="ai-selection-count">{{ pickerSelectionLabel }}</span>
           </div>
           <el-radio-group
@@ -354,24 +349,16 @@
           >
             暂无带指标的已确认档案。
           </p>
-          <el-checkbox
-            v-if="hasRecordPickerSelection"
-            :model-value="aiStore.consentGiven"
-            class="ai-consent"
-            @change="aiStore.setConsentGiven"
-          >
-            {{ recordConsentLabel }}
-          </el-checkbox>
           <div class="ai-card-actions">
             <el-button size="small" @click="aiStore.closeRecordPicker">取消</el-button>
             <el-button
               type="primary"
               size="small"
-              :disabled="!hasRecordPickerSelection || !aiStore.consentGiven || aiStore.isSending || aiStore.recordsLoading"
+              :disabled="!hasRecordPickerSelection || aiStore.isSending || aiStore.recordsLoading"
               data-testid="confirm-record-picker"
               @click="confirmRecordPicker"
             >
-              {{ aiStore.pickerContext?.mode === "action" ? "选择并继续" : "引用到下一条消息" }}
+              {{ aiStore.pickerContext?.mode === "action" ? "选择并继续" : "持续引用" }}
             </el-button>
           </div>
         </div>
@@ -384,13 +371,9 @@
           </el-button>
         </div>
 
-        <div
-          v-if="hasPendingReference"
-          class="ai-reference-ready"
-          data-testid="pending-reference"
-        >
-          <span>已引用 {{ pickerSelectionLabel }}，仅用于下一条消息。</span>
-          <el-button link type="primary" @click="cancelRecordContext">移除</el-button>
+        <div v-if="hasPendingReference" class="ai-reference-ready" data-testid="pending-reference">
+          <span>已引用 {{ activeContextLabel }}，后续追问会继续使用。</span>
+          <el-button link type="primary" @click="clearActiveContext">移除</el-button>
         </div>
       </section>
 
@@ -433,14 +416,6 @@
           >
             引用档案
           </el-button>
-          <el-switch
-            v-if="authenticated"
-            :model-value="aiStore.autoSelectRecords"
-            inline-prompt
-            active-text="自动引用"
-            inactive-text="手动引用"
-            @change="aiStore.setAutoSelectRecords"
-          />
           <span>Enter 发送，Shift + Enter 换行</span>
           <el-button
             type="primary"
@@ -535,16 +510,12 @@ const pickerSelectionLabel = computed(() => {
   const owner = selectedScopeOwner.value;
   return owner ? `${owner.owner_name} · ${owner.record_count} 份` : "未选择归属人";
 });
-const recordConsentLabel = computed(() => {
-  if (aiStore.recordSelectionMode === "owner" && selectedScopeOwner.value) {
-    return `我同意本次检索 ${selectedScopeOwner.value.owner_name} 的全部已确认档案，并将最小必要指标事实发送至 DeepSeek API（仅本次）`;
-  }
-  return "我同意将所选档案的最小必要指标事实发送至 DeepSeek API（仅本次）";
-});
+const activeContextLabel = computed(
+  () => aiStore.activeRecordContext?.display_summary || ""
+);
 const hasPendingReference = computed(
   () =>
-    hasRecordPickerSelection.value &&
-    aiStore.consentGiven &&
+    Boolean(aiStore.activeRecordContext) &&
     !aiStore.pickerContext &&
     !aiStore.preparedAnalysis &&
     !aiStore.isSending
@@ -552,8 +523,7 @@ const hasPendingReference = computed(
 const recordContextActive = computed(
   () =>
     Boolean(aiStore.pickerContext) ||
-    Boolean(aiStore.preparedAnalysis) ||
-    hasPendingReference.value
+    Boolean(aiStore.preparedAnalysis)
 );
 const messageActionsLocked = computed(
   () => recordContextActive.value || aiStore.isSending
@@ -772,6 +742,40 @@ function cancelRecordContext() {
   aiStore.resetRecordContext();
 }
 
+function recordResolutionLabel(resolution) {
+  const owner = resolution?.owner?.display_name || "档案";
+  const count = Number(resolution?.record_count) || 0;
+  const range = resolution?.date_range || {};
+  const dates = range.start
+    ? `${range.start}${range.end && range.end !== range.start ? ` 至 ${range.end}` : ""}`
+    : "日期未填写";
+  const institutions = [
+    ...new Set(
+      (resolution?.records || [])
+        .map((record) => record.institution_name)
+        .filter(Boolean)
+    ),
+  ];
+  const institutionText = institutions.length
+    ? ` · ${institutions.slice(0, 2).join("、")}${institutions.length > 2 ? `等${institutions.length}家` : ""}`
+    : "";
+  const modeText =
+    resolution?.scope_mode === "indicator_history"
+      ? " · 自动扩展趋势"
+      : "";
+  const sourceText =
+    resolution?.source === "semantic"
+      ? " · 系统自动引用"
+      : resolution?.source === "inherited"
+        ? " · 继承当前档案"
+        : "";
+  return `${owner} · ${count} 份 · ${dates}${institutionText}${modeText}${sourceText}`;
+}
+
+function clearActiveContext() {
+  aiStore.clearActiveRecordContext();
+}
+
 async function startPreparedAnalysis() {
   errorMessage.value = "";
   const pending = aiStore.analyzePreparedRecords();
@@ -817,15 +821,6 @@ async function submitMessage() {
   if (!message || aiStore.isSending) {
     return;
   }
-  if (
-    authenticated.value &&
-    hasRecordPickerSelection.value &&
-    !aiStore.consentGiven
-  ) {
-    ElMessage.warning("请先确认所选指标将发送至 DeepSeek API 处理");
-    return;
-  }
-
   errorMessage.value = "";
   inputMessage.value = "";
   const pending = aiStore.sendMessage(message, authenticated.value);
@@ -1116,18 +1111,39 @@ onBeforeUnmount(() => {
   color: var(--color-danger, #c9342f);
 }
 
-.ai-consent {
-  height: auto;
-  margin-top: 8px;
-  white-space: normal;
+.ai-active-record-context {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--color-border, #d2d2d7);
+  background: var(--color-accent-soft, #e5f3f0);
+  font-size: var(--text-xs, 0.75rem);
 }
 
-.ai-consent :deep(.el-checkbox__label) {
+.ai-active-record-context-label {
+  color: var(--color-accent-strong, #075e54);
+  font-weight: 700;
+}
+
+.ai-active-record-context-value {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: var(--color-text, #1d1d1f);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-record-resolution {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 9px;
   color: var(--color-text-secondary, #5f6368);
   font-size: var(--text-xs, 0.75rem);
-  line-height: 1.4;
-  overflow-wrap: anywhere;
-  white-space: normal;
+  line-height: 1.45;
 }
 
 .ai-message-area {

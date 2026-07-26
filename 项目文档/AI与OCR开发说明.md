@@ -2,7 +2,7 @@
 
 > 文档状态：融合 1.0—5.0 的 AI、OCR 与 RAG 设计说明。当前运行版本为 5.0/schema v10，更新于 2026-07-26。
 
-第五轮新增两条硬边界：机构推荐先从启用机构、分院、地址、电话、套餐和实时余量构建只读系统上下文，平台无结果时不得以互联网机构冒充；会话级自动引用只在问题需要时选择最少记录，“我/我的”只用本人，明确点名已授权亲友才用该单一成员。联系方式、健康身份码、过敏史和既往史始终不发给模型。
+第五轮新增三条硬边界：机构推荐先从启用机构、分院、地址、电话、套餐和实时余量构建只读系统上下文，平台无结果时不得以互联网机构冒充；会话级档案上下文在当前对话内持续，自动解析只在问题需要时选择最少记录，“我/我的”只用本人，明确点名已授权亲友才用该单一成员；流式生成阶段只消费已冻结的档案事实 DTO。联系方式、健康身份码、过敏史和既往史始终不发给模型。
 
 OCR 字典已扩充至 104 项并同步中文全称、英文缩写、旧称、单位和领域。解析表头同时提取项目、值、单位、参考范围和 H/L/↑/↓；值冲突、别名歧义、单位不兼容及低置信度均标为人工复核。机构原始参考范围优先，系统性别/年龄规则其次，通用范围再次；无可靠规则时内部状态为 `unknown`，用户界面和 AI 答案不展示“未判定”标签。身高、体重和臀围属于描述性测量值，不单独输出正常/异常，体重相关风险通过 BMI 等派生指标表达。
 
@@ -13,7 +13,7 @@ OCR 字典已扩充至 104 项并同步中文全称、英文缩写、旧称、�
 | 阶段 | AI/OCR 目标 | 延续到 3.0 的结果 |
 |---|---|---|
 | 1.0 | 提供基础智能问答和报告信息录入辅助 | 明确 AI 是辅助入口，不能替代医疗判断 |
-| 2.0 | 建立 SSE 流式对话、报告选择与逐请求同意、OCR 草稿/锁定/归档，以及公共知识与私人档案双通道 | 私人数据按请求鉴权，确定性代码计算健康事实，OCR 结果必须人工复核 |
+| 2.0 | 建立 SSE 流式对话、报告选择与权限校验、OCR 草稿/锁定/归档，以及公共知识与私人档案双通道 | 私人数据按请求鉴权，确定性代码计算健康事实，OCR 结果必须人工复核 |
 | 3.0 | 按健康领域约束套餐与报告生产，支持文本结论、检查附件和图片辅助分析，并适配分院协作 | AI 仅分析本人或已授权档案；兄弟分院只读已归档报告；草稿、OCR 临时件和私人附件不会进入公共 RAG |
 
 schema v10 没有把 AI 会话写入数据库，也没有建立“AI 诊断”实体。数据库只保存真实业务产生的报告、指标、文本结果、附件、站内通知和访问审计。
@@ -83,12 +83,16 @@ JWT 可选。访客只能使用公开导览，不能附带报告。请求结构�
     { "role": "assistant", "content": "上一轮回答" }
   ],
   "summary": "",
-  "selected_record_ids": [12],
-  "consent": true
+  "active_record_context": {
+    "owner_id": 3,
+    "anchor_record_ids": [12],
+    "scope_mode": "selected_records",
+    "indicator_codes": []
+  }
 }
 ```
 
-当前字段名 `selected_record_ids` 为 AI 内部兼容命名，数组元素实际对应 `institution_reports.id`。
+`active_record_context` 是对话级持续档案焦点；前端在同一会话中保存并在后续消息继续提交。当前轮实际使用的档案会在 `record_resolution` 中返回。旧客户端仍可使用 `selected_record_ids` 或 `record_scope`，数组元素实际对应 `institution_reports.id`。
 
 也可用以下范围替代 `selected_record_ids`；两者互斥：
 
@@ -99,7 +103,7 @@ JWT 可选。访客只能使用公开导览，不能附带报告。请求结构�
 }
 ~~~
 
-服务端每次请求重新校验归属人、亲友授权、`published` 状态和指标存在性。稳定错误码包括 `invalid_record_scope`、`record_scope_conflict`、`record_scope_unavailable` 和 `record_consent_required`。SSE 在本地安全规则之后增加 `status.stage=retrieving`；`done` 和非流式结果只公开 `rag_used`、`retrieval_status`、`knowledge_source_count`，不返回来源正文、URL 或内部 grounding ID。
+服务端每次请求重新校验归属人、亲友授权、`published` 状态和指标存在性。透明引用模式不再以 `consent` 阻断请求；该字段仅为旧客户端兼容保留。稳定错误码包括 `invalid_active_record_context`、`record_scope_conflict`、`record_unavailable`、`record_context_unavailable` 和 `mixed_record_owners`。SSE 在本地安全规则之后增加 `status.stage=retrieving`；`done` 和非流式结果只公开 `rag_used`、`retrieval_status`、`knowledge_source_count`、`record_resolution` 和 `next_active_record_context`，不返回来源正文、URL 或内部 grounding ID。
 
 约束：
 
@@ -107,13 +111,27 @@ JWT 可选。访客只能使用公开导览，不能附带报告。请求结构�
 - `history` 可选，最多 `AI_MAX_HISTORY_MESSAGES`（默认 20）条，并保持完整 user/assistant 轮次。
 - 单条过长时服务端确定性裁剪；历史达到上限时将早期轮次确定性并入 `summary`，不额外调用模型。
 - `selected_record_ids` 为正整数数组，服务端去重并保留首次出现顺序。
-- 附带报告时必须同时提交 `consent: true`。
+- 发送 `active_record_context` 后，档案在当前对话中持续有效；用户可以在前端“更换”或“清除”。
 - 报告必须属于同一人，并在请求时仍为本人或授权亲友可见的 `published` 报告。
 - 匿名用户、机构账号或管理员附带报告会被拒绝。
 
 `POST /api/ai/chat` 是非流式兼容接口，复用相同验证、安全规则和错误映射；前端优先使用流式接口。
 
-### 3.3 报告智能分析
+### 3.3 对话级档案上下文
+
+服务端返回的 `record_resolution` 是本轮审计快照，包含 `source`、成员真实姓名、范围模式、锚点报告、实际报告数量、日期范围、指标和最多 10 条机构摘要；`records_truncated` 明确是否只展示了部分摘要。`next_active_record_context` 是下一轮可直接提交的最小状态。
+
+- “分析我上一次的体检报告”自动选择本人最新已发布报告；
+- “这个报告/其中/刚才那份”继承锚点报告；
+- “这个指标的趋势/历史变化”在同一成员内扩展为包含该指标的历史报告；
+- 明确年份、成员或新报告会替换上下文，不能混合成员；
+- 普通系统功能问题不发送档案，但不会清除上下文；
+- 清除、结束对话、退出登录和切换账号时清除浏览器 `sessionStorage`；
+- 后端每轮重新检查权限，撤销亲友授权或报告不可用时返回 `record_unavailable`。
+
+前端每条回答展示“本次参考”，包括成员、数量、日期、机构以及“系统自动引用/继承当前档案/自动扩展趋势”标签。
+
+### 3.4 报告智能分析
 
 `POST /api/ai/analyze/stream`
 
@@ -121,8 +139,7 @@ JWT 必需且仅普通用户：
 
 ```json
 {
-  "selected_record_ids": [12, 15, 21],
-  "consent": true
+  "selected_record_ids": [12, 15, 21]
 }
 ```
 
@@ -138,13 +155,13 @@ JWT 必需且仅普通用户：
 - 全量有效数据参与计算；传给模型的上下文按预算压缩，优先异常、变化和最新状态。
 - 模型只解释服务端事实，不自行补算趋势。
 
-### 3.4 当前趋势自动解读
+### 3.5 当前趋势自动解读
 
-`POST /api/ai/trends/stream` 接收 `domain_id`、可选 `owner_id`、日期范围和 `consent: true`。服务端重新校验本人/亲友授权，并从数据库构造当前健康方向的数据点、单位、来源和参考范围，不接受浏览器上传一份可伪造的图表事实。趋势页采用本次页面授权：离开或刷新后失效；授权期间变更成员、日期或健康方向会取消旧请求、防抖并自动生成新解读，相同筛选只使用页面内缓存。
+`POST /api/ai/trends/stream` 接收 `domain_id`、可选 `owner_id`、日期范围和指标多选。服务端重新校验本人/亲友授权，并从数据库构造当前健康方向的数据点、单位、来源和参考范围，不接受浏览器上传一份可伪造的图表事实。趋势页使用当前筛选的最小必要指标；离开或刷新后不复用旧请求，变更成员、日期或健康方向会取消旧请求、防抖并自动生成新解读，相同筛选只使用页面内缓存。
 
 趋势输出解释整体变化、重点数据、参考范围适用条件、不同来源的可比性、一般健康管理建议和就医边界。复杂问题仍先保留可以安全说明的科普内容，再附加咨询医生建议；只有紧急风险直接进入急救提示。
 
-### 3.4 AI 数据边界
+### 3.6 AI 数据边界
 
 允许进入上下文：
 
@@ -178,7 +195,7 @@ X-Accel-Buffering: no
 | `status` | `stage`、`message` | 校验、分析、安全判断和生成进度 |
 | `delta` | `text` | 可展示正文增量 |
 | `action` | `action`、`message` | 当前支持 `select_records` |
-| `done` | `request_id`、`decision`、`source`、`summary`、`model` | 正常结束 |
+| `done` | `request_id`、`decision`、`source`、`summary`、`model`、`record_resolution`、`next_active_record_context` | 正常结束并返回本轮引用审计和下一轮持续上下文 |
 | `error` | `request_id`、`code`、`message`、`retryable` | 流内失败 |
 
 认证对话和分析采用 decision-first 安全输出：服务端完成安全决策后才释放正文。流已经开始后发生的错误通常仍是 HTTP 200，通过 `error` 事件表达。
@@ -189,10 +206,10 @@ HTTP 预校验错误：
 
 ```json
 {
-  "message": "explicit consent is required before sending record data",
+  "message": "当前档案不可用或授权已失效，请重新选择",
   "error": {
-    "code": "record_consent_required",
-    "message": "explicit consent is required before sending record data",
+    "code": "record_unavailable",
+    "message": "当前档案不可用或授权已失效，请重新选择",
     "retryable": false
   }
 }
@@ -204,7 +221,6 @@ HTTP 预校验错误：
 |---:|---|---|
 | 400 | `message_required`、`message_too_long` | 消息缺失或过长 |
 | 400 | `invalid_history`、`invalid_summary`、`invalid_record_ids` | 上下文格式不合法 |
-| 400 | `record_consent_required` | 未明确同意发送报告数据 |
 | 400 | `records_required` | 分析未选择报告 |
 | 400 | `report_not_published`、`record_has_no_indicators`、`mixed_record_owners` | 报告不满足分析条件 |
 | 403 | `login_required`、`regular_user_required` | 身份或角色不允许 |
@@ -318,7 +334,7 @@ OCR 上传成功后：
 
 - 打开 AI 侧栏时不预加载报告；只有主动引用或动作触发时加载。
 - 用户消息先显示，再按 `delta` 追加 AI 内容；收到 `error` 后保留已显示内容。
-- 每次 AI 请求完成、失败或取消后重置报告选择与同意；切换选择必须重新同意。
+- AI 请求完成、失败或取消后保留当前 `active_record_context`；只有用户清除、更换、结束对话、退出登录或切换账号才会移除。
 - 使用 AbortController 取消，发送中禁止重复提交。
 - 机构 OCR 页必须展示解析器版本、候选分数、冲突、未匹配和需复核状态。
 - 不得把 `unmatched` 或 `requires_review=true` 候选自动提交为正式指标。
@@ -329,7 +345,7 @@ OCR 上传成功后：
 
 - 私人档案继续从 SQLite/GaussDB 按请求权限读取，趋势和异常由确定性代码计算；档案值、用户问题、聊天、OCR 原文和用户 ID 不进入 Qdrant。
 - 公共知识使用 `BAAI/bge-small-zh-v1.5` 的 512 维本地向量和 Qdrant Local。`RAG_EMBEDDING_THREADS` 默认 `1`，同时约束 FastEmbed 与扫描 PDF 的 RapidOCR/ONNX 线程；FastEmbed 关闭 ONNX CPU 内存池，每份扫描 PDF 在独立子进程完成 OCR并在结束后由操作系统回收模型内存，避免 4GB 服务器因连续处理产生内存交换。资源充足时可显式调高线程数。访客过滤为 `public`，登录普通用户可额外检索 `authenticated` 医学白名单；管理员不能附带健康档案。
-- 固定顺序为急症规则、选档/FAQ、同意与鉴权、档案事实、知识检索、DeepSeek 安全决策。无命中、索引缺失或模型失败会以 `no_match`、`unavailable` 或 `disabled` 降级。
+- 固定顺序为急症规则、系统数据/选档/FAQ、鉴权、档案事实、知识检索、DeepSeek 安全决策。无命中、索引缺失或模型失败会以 `no_match`、`unavailable` 或 `disabled` 降级。
 - 语料在 prompt 中作为不可信 user 数据，模型返回的 grounding ID 只接受本次检索集合内编号。日志仅记录耗时、数量、稳定 source ID、分数和状态。
 - `backend/rag_sources/manifest.json` 是精确 URL 与批准 SHA-256 清单。应用启动和请求不联网，只有 `scripts/rag_sync.py sync` 抓取；扫描 PDF 的本地 OCR 也只在该命令运行。
 - 同步生成版本化 collection 并原子切换 `healthdoc_knowledge_current`。哈希变化进入运行目录隔离，审核后执行 `approve-change` 更新批准清单，再次 sync 才切换。
@@ -374,4 +390,4 @@ Pop-Location
 git diff --check
 ```
 
-当前自动化覆盖 AI 同意与隐私边界、角色隔离、RAG 稳定切分/同步/重排/安全降级、OCR Mock、草稿指标、锁定删除临时文件、机构范围隔离及发布后数据可见性。真实外部服务凭据不进入自动化测试。
+当前自动化覆盖 AI 持久档案上下文、语义选择、趋势扩展、重试与隐私边界、角色隔离、RAG 稳定切分/同步/重排/安全降级、OCR Mock、草稿指标、锁定删除临时文件、机构范围隔离及发布后数据可见性。真实外部服务凭据不进入自动化测试。

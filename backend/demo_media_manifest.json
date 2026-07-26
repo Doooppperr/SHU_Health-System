@@ -1,6 +1,6 @@
 {
   "version": 10,
-  "generated_at": "2026-07-26T17:08:02.450431+08:00",
+  "generated_at": "2026-07-26T21:30:39.149381+08:00",
   "usage_notice": "仅用于 HealthDoc 功能演示；全部医学附件均带有非诊断说明，不构成诊断依据。",
   "license_references": {
     "Wikimedia Commons": "https://commons.wikimedia.org/wiki/Commons:Reusing_content_outside_Wikimedia",
@@ -8,7 +8,7 @@
   },
   "items": [
     {
-      "storage_key": "health-assets/demo-v10/report-57-ecg_12.png",
+      "storage_key": "health-assets/demo-v10/report-65-ecg_12.png",
       "kind": "report_attachment",
       "category": "十二导联心电图",
       "title": "十二导联心电图",
@@ -24,7 +24,7 @@
       "license": "项目内合成演示内容"
     },
     {
-      "storage_key": "health-assets/demo-v10/report-57-echo_heart.png",
+      "storage_key": "health-assets/demo-v10/report-65-echo_heart.png",
       "kind": "report_attachment",
       "category": "心脏彩超",
       "title": "心脏彩超",
@@ -40,7 +40,7 @@
       "license": "项目内合成演示内容"
     },
     {
-      "storage_key": "health-assets/demo-v10/report-58-ecg_12.png",
+      "storage_key": "health-assets/demo-v10/report-66-ecg_12.png",
       "kind": "report_attachment",
       "category": "十二导联心电图",
       "title": "十二导联心电图",
@@ -56,7 +56,7 @@
       "license": "项目内合成演示内容"
     },
     {
-      "storage_key": "health-assets/demo-v10/report-58-echo_heart.png",
+      "storage_key": "health-assets/demo-v10/report-66-echo_heart.png",
       "kind": "report_attachment",
       "category": "心脏彩超",
       "title": "心脏彩超",

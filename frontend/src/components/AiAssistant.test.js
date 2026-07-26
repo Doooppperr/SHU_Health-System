@@ -138,7 +138,7 @@ describe("AiAssistant record-aware interaction", () => {
     await flushPromises();
     expect(api.fetchAiRecords).toHaveBeenCalledOnce();
     const picker = wrapper.get('[data-testid="manual-record-picker"]');
-    expect(wrapper.text()).toContain("引用档案到下一条消息");
+    expect(wrapper.text()).toContain("选择持续引用的档案");
     expect(scrollIntoViewMock).toHaveBeenCalledWith({
       block: "nearest",
       behavior: "smooth",
@@ -146,7 +146,7 @@ describe("AiAssistant record-aware interaction", () => {
     expect(document.activeElement).toBe(picker.element);
   });
 
-  it("shows the analysis confirmation card and starts only after one-time consent", async () => {
+  it("shows the analysis confirmation card and starts without a blocking consent step", async () => {
     const { wrapper, aiStore } = mountAssistant();
     aiStore.prepareRecordAnalysis([record]);
     await flushPromises();
@@ -155,10 +155,6 @@ describe("AiAssistant record-aware interaction", () => {
     expect(card.text()).toContain("1 份档案");
     expect(card.text()).toContain("2026-07-01 至 2026-07-01");
     expect(document.activeElement).toBe(card.element);
-    expect(wrapper.get('[data-testid="start-analysis"]').attributes("disabled")).toBeDefined();
-
-    aiStore.setConsentGiven(true);
-    await wrapper.vm.$nextTick();
     await wrapper.get('[data-testid="start-analysis"]').trigger("click");
     await flushPromises();
 
@@ -167,12 +163,12 @@ describe("AiAssistant record-aware interaction", () => {
       expect.any(Object)
     );
     expect(wrapper.text()).toContain("分析结果");
-    expect(aiStore.consentGiven).toBe(false);
+    expect(aiStore.activeRecordContext).not.toBeNull();
 
     await wrapper.get('[data-testid="follow-up-records"]').trigger("click");
     await flushPromises();
     expect(aiStore.selectedRecordIds).toEqual([record.id]);
-    expect(aiStore.consentGiven).toBe(false);
+    expect(aiStore.activeRecordContext).not.toBeNull();
     expect(wrapper.find('[data-testid="manual-record-picker"]').exists()).toBe(true);
   });
 

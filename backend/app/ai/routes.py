@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 import uuid
@@ -49,6 +50,16 @@ _rate_lock = threading.Lock()
 _RECORD_QUERY_BATCH_SIZE = 400
 _MAX_HISTORY_CONTENT_CHARS = 4000
 _HISTORY_TRUNCATION_MARKER = "\n…（较早内容已由服务端裁剪）…\n"
+_MAX_RECORD_CONTEXT_CHARS = 48000
+_ACTIVE_SCOPE_MODES = {"selected_records", "all_confirmed", "indicator_history"}
+_RECORD_QUERY_TOKENS = (
+    "档案", "报告", "体检", "检查结果", "指标", "趋势", "变化", "参考范围",
+    "偏高", "偏低", "异常", "肝功能", "肾功能", "血脂", "血糖", "血压",
+)
+_FOLLOW_UP_TOKENS = ("这个", "这份", "其中", "刚才", "继续", "上述", "该报告", "它")
+_TREND_TOKENS = ("趋势", "变化", "对比", "历史", "最近几年", "近几年", "历年")
+_LATEST_TOKENS = ("上一次", "最近一次", "最新", "上一份", "最近一份")
+_ALL_HISTORY_TOKENS = ("全部历史", "所有历史", "全部报告", "所有报告", "历次报告")
 
 
 def _current_user_optional():
@@ -185,6 +196,165 @@ def _parse_record_scope(raw_scope):
     return {"owner_id": owner_id, "mode": "all_confirmed"}, None
 
 
+def _parse_active_record_context(raw_context):
+    if raw_context is None:
+        return None, None
+    if not isinstance(raw_context, dict):
+        return None, "active_record_context must be an object"
+    allowed = {
+        "owner_id", "owner_name", "anchor_record_ids", "scope_mode",
+        "indicator_codes", "source", "display_summary", "updated_at",
+    }
+    if set(raw_context) - allowed:
+        return None, "active_record_context contains unsupported fields"
+    owner_id = raw_context.get("owner_id")
+    if isinstance(owner_id, bool):
+        return None, "active_record_context owner_id must be a positive integer"
+    try:
+        owner_id = int(owner_id)
+    except (TypeError, ValueError):
+        return None, "active_record_context owner_id must be a positive integer"
+    if owner_id <= 0:
+        return None, "active_record_context owner_id must be a positive integer"
+    record_ids, record_error = _parse_record_ids(
+        raw_context.get("anchor_record_ids") or []
+    )
+    if record_error:
+        return None, record_error
+    scope_mode = raw_context.get("scope_mode") or "selected_records"
+    if scope_mode not in _ACTIVE_SCOPE_MODES:
+        return None, "active_record_context scope_mode is unsupported"
+    if scope_mode == "selected_records" and not record_ids:
+        return None, "selected_records context requires anchor_record_ids"
+    raw_codes = raw_context.get("indicator_codes") or []
+    if not isinstance(raw_codes, list):
+        return None, "active_record_context indicator_codes must be a list"
+    indicator_codes = []
+    for value in raw_codes:
+        if not isinstance(value, str) or not value.strip() or len(value.strip()) > 40:
+            return None, "active_record_context indicator code is invalid"
+        code = value.strip().upper()
+        if code not in indicator_codes:
+            indicator_codes.append(code)
+    indicator_codes = _canonical_indicator_codes(indicator_codes)
+    return {
+        "owner_id": owner_id,
+        "anchor_record_ids": record_ids,
+        "scope_mode": scope_mode,
+        "indicator_codes": indicator_codes,
+    }, None
+
+
+def _message_requests_records(message):
+    normalized = message.lower()
+    return (
+        needs_record_selection(message)
+        or any(token.lower() in normalized for token in _RECORD_QUERY_TOKENS)
+        or any(token.lower() in normalized for token in _FOLLOW_UP_TOKENS)
+    )
+
+
+def _message_requests_trend(message):
+    return any(token in message for token in _TREND_TOKENS)
+
+
+def _message_year(message):
+    match = re.search(r"(?<!\d)(20\d{2})\s*年?", message)
+    if match:
+        return int(match.group(1))
+    today_year = date.today().year
+    if "前年" in message:
+        return today_year - 2
+    if "去年" in message:
+        return today_year - 1
+    if "今年" in message:
+        return today_year
+    return None
+
+
+def _mentioned_owner_id(user, message):
+    mentioned = set()
+    for relation in FriendRelation.query.filter_by(
+        user_id=user.id, auth_status=True
+    ).all():
+        friend = relation.friend_user
+        if friend and friend.real_name and friend.real_name in message:
+            mentioned.add(friend.id)
+    if len(mentioned) > 1:
+        return None, _json_error(
+            "一次只能分析一位成员的健康档案",
+            "mixed_record_owners",
+            400,
+        )
+    if mentioned:
+        return next(iter(mentioned)), None
+    if any(token in message for token in ("我", "我的", "本人")):
+        return user.id, None
+    return None, None
+
+
+def _indicator_codes_from_message(message):
+    matched = []
+    normalized = message.lower()
+    for definition in IndicatorDict.query.all():
+        candidates = [definition.code, definition.name, *(definition.aliases or [])]
+        if any(
+            isinstance(candidate, str)
+            and len(candidate.strip()) >= 2
+            and candidate.strip().lower() in normalized
+            for candidate in candidates
+        ):
+            matched.append(definition.code)
+    return sorted(set(matched))
+
+
+def _canonical_indicator_codes(values):
+    definitions = IndicatorDict.query.all()
+    by_code = {item.code.upper(): item.code for item in definitions}
+    by_compact = {}
+    for definition in definitions:
+        for candidate in [
+            definition.code,
+            definition.name,
+            *(definition.aliases or []),
+        ]:
+            if isinstance(candidate, str):
+                compact = re.sub(r"[^0-9a-z\u4e00-\u9fff]", "", candidate.lower())
+                if compact:
+                    by_compact.setdefault(compact, definition.code)
+    result = []
+    for raw in values:
+        upper = str(raw).strip().upper()
+        canonical = by_code.get(upper)
+        if canonical is None and upper.endswith("_C"):
+            canonical = by_code.get(upper[:-2])
+        if canonical is None:
+            compact = re.sub(r"[^0-9a-z\u4e00-\u9fff]", "", upper.lower())
+            canonical = by_compact.get(compact)
+            if canonical is None and compact.endswith("c"):
+                canonical = by_compact.get(compact[:-1])
+        if canonical and canonical not in result:
+            result.append(canonical)
+    return result
+
+
+def _query_owner_records(owner_id, *, year=None, latest_only=False):
+    query = HealthRecord.query.options(*_record_load_options()).filter(
+        HealthRecord.owner_id == owner_id,
+        HealthRecord.status == "published",
+        HealthRecord.indicators.any(),
+    )
+    if year is not None:
+        query = query.filter(
+            HealthRecord.exam_date >= date(year, 1, 1),
+            HealthRecord.exam_date <= date(year, 12, 31),
+        )
+    query = query.order_by(HealthRecord.exam_date.desc(), HealthRecord.id.desc())
+    if latest_only:
+        query = query.limit(1)
+    return query.all()
+
+
 def _authorized_owner_ids(user):
     friend_ids = (
         db.session.query(FriendRelation.friend_user_id)
@@ -310,6 +480,272 @@ def _auto_select_records(user, message):
     )
 
 
+def _record_resolution(user, records, *, source, scope_mode, indicator_codes=None):
+    if not records:
+        return None, None
+    ordered = sorted(records, key=lambda item: (item.exam_date, item.id))
+    owner = ordered[0].owner
+    owner_name = owner.real_name if owner and owner.real_name else (
+        "本人" if ordered[0].owner_id == user.id else "已授权亲友"
+    )
+    record_rows = [
+        {
+            "id": record.id,
+            "exam_date": record.exam_date.isoformat(),
+            "institution_name": record.institution.name
+            if record.institution
+            else "未填写机构",
+        }
+        for record in ordered
+    ]
+    codes = sorted(set(indicator_codes or []))
+    resolution = {
+        "source": source,
+        "owner": {"id": ordered[0].owner_id, "display_name": owner_name},
+        "scope_mode": scope_mode,
+        "anchor_record_ids": [record.id for record in ordered[-3:]]
+        if scope_mode != "selected_records"
+        else [record.id for record in ordered],
+        "record_count": len(ordered),
+        "date_range": {
+            "start": ordered[0].exam_date.isoformat(),
+            "end": ordered[-1].exam_date.isoformat(),
+        },
+        "indicators": codes,
+        "records": record_rows[-10:],
+        "records_truncated": len(record_rows) > 10,
+    }
+    display = (
+        f"{owner_name} · "
+        + (
+            f"{'、'.join(codes)} 趋势 · {len(ordered)}份报告"
+            if scope_mode == "indicator_history" and codes
+            else (
+                f"全部历史 · {len(ordered)}份报告"
+                if scope_mode == "all_confirmed"
+                else (
+                    f"{ordered[-1].exam_date.isoformat()} 体检报告"
+                    if len(ordered) == 1
+                    else f"{len(ordered)}份体检报告"
+                )
+            )
+        )
+    )
+    next_context = {
+        "owner_id": ordered[0].owner_id,
+        "owner_name": owner_name,
+        "anchor_record_ids": resolution["anchor_record_ids"],
+        "scope_mode": scope_mode,
+        "indicator_codes": codes,
+        "source": source,
+        "display_summary": display,
+        "updated_at": int(time.time()),
+    }
+    return resolution, next_context
+
+
+def _resolve_record_context(user, payload, message, record_ids, record_scope):
+    active_context, active_error = _parse_active_record_context(
+        payload.get("active_record_context")
+    )
+    if active_error:
+        return None, _json_error(
+            active_error, "invalid_active_record_context", 400
+        )
+
+    if user is None:
+        if record_ids or record_scope or active_context:
+            return None, _json_error(
+                "login is required to use health records", "login_required", 403
+            )
+        return {
+            "records": [],
+            "record_scope": None,
+            "resolution": None,
+            "next_context": None,
+            "record_context": "",
+            "indicator_codes": [],
+            "auto_selected": False,
+        }, None
+    if user.role != "user" and (record_ids or record_scope or active_context):
+        return None, _json_error(
+            "only regular users can use health records with AI",
+            "regular_user_required",
+            403,
+        )
+
+    authorized_owner_ids = _authorized_owner_ids(user) if user.role == "user" else set()
+    if active_context and active_context["owner_id"] not in authorized_owner_ids:
+        return None, _json_error(
+            "当前档案不可用或授权已失效，请重新选择",
+            "record_unavailable",
+            404,
+        )
+
+    records = []
+    source = None
+    scope_mode = "selected_records"
+    indicator_codes = []
+    semantic = False
+    record_query = user.role == "user" and _message_requests_records(message)
+
+    if record_ids:
+        records, load_error = _load_selected_records(user, record_ids)
+        if load_error:
+            return None, load_error
+        source = "manual"
+    elif record_scope:
+        records, load_error = _load_record_scope(user, record_scope)
+        if load_error:
+            return None, load_error
+        source = "manual"
+        scope_mode = "all_confirmed"
+    elif user.role == "user" and record_query:
+        explicit_owner_id, owner_error = _mentioned_owner_id(user, message)
+        if owner_error:
+            return None, owner_error
+        owner_id = explicit_owner_id or (
+            active_context["owner_id"] if active_context else user.id
+        )
+        if owner_id not in authorized_owner_ids:
+            return None, _json_error(
+                "当前档案不可用或授权已失效，请重新选择",
+                "record_unavailable",
+                404,
+            )
+        year = _message_year(message)
+        requested_codes = _indicator_codes_from_message(message)
+        indicator_codes = requested_codes or (
+            active_context["indicator_codes"] if active_context else []
+        )
+        all_history = any(token in message for token in _ALL_HISTORY_TOKENS)
+        trend = _message_requests_trend(message) and not all_history
+        explicit_switch = explicit_owner_id is not None or year is not None
+
+        if all_history:
+            records = _query_owner_records(owner_id, year=year)
+            scope_mode = "all_confirmed"
+        elif trend:
+            records = _query_owner_records(owner_id, year=year)
+            scope_mode = "indicator_history"
+        elif year is not None:
+            records = _query_owner_records(owner_id, year=year)
+            scope_mode = "selected_records"
+        elif (
+            active_context
+            and not explicit_switch
+            and any(token in message for token in _FOLLOW_UP_TOKENS)
+            and active_context["anchor_record_ids"]
+        ):
+            records, load_error = _load_selected_records(
+                user, active_context["anchor_record_ids"]
+            )
+            if load_error:
+                return None, load_error
+            scope_mode = (
+                "selected_records"
+                if active_context["scope_mode"] == "indicator_history"
+                else active_context["scope_mode"]
+            )
+        elif active_context and not explicit_switch and not any(
+            token in message for token in _LATEST_TOKENS
+        ):
+            if active_context["scope_mode"] == "all_confirmed":
+                records = _query_owner_records(owner_id)
+                scope_mode = "all_confirmed"
+            else:
+                records, load_error = _load_selected_records(
+                    user, active_context["anchor_record_ids"]
+                )
+                if load_error:
+                    return None, load_error
+                scope_mode = "selected_records"
+        else:
+            records = _query_owner_records(owner_id, latest_only=True)
+            scope_mode = "selected_records"
+        source = "inherited" if active_context and not explicit_switch else "semantic"
+        semantic = True
+
+    if record_query and not records:
+        return {
+            "records": [],
+            "record_scope": None,
+            "resolution": None,
+            "next_context": active_context,
+            "record_context": "",
+            "indicator_codes": [],
+            "auto_selected": False,
+            "no_match": True,
+        }, None
+
+    resolution = next_context = None
+    context_text = ""
+    if records:
+        if len({record.owner_id for record in records}) != 1:
+            return None, _json_error(
+                "selected records must belong to the same owner",
+                "mixed_record_owners",
+                400,
+            )
+        if indicator_codes:
+            available_codes = {
+                item.indicator_dict.code
+                for record in records
+                for item in record.indicators
+                if item.indicator_dict is not None
+            }
+            indicator_codes = [
+                code for code in indicator_codes if code in available_codes
+            ]
+            if scope_mode == "indicator_history":
+                selected_code_set = set(indicator_codes)
+                records = [
+                    record
+                    for record in records
+                    if any(
+                        item.indicator_dict is not None
+                        and item.indicator_dict.code in selected_code_set
+                        for item in record.indicators
+                    )
+                ]
+        if not records:
+            return {
+                "records": [],
+                "record_scope": None,
+                "resolution": None,
+                "next_context": active_context,
+                "record_context": "",
+                "indicator_codes": [],
+                "auto_selected": False,
+                "no_match": True,
+            }, None
+        resolution, next_context = _record_resolution(
+            user,
+            records,
+            source=source or "manual",
+            scope_mode=scope_mode,
+            indicator_codes=indicator_codes,
+        )
+        context_text = _format_record_context(
+            user, records, indicator_codes=indicator_codes
+        )
+    elif active_context:
+        next_context = {
+            **active_context,
+            "source": "inherited",
+            "updated_at": int(time.time()),
+        }
+    return {
+        "records": records,
+        "record_scope": record_scope,
+        "resolution": resolution,
+        "next_context": next_context,
+        "record_context": context_text,
+        "indicator_codes": _indicator_codes_from_records(records),
+        "auto_selected": semantic,
+    }, None
+
+
 def _institution_context_for_message(message):
     if not any(token in message for token in ("推荐", "体检机构", "体检中心", "分院", "附近", "预约机构")):
         return None
@@ -394,14 +830,18 @@ def _indicator_codes_from_records(records):
     )
 
 
-def _retrieve_knowledge(user, query, records, *, limit=None):
+def _retrieve_knowledge(user, query, records=None, *, indicator_codes=None, limit=None):
     retriever = get_knowledge_retriever(current_app)
     return retriever.retrieve(
         query,
         audience="authenticated"
         if user is not None and user.role == "user"
         else "public",
-        indicator_codes=_indicator_codes_from_records(records),
+        indicator_codes=(
+            list(indicator_codes)
+            if indicator_codes is not None
+            else _indicator_codes_from_records(records or [])
+        ),
         limit=limit,
     )
 
@@ -453,14 +893,15 @@ def _analysis_retrieval_query(facts):
     return "体检指标科普、参考范围与一般生活建议：" + "、".join(prioritized[:10])
 
 
-def _format_record_context(user, records):
+def _format_record_context(user, records, *, indicator_codes=None):
     if not records:
         return ""
 
-    owner_label = "本人" if records[0].owner_id == user.id else "已授权亲友"
+    selected_codes = set(indicator_codes or [])
+    owner_label = "本人" if user is not None and records[0].owner_id == user.id else "已授权亲友"
     sections = [f"档案归属：{owner_label}。共选择 {len(records)} 份档案。"]
     for index, record in enumerate(
-        sorted(records, key=lambda item: (item.exam_date, item.id)), start=1
+        sorted(records, key=lambda item: (item.exam_date, item.id), reverse=True), start=1
     ):
         institution = record.institution.name if record.institution else "未填写机构"
         lines = [
@@ -477,6 +918,10 @@ def _format_record_context(user, records):
                     f" ~ {definition.reference_high if definition.reference_high is not None else '+∞'}"
                     f" {definition.unit or ''}"
                 ).strip()
+            if selected_codes and definition.code not in selected_codes:
+                continue
+            # Resolve while the request-scoped SQLAlchemy session is alive.  The
+            # resulting text is immutable and safe to consume from SSE later.
             result_status = item.resolved_result_status()
             status_label = {
                 "normal": "正常", "high": "偏高", "low": "偏低",
@@ -497,6 +942,8 @@ def _format_record_context(user, records):
     owner_id = records[0].owner_id
     daily_sections = []
     for definition in IndicatorDict.query.filter_by(allow_self_measurement=True).all():
+        if selected_codes and definition.code not in selected_codes:
+            continue
         points = effective_points(owner_id, definition.id)
         if points:
             recent = points[-30:]
@@ -507,7 +954,10 @@ def _format_record_context(user, records):
             )
     if daily_sections:
         sections.append("服务端已按同日机构数据优先规则计算的每日有效数据：\n" + "\n".join(daily_sections))
-    return "\n\n".join(sections)
+    text = "\n\n".join(sections)
+    if len(text) <= _MAX_RECORD_CONTEXT_CHARS:
+        return text
+    return text[:_MAX_RECORD_CONTEXT_CHARS] + "\n…（历史档案已按相关性和长度裁剪）…"
 
 
 def _compact_history(history, summary):
@@ -550,48 +1000,11 @@ def _validate_chat_request(user, payload):
             "record_scope_conflict",
             400,
         )
-    has_record_context = bool(record_ids or record_scope)
-    if user is None and has_record_context:
-        return None, _json_error(
-            "login is required to use health records", "login_required", 403
-        )
-    if user is not None and user.role != "user" and has_record_context:
-        return None, _json_error(
-            "only regular users can use health records with AI",
-            "regular_user_required",
-            403,
-        )
-    if has_record_context and payload.get("consent") is not True:
-        return None, _json_error(
-            "explicit consent is required before sending record data",
-            "record_consent_required",
-            400,
-        )
-
-    records = []
-    if record_ids:
-        records, load_error = _load_selected_records(user, record_ids)
-        if load_error:
-            return None, load_error
-    elif record_scope:
-        records, load_error = _load_record_scope(user, record_scope)
-        if load_error:
-            return None, load_error
-    elif payload.get("auto_select_records") is True:
-        if user is None or user.role != "user":
-            return None, _json_error(
-                "只有普通用户可以自动引用健康档案",
-                "regular_user_required",
-                403,
-            )
-        if payload.get("consent") is not True:
-            return None, _json_error(
-                "自动引用档案前需要开启本会话授权",
-                "record_consent_required",
-                400,
-            )
-        records = _auto_select_records(user, message)
-        record_ids = [record.id for record in records]
+    resolved_records, resolve_error = _resolve_record_context(
+        user, payload, message, record_ids, record_scope
+    )
+    if resolve_error:
+        return None, resolve_error
 
     model_history, updated_summary, compacted_count = _compact_history(history, summary)
     return {
@@ -599,10 +1012,21 @@ def _validate_chat_request(user, payload):
         "history": model_history,
         "summary": updated_summary,
         "compacted_count": compacted_count,
-        "record_ids": record_ids,
-        "record_scope": record_scope,
-        "records": records,
-        "auto_selected": bool(records and payload.get("auto_select_records") is True),
+        "record_ids": [
+            record.id for record in resolved_records["records"]
+        ],
+        "record_count": len(resolved_records["records"]),
+        "record_scope": resolved_records["record_scope"],
+        # ORM records are deliberately not retained past request validation.
+        # All downstream chat/SSE code consumes the frozen context string and
+        # immutable resolution metadata.
+        "records": [],
+        "record_context": resolved_records["record_context"],
+        "record_resolution": resolved_records["resolution"],
+        "next_active_record_context": resolved_records["next_context"],
+        "indicator_codes": resolved_records["indicator_codes"],
+        "no_record_match": resolved_records.get("no_match", False),
+        "auto_selected": resolved_records["auto_selected"],
         "system_context": _institution_context_for_message(message),
         "retrieval": RetrievalResult(status="disabled"),
     }, None
@@ -631,10 +1055,20 @@ def _resolve_chat_locally(user, chat_request):
             "context_sources": chat_request["system_context"]["sources"],
             "client": None,
         }
+    if chat_request.get("no_record_match"):
+        return {
+            "result": {
+                "reply": "系统内暂无符合条件的已发布体检档案。你可以调整成员或时间范围，或先在体检数据页面确认报告是否已经发布。",
+                "decision": "answer",
+                "usage": {},
+            },
+            "source": "record_resolution",
+            "client": None,
+        }
     if (
         user is not None
         and user.role == "user"
-        and not chat_request["records"]
+        and not chat_request["record_context"]
         and needs_record_selection(message)
     ):
         return {
@@ -662,7 +1096,9 @@ def _resolve_chat(user, chat_request):
 
     message = chat_request["message"]
     chat_request["retrieval"] = _retrieve_knowledge(
-        user, message, chat_request["records"]
+        user,
+        message,
+        indicator_codes=chat_request["indicator_codes"],
     )
     retrieval = chat_request["retrieval"]
     knowledge_context = _knowledge_context(retrieval)
@@ -683,7 +1119,7 @@ def _resolve_chat(user, chat_request):
             message,
             chat_request["history"],
             chat_request["summary"],
-            _format_record_context(user, chat_request["records"]),
+            chat_request["record_context"],
             support_phone,
             knowledge_context,
             allowed_grounding_ids(retrieval),
@@ -710,7 +1146,7 @@ def _chat_response_payload(user, chat_request, resolution):
         "summary": chat_request["summary"],
         "compacted_count": chat_request["compacted_count"],
         "mode": "authenticated" if user else "guest",
-        "selected_record_ids": [record.id for record in chat_request["records"]],
+        "selected_record_ids": list(chat_request["record_ids"]),
         "record_scope": chat_request["record_scope"],
         "model": (
             getattr(client, "model", None)
@@ -726,6 +1162,10 @@ def _chat_response_payload(user, chat_request, resolution):
         ),
         "context_sources": resolution.get("context_sources", []),
         "auto_selected_records": chat_request.get("auto_selected", False),
+        "record_resolution": chat_request.get("record_resolution"),
+        "next_active_record_context": chat_request.get(
+            "next_active_record_context"
+        ),
     }
     if payload["decision"] == "support":
         payload["support_phone"] = support_phone or None
@@ -824,7 +1264,7 @@ def _stream_model_chat_resolution(user, chat_request):
             message,
             chat_request["history"],
             chat_request["summary"],
-            _format_record_context(user, chat_request["records"]),
+            chat_request["record_context"],
             knowledge_context,
         )
         completion = yield from _consume_provider_stream(
@@ -853,15 +1293,15 @@ def _stream_error_payload(exc, request_id):
         return {
             "request_id": request_id,
             "code": "ai_not_configured",
-            "message": "AI service is not configured",
+            "message": "AI 服务尚未配置，请联系系统管理员",
             "retryable": False,
         }
     if isinstance(exc, AiProviderError):
-        message = "AI service is temporarily unavailable"
+        message = "AI 服务暂时不可用，请稍后重试"
         if exc.code == "provider_rate_limited":
-            message = "AI service is busy, please try again later"
+            message = "AI 服务繁忙，请稍后重试"
         elif exc.code == "provider_timeout":
-            message = "AI response timed out, please try again"
+            message = "AI 响应超时，请重试"
         return {
             "request_id": request_id,
             "code": exc.code,
@@ -871,7 +1311,7 @@ def _stream_error_payload(exc, request_id):
     return {
         "request_id": request_id,
         "code": "internal_error",
-        "message": "AI service is temporarily unavailable",
+        "message": "AI 档案处理暂时失败，请使用相同档案重试",
         "retryable": True,
     }
 
@@ -1095,7 +1535,9 @@ def chat_stream():
                     {"stage": "retrieving", "message": "正在检索可用知识资料…"},
                 )
                 chat_request["retrieval"] = _retrieve_knowledge(
-                    user, chat_request["message"], chat_request["records"]
+                    user,
+                    chat_request["message"],
+                    indicator_codes=chat_request["indicator_codes"],
                 )
                 resolution = yield from _stream_model_chat_resolution(
                     user,
@@ -1124,6 +1566,10 @@ def chat_stream():
                         "rag_used": False,
                         "retrieval_status": "disabled",
                         "knowledge_source_count": 0,
+                        "record_resolution": chat_request.get("record_resolution"),
+                        "next_active_record_context": chat_request.get(
+                            "next_active_record_context"
+                        ),
                     },
                 )
                 final_status = "completed"
@@ -1151,6 +1597,10 @@ def chat_stream():
                 "context_sources": response_payload.get("context_sources", []),
                 "auto_selected_records": response_payload.get("auto_selected_records", False),
                 "selected_record_ids": response_payload.get("selected_record_ids", []),
+                "record_resolution": response_payload.get("record_resolution"),
+                "next_active_record_context": response_payload.get(
+                    "next_active_record_context"
+                ),
             }
             if response_payload.get("support_phone"):
                 done_payload["support_phone"] = response_payload["support_phone"]
@@ -1177,7 +1627,7 @@ def chat_stream():
                 request_id=request_id,
                 operation="chat",
                 mode=mode,
-                record_count=len(chat_request["records"]),
+                record_count=chat_request["record_count"],
                 prompt_chars=prompt_chars,
                 started_at=started_at,
                 first_delta_at=first_delta_at,
@@ -1226,12 +1676,6 @@ def analyze_stream():
     if not record_ids and not record_scope:
         return _json_error(
             "select at least one record", "records_required", 400
-        )
-    if payload.get("consent") is not True:
-        return _json_error(
-            "explicit consent is required before sending record data",
-            "record_consent_required",
-            400,
         )
     domain_id = payload.get("domain_id")
     if domain_id is not None:
@@ -1393,8 +1837,6 @@ def analyze_trends_stream():
     payload, payload_error = _parse_json_object()
     if payload_error:
         return payload_error
-    if payload.get("consent") is not True:
-        return _json_error("分析前需要确认本次页面的数据授权", "trend_consent_required", 400)
     try:
         domain_id = int(payload.get("domain_id"))
     except (TypeError, ValueError):
