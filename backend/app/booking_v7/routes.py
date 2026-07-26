@@ -40,7 +40,7 @@ def booking_intake_defaults():
     """Only return the signed-in user's own latest height and weight."""
     values = {}
     for code, key in (("HEIGHT", "height_cm"), ("WEIGHT", "weight_kg")):
-        definition = IndicatorDict.query.filter_by(code=code, is_active=True).first()
+        definition = IndicatorDict.query.filter_by(code=code).first()
         if not definition:
             continue
         measurement = SelfMeasurement.query.filter_by(

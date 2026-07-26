@@ -466,12 +466,16 @@ async function cancelWaitlist(item) {
 
 onMounted(async () => {
   try {
-    const friendResponse = await fetchFriends();
-    relations.value = friendResponse.data.outgoing || [];
     form.participant_user_ids = [auth.user.id];
     participantChanged(form.participant_user_ids);
-    const intakeResponse = await fetchBookingIntakeDefaults();
-    Object.assign(participantIntakes[auth.user.id], intakeResponse.data.item || {});
+    const [friendResponse, intakeResponse] = await Promise.all([
+      fetchFriends(),
+      fetchBookingIntakeDefaults().catch(() => null),
+    ]);
+    relations.value = friendResponse.data.outgoing || [];
+    if (intakeResponse?.data?.item) {
+      Object.assign(participantIntakes[auth.user.id], intakeResponse.data.item);
+    }
     await Promise.all([loadAvailability(), reload()]);
     if (form.institution_id && selectedInstitution.value) step.value = form.package_id ? 3 : 2;
   } catch (error) {

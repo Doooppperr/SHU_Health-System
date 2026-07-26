@@ -91,6 +91,13 @@ def test_booking_intakes_create_private_institution_snapshot(app, client):
         assert float(proxy.height_cm_snapshot) == 163
 
 
+def test_booking_intake_defaults_do_not_block_appointment_initialization(app, client):
+    headers = login(client, "test1")
+    response = client.get("/api/booking-intake-defaults", headers=headers)
+    assert response.status_code == 200, response.get_json()
+    assert set(response.get_json()["item"]).issubset({"height_cm", "weight_kg"})
+
+
 def test_institution_cancellation_notifies_user_with_sibling_snapshot(app, client):
     user_headers = login(client, "test1")
     institution_id, package_id = first_booking_target(app)
