@@ -3,6 +3,7 @@ from io import BytesIO
 
 from PIL import Image
 
+from app.demo_indicator_values import DEMO_REALISTIC_SERIES, demo_realistic_status
 from app.extensions import db
 from app.models import (
     Appointment,
@@ -122,6 +123,28 @@ def test_descriptive_body_measurements_are_not_labelled_normal_or_abnormal(app):
                 pass
             else:
                 raise AssertionError("implausible adult body measurement was accepted")
+
+
+def test_full_scale_demo_vitals_stay_within_plausible_measurement_limits():
+    bounds = {
+        "HEIGHT": (80, 250),
+        "WEIGHT": (20, 500),
+        "WAIST": (40, 180),
+        "HIP": (50, 200),
+        "WHR": (0.4, 1.5),
+        "TEMP": (30, 43),
+        "SPO2": (50, 100),
+        "FVC": (0.5, 8),
+        "FEV1": (0.5, 7),
+        "FEV1_FVC": (20, 100),
+    }
+    for code, (low, high) in bounds.items():
+        values = [float(value) for value in DEMO_REALISTIC_SERIES[code]]
+        assert all(low <= value <= high for value in values), code
+    assert demo_realistic_status("HEIGHT", "170") == "unknown"
+    assert demo_realistic_status("TEMP", "35.8") == "low"
+    assert demo_realistic_status("TEMP", "36.6") == "normal"
+    assert demo_realistic_status("TEMP", "38.5") == "high"
 
 
 def test_report_range_precedes_catalog_and_unknown_status_is_hidden(app):

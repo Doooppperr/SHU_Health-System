@@ -13,10 +13,42 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_DIR))
 
 from app.extensions import db  # noqa: E402
+from app.demo_indicator_values import DEMO_REALISTIC_SERIES, demo_realistic_status  # noqa: E402
 import app.models  # noqa: E402,F401
 
 
 CORE_TABLES = ("users", "institutions", "appointments", "institution_reports", "comments", "packages")
+
+
+def repair_synthetic_demo_values(connection) -> None:
+    rows = connection.execute(text(
+        "SELECT report_indicator.id, report_indicator.report_id, indicator.code "
+        "FROM report_indicators report_indicator "
+        "JOIN indicator_dicts indicator ON indicator.id=report_indicator.indicator_dict_id "
+        "WHERE report_indicator.method_snapshot='v10 合成体检演示'"
+    )).mappings().all()
+    for row in rows:
+        values = DEMO_REALISTIC_SERIES.get(row["code"])
+        if not values:
+            continue
+        value = values[int(row["report_id"]) % len(values)]
+        status = demo_realistic_status(row["code"], value)
+        abnormal_flag = {"high": "H", "low": "L"}.get(status)
+        connection.execute(
+            text(
+                "UPDATE report_indicators "
+                "SET value=:value, original_value=:value, result_status=:status, "
+                "is_abnormal=:is_abnormal, abnormal_flag=:abnormal_flag "
+                "WHERE id=:indicator_id"
+            ),
+            {
+                "value": value,
+                "status": status,
+                "is_abnormal": status in {"high", "low"},
+                "abnormal_flag": abnormal_flag,
+                "indicator_id": row["id"],
+            },
+        )
 
 
 def migrate(database_url: str) -> None:
@@ -91,20 +123,7 @@ def migrate(database_url: str) -> None:
                 "AND (rule.reference_low IS NOT NULL OR rule.reference_high IS NOT NULL))"
                 ")"
             ))
-            connection.execute(text(
-                "UPDATE report_indicators "
-                "SET value=CASE "
-                "WHEN indicator_dict_id=(SELECT id FROM indicator_dicts WHERE code='HEIGHT') THEN '172' "
-                "WHEN indicator_dict_id=(SELECT id FROM indicator_dicts WHERE code='WEIGHT') THEN '68' "
-                "ELSE value END, "
-                "original_value=CASE "
-                "WHEN indicator_dict_id=(SELECT id FROM indicator_dicts WHERE code='HEIGHT') THEN '172' "
-                "WHEN indicator_dict_id=(SELECT id FROM indicator_dicts WHERE code='WEIGHT') THEN '68' "
-                "ELSE original_value END "
-                "WHERE method_snapshot='v10 合成体检演示' "
-                "AND indicator_dict_id IN "
-                "(SELECT id FROM indicator_dicts WHERE code IN ('HEIGHT','WEIGHT'))"
-            ))
+            repair_synthetic_demo_values(connection)
             connection.execute(text("ALTER TABLE report_indicators DROP CONSTRAINT IF EXISTS ck_report_indicators_result_status"))
             connection.execute(text(
                 "ALTER TABLE report_indicators ADD CONSTRAINT ck_report_indicators_result_status "

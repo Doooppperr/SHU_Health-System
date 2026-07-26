@@ -29,6 +29,7 @@ SCHEMA_VERSION = 10
 sys.path.insert(0, str(BACKEND_DIR))
 
 from app import models as _models  # noqa: E402,F401
+from app.demo_indicator_values import DEMO_REALISTIC_SERIES, demo_realistic_status  # noqa: E402
 from app.extensions import db  # noqa: E402
 
 
@@ -107,25 +108,38 @@ def repair_result_statuses(connection):
         )
         """
     )
-    connection.execute(
+    rows = connection.execute(
         """
-        UPDATE report_indicators
-        SET value=CASE
-                WHEN indicator_dict_id=(SELECT id FROM indicator_dicts WHERE code='HEIGHT') THEN '172'
-                WHEN indicator_dict_id=(SELECT id FROM indicator_dicts WHERE code='WEIGHT') THEN '68'
-                ELSE value
-            END,
-            original_value=CASE
-                WHEN indicator_dict_id=(SELECT id FROM indicator_dicts WHERE code='HEIGHT') THEN '172'
-                WHEN indicator_dict_id=(SELECT id FROM indicator_dicts WHERE code='WEIGHT') THEN '68'
-                ELSE original_value
-            END
-        WHERE method_snapshot='v10 合成体检演示'
-          AND indicator_dict_id IN (
-              SELECT id FROM indicator_dicts WHERE code IN ('HEIGHT','WEIGHT')
-          )
+        SELECT report_indicator.id, report_indicator.report_id, indicator.code
+        FROM report_indicators AS report_indicator
+        JOIN indicator_dicts AS indicator
+          ON indicator.id=report_indicator.indicator_dict_id
+        WHERE report_indicator.method_snapshot='v10 合成体检演示'
         """
-    )
+    ).fetchall()
+    for indicator_id, report_id, code in rows:
+        values = DEMO_REALISTIC_SERIES.get(code)
+        if not values:
+            continue
+        value = values[int(report_id) % len(values)]
+        status = demo_realistic_status(code, value)
+        abnormal_flag = {"high": "H", "low": "L"}.get(status)
+        connection.execute(
+            """
+            UPDATE report_indicators
+            SET value=?, original_value=?, result_status=?,
+                is_abnormal=?, abnormal_flag=?
+            WHERE id=?
+            """,
+            (
+                value,
+                value,
+                status,
+                int(status in {"high", "low"}),
+                abnormal_flag,
+                indicator_id,
+            ),
+        )
     connection.execute(
         """
         UPDATE report_indicators
