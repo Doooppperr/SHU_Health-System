@@ -18,15 +18,6 @@ def _current_user_id() -> int:
     return int(get_jwt_identity())
 
 
-def _parse_optional_int(raw_value):
-    if raw_value is None or raw_value == "":
-        return None
-    try:
-        return int(raw_value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _parse_bool(raw_value):
     if isinstance(raw_value, bool):
         return raw_value
@@ -66,8 +57,8 @@ def list_friends():
     )
 
     return {
-        "outgoing": [item.to_dict() for item in outgoing],
-        "incoming": [item.to_dict() for item in incoming],
+        "outgoing": [item.to_dict(viewer_id=user_id) for item in outgoing],
+        "incoming": [item.to_dict(viewer_id=user_id) for item in incoming],
     }, 200
 
 
@@ -77,8 +68,7 @@ def add_friend():
     user_id = _current_user_id()
     payload = request.get_json(silent=True) or {}
 
-    friend_user_id = _parse_optional_int(payload.get("friend_user_id"))
-    friend_username = (payload.get("friend_username") or "").strip()
+    health_id = (payload.get("health_id") or "").strip().upper()
     relation_name = (payload.get("relation_name") or "亲友").strip()
 
     if not relation_name:
@@ -87,16 +77,19 @@ def add_friend():
     if len(relation_name) > 80:
         return {"message": "关系名称不能超过80个字符"}, 400
 
-    target_user = None
-    if friend_user_id is not None:
-        target_user = db.session.get(User, friend_user_id)
-    elif friend_username:
-        target_user = User.query.filter_by(username=friend_username).first()
-    else:
-        return {"message": "请输入要添加的亲友用户名"}, 400
-
-    if target_user is None:
-        return {"message": "没有找到该普通用户，请检查用户名"}, 404
+    if not health_id:
+        return {"message": "请输入亲友的健康身份码"}, 400
+    target_user = User.query.filter_by(
+        health_id=health_id,
+        role="user",
+        is_active=True,
+    ).first()
+    if target_user is None or not (target_user.real_name or "").strip():
+        # Keep disabled, non-user, missing and incomplete targets
+        # indistinguishable so this endpoint cannot be used as an account
+        # directory. A valid target is only disclosed through the intended
+        # pending relation with a masked display name.
+        return {"message": "无法使用该健康身份码建立亲友关系，请核对后重试"}, 404
 
     if target_user.id == user_id:
         return {"message": "不能将自己的账号添加为亲友"}, 400
@@ -157,6 +150,8 @@ def update_authorization(relation_id: int):
     auth_status = _parse_bool(payload.get("auth_status"))
     if auth_status is None:
         return {"message": "授权状态不正确"}, 400
+    if auth_status and not (relation.friend_user.real_name or "").strip():
+        return {"message": "请先完善真实姓名再接受亲友授权"}, 409
 
     relation.auth_status = auth_status
     db.session.commit()

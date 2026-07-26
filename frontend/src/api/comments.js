@@ -1,8 +1,8 @@
 import http from "./http";
 
-export function fetchInstitutionComments(institutionId) {
+export function fetchInstitutionComments(institutionId, params = {}) {
   return http.get("/comments", {
-    params: { institution_id: institutionId },
+    params: { ...params, institution_id: institutionId },
   });
 }
 
@@ -14,8 +14,8 @@ export function createInstitutionComment(payload) {
   return http.post("/comments", payload);
 }
 
-export function fetchCommentModerationList() {
-  return http.get("/comments/moderation");
+export function fetchCommentModerationList(params = {}) {
+  return http.get("/comments/moderation", { params });
 }
 
 export function updateCommentVisibility(commentId, payload) {
@@ -30,8 +30,8 @@ export function deleteComment(commentId) {
   return http.delete(`/comments/${commentId}`);
 }
 
-export function fetchOrganizationComments() {
-  return http.get("/comments/organization");
+export function fetchOrganizationComments(params = {}) {
+  return http.get("/comments/organization", { params });
 }
 
 export function submitOrganizationReply(commentId, content) {

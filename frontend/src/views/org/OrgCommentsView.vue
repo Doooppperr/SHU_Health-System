@@ -16,6 +16,7 @@
           <el-button v-if="!item.reply || item.reply.status==='rejected'" type="primary" plain @click="openReply(item)">{{ item.reply ? "修改并重新提交" : "回复评价" }}</el-button>
         </article>
       </div>
+      <el-pagination v-if="pagination.total>pagination.page_size" v-model:current-page="pagination.page" :page-size="pagination.page_size" :total="pagination.total" layout="total, prev, pager, next" style="margin-top:16px;justify-content:flex-end" @current-change="load"/>
     </el-card>
     <el-dialog v-model="dialogVisible" title="回复用户评价" width="min(560px, 92vw)">
       <el-input v-model="replyContent" type="textarea" :rows="5" maxlength="1000" show-word-limit placeholder="请输入完整、友善的中文回复" />
@@ -25,13 +26,14 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from "vue";
+import { onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
 import { fetchOrganizationComments, submitOrganizationReply } from "../../api/comments";
 const loading=ref(false),submitting=ref(false),items=ref([]),errorMessage=ref(""),dialogVisible=ref(false),replyContent=ref(""),active=ref(null);
+const pagination=reactive({page:1,page_size:15,total:0,pages:0});
 const statusType=(status)=>({approved:"success",pending:"warning",rejected:"danger"}[status]||"info");
 const formatDate=(value)=>String(value||"").replace("T"," ").slice(0,16)||"—";
-async function load(){loading.value=true;try{items.value=(await fetchOrganizationComments()).data.items||[];}catch(error){errorMessage.value=error?.response?.data?.message||"用户评价加载失败";}finally{loading.value=false;}}
+async function load(){loading.value=true;try{const{data}=await fetchOrganizationComments({page:pagination.page,page_size:15});items.value=data.items||[];Object.assign(pagination,data.pagination||{});}catch(error){errorMessage.value=error?.response?.data?.message||"用户评价加载失败";}finally{loading.value=false;}}
 function openReply(item){active.value=item;replyContent.value=item.reply?.status==="rejected"?item.reply.content:"";dialogVisible.value=true;}
 async function submitReply(){if(!replyContent.value.trim())return ElMessage.warning("请填写回复内容");submitting.value=true;try{await submitOrganizationReply(active.value.id,replyContent.value.trim());ElMessage.success("回复已提交，等待管理员审核");dialogVisible.value=false;await load();}catch(error){ElMessage.error(error?.response?.data?.message||"回复提交失败");}finally{submitting.value=false;}}
 onMounted(load);

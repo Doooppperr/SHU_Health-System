@@ -22,7 +22,7 @@
         </template>
 
         <div class="friend-add-grid">
-          <el-input v-model="addForm.friend_username" placeholder="输入亲友用户名" />
+          <el-input v-model="addForm.health_id" placeholder="输入亲友健康身份码" maxlength="32" />
           <el-input v-model="addForm.relation_name" placeholder="关系名称（如：父亲、配偶）" />
           <el-button type="primary" :loading="addLoading" @click="submitAddFriend">添加</el-button>
         </div>
@@ -37,7 +37,7 @@
           </template>
 
           <el-table :data="outgoing" border empty-text="暂无亲友关系">
-            <el-table-column prop="friend_user.username" label="亲友用户名" min-width="140" />
+            <el-table-column prop="friend_user.display_name" label="亲友姓名" min-width="140" />
             <el-table-column prop="relation_name" label="关系名称" min-width="140" />
             <el-table-column label="授权状态" width="120">
               <template #default="scope">
@@ -62,7 +62,7 @@
           </template>
 
           <el-table :data="incoming" border empty-text="暂无被添加关系">
-            <el-table-column prop="user.username" label="请求方用户名" min-width="150" />
+            <el-table-column prop="user.display_name" label="请求方姓名" min-width="150" />
             <el-table-column prop="relation_name" label="对方关系名" min-width="140" />
             <el-table-column label="查看健康数据" width="140">
               <template #default="scope">
@@ -113,7 +113,7 @@ const outgoing = ref([]);
 const incoming = ref([]);
 
 const addForm = reactive({
-  friend_username: "",
+  health_id: "",
   relation_name: "亲友",
 });
 
@@ -135,8 +135,8 @@ const loadFriends = async () => {
 };
 
 const submitAddFriend = async () => {
-  if (!addForm.friend_username) {
-    ElMessage.error("请输入亲友用户名");
+  if (!addForm.health_id) {
+    ElMessage.error("请输入亲友健康身份码");
     return;
   }
 
@@ -144,10 +144,10 @@ const submitAddFriend = async () => {
 
   try {
     await addFriend({
-      friend_username: addForm.friend_username.trim(),
+      health_id: addForm.health_id.trim(),
       relation_name: addForm.relation_name?.trim() || "亲友",
     });
-    addForm.friend_username = "";
+    addForm.health_id = "";
     addForm.relation_name = "亲友";
     ElMessage.success("亲友添加成功，等待对方授权");
     await loadFriends();

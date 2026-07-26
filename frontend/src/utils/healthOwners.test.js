@@ -15,18 +15,18 @@ describe("health owner options", () => {
           {
             auth_status: true,
             relation_name: "家人",
-            friend_user: { id: 2, username: "test2" },
+            friend_user: { id: 2, display_name: "张丽" },
           },
           {
             auth_status: false,
             relation_name: "同事",
-            friend_user: { id: 3, username: "test3" },
+            friend_user: { id: 3, display_name: "王强" },
           },
         ],
         incoming: [
           {
             auth_status: true,
-            user: { id: 4, username: "viewer" },
+            user: { id: 4, display_name: "查看者" },
           },
         ],
       },
@@ -35,7 +35,7 @@ describe("health owner options", () => {
 
     expect(result).toEqual([
       { value: SELF_OWNER_VALUE, ownerId: null, label: "本人" },
-      { value: "2", ownerId: 2, label: "test2（家人）" },
+      { value: "2", ownerId: 2, label: "张丽（家人）" },
     ]);
   });
 

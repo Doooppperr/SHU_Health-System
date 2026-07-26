@@ -5,7 +5,7 @@
       <div><el-button @click="organizationDialogVisible=true">新增机构主体</el-button><el-button type="primary" @click="openCreate">新增分院</el-button></div>
     </section>
     <el-alert v-if="errorMessage" :title="errorMessage" type="error" show-icon :closable="false" />
-    <el-card shadow="never" class="filter-card"><div class="filter-row"><label class="filter-field"><span class="filter-field-label">搜索机构</span><el-input v-model="keyword" clearable placeholder="机构名称、分院或区域" /></label><label class="filter-field filter-field--compact"><span class="filter-field-label">机构状态</span><el-select v-model="statusFilter"><el-option label="全部状态" value="all" /><el-option label="启用" value="active" /><el-option label="停用" value="inactive" /></el-select></label></div></el-card>
+    <el-card shadow="never" class="filter-card"><div class="filter-row"><label class="filter-field"><span class="filter-field-label">搜索机构</span><el-input v-model="keyword" clearable placeholder="机构名称、分院或区域" @change="applyFilters" /></label><label class="filter-field filter-field--compact"><span class="filter-field-label">机构状态</span><el-select v-model="statusFilter" @change="applyFilters"><el-option label="全部状态" value="all" /><el-option label="启用" value="active" /><el-option label="停用" value="inactive" /></el-select></label><el-button type="primary" @click="applyFilters">查询</el-button></div></el-card>
     <el-card shadow="never" class="table-card">
       <el-table :data="filteredItems" v-loading="loading" empty-text="暂无机构">
         <el-table-column label="机构与分院" min-width="240"><template #default="scope"><div class="table-primary"><strong>{{ scope.row.organization?.name || scope.row.name }}</strong><small>{{ scope.row.branch_name }}</small></div></template></el-table-column>
@@ -43,6 +43,8 @@
       <el-table :data="packages" v-loading="packagesLoading" empty-text="暂无套餐">
         <el-table-column prop="name" label="套餐" min-width="160" /><el-table-column prop="focus_area" label="重点方向" min-width="140" /><el-table-column label="价格" width="100"><template #default="scope">¥{{ Number(scope.row.price || 0).toFixed(2) }}</template></el-table-column><el-table-column label="状态" width="90"><template #default="scope"><el-tag :type="scope.row.is_active ? 'success' : 'info'">{{ scope.row.is_active ? "启用" : "停用" }}</el-tag></template></el-table-column><el-table-column label="详情" width="100"><template #default="scope"><el-button link type="primary" @click="openPackageDetail(scope.row)">查看详情</el-button></template></el-table-column>
       </el-table>
+      <el-pagination v-if="packagePagination.total>packagePagination.page_size" v-model:current-page="packagePagination.page" :page-size="packagePagination.page_size" :total="packagePagination.total" layout="total, prev, pager, next" style="margin-top:16px;justify-content:flex-end" @current-change="loadPackages"/>
+      <el-pagination v-if="pagination.total>pagination.page_size" v-model:current-page="pagination.page" :page-size="pagination.page_size" :total="pagination.total" layout="total, prev, pager, next" style="margin-top:16px;justify-content:flex-end" @current-change="load" />
     </el-drawer>
 
     <el-drawer v-model="packageDetailVisible" title="套餐完整详情" size="min(620px,94vw)">
@@ -73,27 +75,30 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from "vue";
+import { onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { createAdminOrganization, createAdminInstitution, createAdminPackage, deactivateAdminInstitution, deactivateAdminPackage, deleteAdminImage, fetchAdminImages, fetchAdminInstitutions, fetchAdminOrganizations, fetchAdminPackages, reorderAdminImages, restoreAdminInstitution, updateAdminInstitution, updateAdminPackage, uploadAdminImage } from "../../api/admin";
 
 const items=ref([]),organizations=ref([]),loading=ref(false),saving=ref(false),errorMessage=ref(""),keyword=ref(""),statusFilter=ref("all"),dialogVisible=ref(false),organizationDialogVisible=ref(false),organizationSaving=ref(false);
+const pagination=reactive({page:1,page_size:15,total:0,pages:0});
 const organizationForm=reactive({name:"",description:"",service_features:[]});
 const institutionForm=reactive({id:null,organization_id:null,branch_name:"",district:"",address:"",metro_info:"",consult_phone:"",ext:"",closed_day:"",description:""});
-const filteredItems=computed(()=>items.value.filter((item)=>{const text=`${item.name} ${item.branch_name} ${item.district}`.toLowerCase();const matchesKeyword=text.includes(keyword.value.trim().toLowerCase());const matchesStatus=statusFilter.value==="all"||(statusFilter.value==="active"?item.is_active:!item.is_active);return matchesKeyword&&matchesStatus;}));
+const filteredItems=items;
 const packageDrawerVisible=ref(false),selectedInstitution=ref(null),packages=ref([]),packagesLoading=ref(false),packageDialogVisible=ref(false),packageSaving=ref(false); const packageForm=reactive({id:null,name:"",focus_area:"",gender_scope:"all",price:0,description:""});
+const packagePagination=reactive({page:1,page_size:15,total:0,pages:0});
 const packageDetailVisible=ref(false),selectedPackageDetail=ref(null);const packageTypeLabel=(value)=>({special:"专项套餐",combined:"组合套餐"}[value]||"体检套餐");const genderScopeLabel=(value)=>({all:"不限性别",male:"男性",female:"女性",female_all:"女性人群"}[value]||"不限性别");function openPackageDetail(item){selectedPackageDetail.value=item;packageDetailVisible.value=true;}
 const galleryDrawerVisible=ref(false),galleryInstitution=ref(null),adminImages=ref([]),galleryLoading=ref(false),galleryUploading=ref(false),galleryOrdering=ref(false),galleryOrderChanged=ref(false),galleryDragIndex=ref(null),galleryFileInput=ref(null);
 function resetInstitution(){Object.assign(institutionForm,{id:null,organization_id:organizations.value[0]?.id||null,branch_name:"",district:"",address:"",metro_info:"",consult_phone:"",ext:"",closed_day:"",description:""});}
 function openCreate(){resetInstitution();dialogVisible.value=true;}
 function openEdit(item){Object.keys(institutionForm).forEach((key)=>institutionForm[key]=item[key]??(key==="id"?null:""));dialogVisible.value=true;}
-async function load(){loading.value=true;try{const[a,b]=await Promise.all([fetchAdminInstitutions(),fetchAdminOrganizations()]);items.value=a.data.items||[];organizations.value=b.data.items||[];}catch(error){errorMessage.value=error?.response?.data?.message||"机构列表加载失败";}finally{loading.value=false;}}
+async function load(){loading.value=true;try{const params={page:pagination.page,page_size:15};if(keyword.value.trim())params.keyword=keyword.value.trim();if(statusFilter.value!=="all")params.is_active=statusFilter.value==="active";const[a,b]=await Promise.all([fetchAdminInstitutions(params),fetchAdminOrganizations()]);items.value=a.data.items||[];Object.assign(pagination,a.data.pagination||{});organizations.value=b.data.items||[];}catch(error){errorMessage.value=error?.response?.data?.message||"机构列表加载失败";}finally{loading.value=false;}}
+async function applyFilters(){pagination.page=1;await load();}
 async function saveOrganization(){if(!organizationForm.name.trim())return ElMessage.error("请填写机构品牌名称");organizationSaving.value=true;try{await createAdminOrganization({name:organizationForm.name.trim(),description:organizationForm.description.trim()||null,service_features:organizationForm.service_features});Object.assign(organizationForm,{name:"",description:"",service_features:[]});organizationDialogVisible.value=false;ElMessage.success("机构主体已创建，现在可以添加分院");await load();}catch(error){ElMessage.error(error?.response?.data?.message||"机构主体创建失败");}finally{organizationSaving.value=false;}}
 async function saveInstitution(){if(!institutionForm.organization_id||!institutionForm.branch_name.trim()||!institutionForm.district.trim()||!institutionForm.address.trim()){ElMessage.error("请选择机构主体并填写分院、区域和地址");return;}saving.value=true;const payload=Object.fromEntries(Object.entries(institutionForm).filter(([key])=>key!=="id").map(([key,value])=>[key,typeof value==="string"?(value.trim()||null):value]));try{if(institutionForm.id)await updateAdminInstitution(institutionForm.id,payload);else await createAdminInstitution(payload);ElMessage.success(institutionForm.id?"分院已更新":"分院已创建");dialogVisible.value=false;await load();}catch(error){ElMessage.error(error?.response?.data?.message||"分院保存失败");}finally{saving.value=false;}}
 async function deactivate(item){try{await ElMessageBox.confirm("停用机构会禁止其机构账号登录，并使未使用邀请码失效；历史业务数据保留。","停用机构",{type:"warning",confirmButtonText:"确认停用",cancelButtonText:"取消"});await deactivateAdminInstitution(item.id);ElMessage.success("机构已停用");await load();}catch(error){if(error!=="cancel"&&error!=="close")ElMessage.error(error?.response?.data?.message||"停用失败");}}
 async function restore(item){try{await restoreAdminInstitution(item.id);ElMessage.success("机构已恢复，原有机构账号可继续登录");await load();}catch(error){ElMessage.error(error?.response?.data?.message||"恢复失败");}}
-async function openPackages(item){selectedInstitution.value=item;packageDrawerVisible.value=true;await loadPackages();}
-async function loadPackages(){if(!selectedInstitution.value)return;packagesLoading.value=true;try{const{data}=await fetchAdminPackages(selectedInstitution.value.id);packages.value=data.items||[];}catch(error){ElMessage.error(error?.response?.data?.message||"套餐加载失败");}finally{packagesLoading.value=false;}}
+async function openPackages(item){selectedInstitution.value=item;packagePagination.page=1;packageDrawerVisible.value=true;await loadPackages();}
+async function loadPackages(){if(!selectedInstitution.value)return;packagesLoading.value=true;try{const{data}=await fetchAdminPackages(selectedInstitution.value.id,{page:packagePagination.page,page_size:15});packages.value=data.items||[];Object.assign(packagePagination,data.pagination||{});}catch(error){ElMessage.error(error?.response?.data?.message||"套餐加载失败");}finally{packagesLoading.value=false;}}
 function resetPackage(){Object.assign(packageForm,{id:null,name:"",focus_area:"",gender_scope:"all",price:0,description:""});}
 function openPackageCreate(){resetPackage();packageDialogVisible.value=true;}
 function openPackageEdit(item){Object.assign(packageForm,{id:item.id,name:item.name||"",focus_area:item.focus_area||"",gender_scope:item.gender_scope||"all",price:Number(item.price||0),description:item.description||""});packageDialogVisible.value=true;}

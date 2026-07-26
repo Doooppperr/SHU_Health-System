@@ -36,6 +36,16 @@
 
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
 
+    <el-card v-if="rawSeries.length" shadow="never" class="user-panel">
+      <div class="indicator-picker-heading">
+        <div><strong>选择要展示的指标</strong><small>已选择 {{selectedIndicatorIds.length}} / {{rawSeries.length}} 项</small></div>
+        <div><el-button link type="primary" @click="selectAllIndicators">全部展示</el-button><el-button link @click="clearIndicators">清空</el-button></div>
+      </div>
+      <el-select v-model="selectedIndicatorIds" multiple filterable collapse-tags collapse-tags-tooltip placeholder="搜索并选择指标" style="width:100%" @change="indicatorSelectionChanged">
+        <el-option v-for="entry in rawSeries" :key="entry.indicator.id" :label="`${entry.indicator.name}${entry.indicator.unit?`（${entry.indicator.unit}）`:''}`" :value="entry.indicator.id"/>
+      </el-select>
+    </el-card>
+
     <div class="trend-analysis-layout">
     <section v-loading="loading" class="trend-story-grid" aria-live="polite">
       <article v-for="entry in series" :key="entry.indicator.id" class="trend-story-card">
@@ -115,7 +125,9 @@ const auth = useAuthStore();
 const domains = ref([]);
 const owners = ref([]);
 const sourceOptions = ref([{ value: "all", label: "全部来源" }, { value: "self", label: "个人日常测量" }, { value: "institution", label: "全部机构体检" }]);
-const series = ref([]);
+const rawSeries = ref([]);
+const selectedIndicatorIds = ref([]);
+const series = computed(() => rawSeries.value.filter((entry) => selectedIndicatorIds.value.includes(entry.indicator.id)));
 const loading = ref(false);
 const error = ref("");
 const dateRange = ref([]);
@@ -186,7 +198,10 @@ async function load() {
       end_date: dateRange.value?.[1],
     }, filters.owner_id));
     const { data } = await fetchHealthTrends(filters.domain_id, params);
-    series.value = data.series_by_indicator || [];
+    rawSeries.value = data.series_by_indicator || [];
+    const availableIds = rawSeries.value.map((entry) => entry.indicator.id);
+    const retained = selectedIndicatorIds.value.filter((id) => availableIds.includes(id));
+    selectedIndicatorIds.value = retained.length ? retained : availableIds;
     sourceOptions.value = data.source_options || sourceOptions.value;
     if (!sourceOptions.value.some((item) => item.value === filters.source)) {
       filters.source = "all";
@@ -205,8 +220,13 @@ function analysisPayload() {
   return cleanParams(withOwnerRequestParams({ domain_id: filters.domain_id,
     source_type: filters.source.startsWith("institution") ? "institution" : filters.source,
     institution_id: filters.source.startsWith("institution:") ? Number(filters.source.split(":")[1]) : undefined,
-    start_date: dateRange.value?.[0], end_date: dateRange.value?.[1], consent: true }, filters.owner_id));
+    start_date: dateRange.value?.[0], end_date: dateRange.value?.[1],
+    indicator_ids: [...selectedIndicatorIds.value], consent: true }, filters.owner_id));
 }
+
+function selectAllIndicators(){selectedIndicatorIds.value=rawSeries.value.map((entry)=>entry.indicator.id);indicatorSelectionChanged();}
+function clearIndicators(){selectedIndicatorIds.value=[];analysisController?.abort();aiAnswer.value="";aiError.value="";}
+function indicatorSelectionChanged(){if(trendConsent.value&&selectedIndicatorIds.value.length)scheduleTrendAnalysis();}
 
 function scheduleTrendAnalysis() {
   clearTimeout(analysisTimer);
@@ -259,3 +279,9 @@ onMounted(async () => {
 });
 onBeforeUnmount(() => { clearTimeout(analysisTimer); analysisController?.abort(); });
 </script>
+
+<style scoped>
+.indicator-picker-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px}
+.indicator-picker-heading>div:first-child{display:grid;gap:4px}
+.indicator-picker-heading small{color:var(--color-text-muted)}
+</style>

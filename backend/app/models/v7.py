@@ -62,6 +62,7 @@ class PackageVersion(db.Model):
 
     package = db.relationship("Package", back_populates="versions", foreign_keys=[package_id])
     domains = db.relationship("PackageVersionDomain", back_populates="version", cascade="all, delete-orphan", order_by="PackageVersionDomain.sort_order")
+    asset_requirements = db.relationship("PackageVersionAssetRequirement", cascade="all, delete-orphan", order_by="PackageVersionAssetRequirement.sort_order")
 
     def to_dict(self):
         return {"id": self.id, "package_id": self.package_id, "version_number": self.version_number,
@@ -69,6 +70,7 @@ class PackageVersion(db.Model):
                 "price": float(self.price_snapshot), "audience": self.audience_snapshot,
                 "description": self.description_snapshot, "booking_notice": self.booking_notice_snapshot,
                 "domains": [row.domain.to_dict() for row in self.domains if row.domain],
+                "asset_requirements": [row.to_dict() for row in self.asset_requirements],
                 "approved_at": self.approved_at.isoformat() if self.approved_at else None}
 
 
@@ -253,6 +255,7 @@ class ReportAsset(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     report_id = db.Column(db.Integer, db.ForeignKey("institution_reports.id", ondelete="CASCADE"), nullable=False, index=True)
     health_domain_id = db.Column(db.Integer, db.ForeignKey("health_domains.id"), nullable=False, index=True)
+    asset_type_id = db.Column(db.Integer, db.ForeignKey("report_asset_types.id"), nullable=True, index=True)
     modality = db.Column(db.String(40), nullable=False)
     title = db.Column(db.String(160), nullable=False)
     storage_key = db.Column(db.String(255), nullable=False, unique=True)
@@ -267,9 +270,11 @@ class ReportAsset(db.Model):
     uploaded_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utc_now)
     domain = db.relationship("HealthDomain")
+    asset_type = db.relationship("ReportAssetType")
     report = db.relationship("InstitutionReport", back_populates="assets")
     def to_dict(self, health_data_id=None):
-        data = {"id": self.id, "domain_id": self.health_domain_id, "modality": self.modality,
+        data = {"id": self.id, "domain_id": self.health_domain_id, "asset_type_id": self.asset_type_id,
+                "asset_type": self.asset_type.to_dict() if self.asset_type else None, "modality": self.modality,
                 "title": self.title, "mime_type": self.mime_type, "byte_size": self.byte_size,
                 "width": self.width, "height": self.height, "page_count": self.page_count,
                 "sha256": self.sha256, "annotation": self.annotation_text, "sort_order": self.sort_order}

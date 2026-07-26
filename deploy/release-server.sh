@@ -227,9 +227,10 @@ if [[ -n "$demo_database" ]]; then
         exit 1
     fi
     unset TARGET_DATABASE_URL DATABASE_URL
-    unexpected_assets=$(tar -tzf "$demo_assets" | grep -Ev '^(institutions/demo-v8|health-assets/demo-v8)(/|/[^/]+\.png)?$' || true)
+    unexpected_assets=$(tar -tzf "$demo_assets" | grep -Ev '^(institutions/demo-v8|health-assets/demo-v8|health-assets/demo-v10)(/|/[^/]+\.png)?$' || true)
     asset_count=$(tar -tzf "$demo_assets" | grep -Ec '\.png$' || true)
-    if [[ -n "$unexpected_assets" || "$asset_count" != "30" ]]; then
+    expected_asset_count=$(/opt/healthdoc/venv/bin/python -c 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))["items"]))' "$release/backend/demo_media_manifest.json")
+    if [[ -n "$unexpected_assets" || "$asset_count" != "$expected_asset_count" ]]; then
         echo "Demo asset archive contains an unexpected path; restoring the pre-release database." >&2
         restore_database_backup
         restore_uploads_backup
@@ -242,7 +243,7 @@ if [[ -n "$demo_database" ]]; then
     chown -R healthdoc:www-data /var/lib/healthdoc/uploads
     find /var/lib/healthdoc/uploads -type d -exec chmod 750 {} +
     find /var/lib/healthdoc/uploads -type f -exec chmod 640 {} +
-    test "$(find /var/lib/healthdoc/uploads -type f -name '*.png' | wc -l)" = "30"
+    test "$(find /var/lib/healthdoc/uploads -type f -name '*.png' | wc -l)" = "$expected_asset_count"
     rm -f "$demo_database" "$demo_assets"
 fi
 
@@ -299,9 +300,9 @@ if [[ -z "${DATABASE_URL:-}" ]]; then
 fi
 if ! wait_for_database_connection || ! (
     cd "$release/backend"
-    /opt/healthdoc/venv/bin/python scripts/migrate_schema_v9.py
+    /opt/healthdoc/venv/bin/python scripts/migrate_schema_v10.py
 ); then
-    echo "Schema v9 migration failed; restoring database and previous services." >&2
+    echo "Schema v10 migration failed; restoring database and previous services." >&2
     unset DATABASE_URL
     restore_database_backup
     restore_uploads_backup
@@ -310,13 +311,14 @@ if ! wait_for_database_connection || ! (
 fi
 unset DATABASE_URL
 
-# The media-only path refreshes exactly the two demo-v8 directories and their
+# The media-only path refreshes the manifest-approved demo-v8/v10 directories and their
 # existing report-asset metadata. It never imports a local database or removes
 # any other upload. The full uploads/database backups above cover rollback.
 if [[ -n "$demo_assets" && -z "$demo_database" ]]; then
-    unexpected_assets=$(tar -tzf "$demo_assets" | grep -Ev '^(institutions/demo-v8|health-assets/demo-v8)(/|/[^/]+\.png)?$' || true)
+    unexpected_assets=$(tar -tzf "$demo_assets" | grep -Ev '^(institutions/demo-v8|health-assets/demo-v8|health-assets/demo-v10)(/|/[^/]+\.png)?$' || true)
     asset_count=$(tar -tzf "$demo_assets" | grep -Ec '\.png$' || true)
-    if [[ -n "$unexpected_assets" || "$asset_count" != "30" ]]; then
+    expected_asset_count=$(/opt/healthdoc/venv/bin/python -c 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))["items"]))' "$release/backend/demo_media_manifest.json")
+    if [[ -n "$unexpected_assets" || "$asset_count" != "$expected_asset_count" ]]; then
         echo "Demo asset archive contains an unexpected path; restoring the previous release." >&2
         restore_database_backup
         restore_uploads_backup
@@ -336,16 +338,19 @@ if [[ -n "$demo_assets" && -z "$demo_database" ]]; then
         /var/lib/healthdoc/uploads/health-assets
     rm -rf \
         /var/lib/healthdoc/uploads/institutions/demo-v8 \
-        /var/lib/healthdoc/uploads/health-assets/demo-v8
+        /var/lib/healthdoc/uploads/health-assets/demo-v8 \
+        /var/lib/healthdoc/uploads/health-assets/demo-v10
     cp -a "$media_stage/institutions/demo-v8" /var/lib/healthdoc/uploads/institutions/
     cp -a "$media_stage/health-assets/demo-v8" /var/lib/healthdoc/uploads/health-assets/
+    cp -a "$media_stage/health-assets/demo-v10" /var/lib/healthdoc/uploads/health-assets/
     rm -rf "$media_stage"
     chown -R healthdoc:www-data \
         /var/lib/healthdoc/uploads/institutions/demo-v8 \
-        /var/lib/healthdoc/uploads/health-assets/demo-v8
-    find /var/lib/healthdoc/uploads/institutions/demo-v8 /var/lib/healthdoc/uploads/health-assets/demo-v8 \
+        /var/lib/healthdoc/uploads/health-assets/demo-v8 \
+        /var/lib/healthdoc/uploads/health-assets/demo-v10
+    find /var/lib/healthdoc/uploads/institutions/demo-v8 /var/lib/healthdoc/uploads/health-assets/demo-v8 /var/lib/healthdoc/uploads/health-assets/demo-v10 \
         -type d -exec chmod 750 {} +
-    find /var/lib/healthdoc/uploads/institutions/demo-v8 /var/lib/healthdoc/uploads/health-assets/demo-v8 \
+    find /var/lib/healthdoc/uploads/institutions/demo-v8 /var/lib/healthdoc/uploads/health-assets/demo-v8 /var/lib/healthdoc/uploads/health-assets/demo-v10 \
         -type f -exec chmod 640 {} +
     set -a
     # shellcheck disable=SC1091

@@ -345,7 +345,9 @@ def health_trends(domain_id):
             day = calendar_date_iso(report.exam_date)
             daily_reports[day].append({"date": day, "value": numeric,
                 "unit": result.normalized_unit or definition.unit, "reference": result.reference_text,
-                "is_abnormal": result.is_abnormal, "health_data_id": report_key(report), "source": source,
+                "is_abnormal": result.is_abnormal, "result_status": result.result_status,
+                "indicator_code": definition.code,
+                "health_data_id": report_key(report), "source": source,
                 "published_at": report.published_at.isoformat() if report.published_at else None})
         if not institution_id and source_type in {"all", "self"}:
             measurements = SelfMeasurement.query.filter_by(user_id=owner.id, indicator_dict_id=definition.id)

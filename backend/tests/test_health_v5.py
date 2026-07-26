@@ -27,7 +27,13 @@ def report_fixture(app, *, user="test3", institution_index=0):
 
 
 def create_appointment(client, user_headers, org_headers, institution_id, package_id, exam_day):
-    response = client.post("/api/appointments", headers=user_headers, json={"institution_id": institution_id, "package_id": package_id, "appointment_date": exam_day.isoformat()})
+    response = client.post("/api/appointments", headers=user_headers, json={
+        "institution_id": institution_id,
+        "package_id": package_id,
+        "appointment_date": exam_day.isoformat(),
+        "height_cm": 170,
+        "weight_kg": 65,
+    })
     assert response.status_code == 201
     appointment_id = response.get_json()["item"]["id"]
     assert client.post(f"/api/org/appointments/{appointment_id}/attend", headers=org_headers).status_code == 200
@@ -149,10 +155,10 @@ def test_friend_read_only_privacy_and_role_isolation(app, client):
     assert timeline.status_code == 200
     serialized = str(timeline.get_json())
     assert "health_id" not in serialized and "allergy_history" not in serialized and "subject_name_snapshot" not in serialized
-    assert owner_name not in serialized
+    assert owner_name in serialized
     friends = client.get("/api/friends", headers=viewer).get_json()
     assert any(
-        relation["friend_user"]["username"] == "test2" and relation["auth_status"]
+        relation["friend_user"]["display_name"] == owner_name and relation["auth_status"]
         for relation in friends["outgoing"]
     )
     assert "manageable" not in friends
@@ -166,10 +172,10 @@ def test_friend_read_only_privacy_and_role_isolation(app, client):
         f"/api/health/trends/{weight_id}?owner_id={owner_id}", headers=viewer
     )
     assert trend.status_code == 200
-    assert trend.get_json()["owner"]["username"] == "test2"
+    assert trend.get_json()["owner"]["display_name"] == owner_name
     report = client.get(f"/api/exam-reports/{report_id}", headers=viewer)
     assert report.status_code == 200
-    assert report.get_json()["owner"]["username"] == "test2"
+    assert report.get_json()["owner"]["display_name"] == owner_name
     assert "subject_name_snapshot" not in report.get_json()["item"]
     assert client.get(
         f"/api/exam-reports/{report_id}", headers=login(client, "test3")

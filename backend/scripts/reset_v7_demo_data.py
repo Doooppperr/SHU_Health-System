@@ -1,4 +1,4 @@
-"""Safely replace the local schema-v8 demonstration snapshot.
+"""Safely replace the local schema-v10 demonstration snapshot.
 
 This command never runs as part of normal application startup.  It preserves
 all user rows and refuses to operate when non-demo personal or institution
@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from flask import Flask
+from PIL import Image
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -86,7 +87,7 @@ def _backup(database: Path, upload_dir: Path) -> dict:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     suffix = hashlib.sha256(f"{database}-{stamp}".encode()).hexdigest()[:6]
     backup_database = database.with_name(
-        f"{database.stem}.before-demo-v8-{stamp}-{suffix}.db"
+        f"{database.stem}.before-demo-v10-{stamp}-{suffix}.db"
     )
     with closing(sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)) as source:
         with closing(sqlite3.connect(backup_database)) as target:
@@ -95,7 +96,7 @@ def _backup(database: Path, upload_dir: Path) -> dict:
         raise RuntimeError("database backup is empty")
 
     upload_archive = database.with_name(
-        f"uploads.before-demo-v8-{stamp}-{suffix}.zip"
+        f"uploads.before-demo-v10-{stamp}-{suffix}.zip"
     )
     unreadable_files = []
     with zipfile.ZipFile(upload_archive, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -109,7 +110,7 @@ def _backup(database: Path, upload_dir: Path) -> dict:
                         # unreadable synthetic file. Record it explicitly; the
                         # database backup still preserves its storage metadata.
                         unreadable_files.append(path.relative_to(upload_dir).as_posix())
-        archive.writestr("demo-v8-backup.json", json.dumps({
+        archive.writestr("demo-v10-backup.json", json.dumps({
             "database": str(database),
             "database_sha256": _sha256(backup_database),
             "upload_dir": str(upload_dir),
@@ -124,7 +125,7 @@ def _backup(database: Path, upload_dir: Path) -> dict:
 
 
 def _make_app(database: Path, upload_dir: Path) -> Flask:
-    app = Flask("healthdoc-demo-v8-reset")
+    app = Flask("healthdoc-demo-v10-reset")
     app.config.from_object(DevelopmentConfig)
     app.config.update(
         SQLALCHEMY_DATABASE_URI=f"sqlite:///{database.as_posix()}",
@@ -204,6 +205,61 @@ def _publish_staged_files(staging_dir: Path, upload_dir: Path, storage_keys: set
         source.replace(destination)
 
 
+def _build_media_manifest(attachment_manifest: dict, staging_dir: Path) -> dict:
+    manifest_path = BACKEND_DIR / "demo_media_manifest.json"
+    try:
+        previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        previous = {"items": []}
+    previous_by_key = {
+        item.get("storage_key"): item
+        for item in previous.get("items", [])
+        if item.get("storage_key")
+    }
+    assets = {row.storage_key: row for row in ReportAsset.query.all()}
+    images = {row.storage_key: row for row in InstitutionImage.query.all()}
+    items = []
+    for key, file_data in sorted(attachment_manifest.items()):
+        existing = dict(previous_by_key.get(key) or {})
+        asset = assets.get(key)
+        branch_image = images.get(key)
+        with Image.open(_safe_storage_path(staging_dir, key)) as image:
+            width, height = image.size
+            image_format = image.format
+        existing.update({
+            "storage_key": key,
+            "kind": "report_attachment" if asset else "institution_cover",
+            "category": (
+                asset.asset_type.name if asset and asset.asset_type
+                else asset.domain.name if asset and asset.domain
+                else branch_image.institution.branch_name if branch_image and branch_image.institution
+                else "演示媒体"
+            ),
+            "title": asset.title if asset else "机构分院合成封面",
+            "processing": "重新编码、清除元数据、添加“非诊断依据”演示标识",
+            "mime_type": asset.mime_type if asset else "image/png",
+            "width": width,
+            "height": height,
+            "format": image_format,
+            "byte_size": file_data["bytes"],
+            "sha256": file_data["sha256"],
+        })
+        if key.startswith("health-assets/demo-v10/"):
+            existing.update({
+                "source_url": "synthetic://healthdoc/schema-v10",
+                "author": "HealthDoc 确定性演示数据生成器",
+                "license": "项目内合成演示内容",
+            })
+        items.append(existing)
+    return {
+        "version": 10,
+        "generated_at": datetime.now().astimezone().isoformat(),
+        "usage_notice": "仅用于 HealthDoc 功能演示；全部医学附件均带有非诊断说明，不构成诊断依据。",
+        "license_references": previous.get("license_references", {}),
+        "items": items,
+    }
+
+
 def _postflight(database: Path) -> None:
     with closing(sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)) as connection:
         if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
@@ -238,7 +294,7 @@ def main():
 
     upload_dir.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
-        prefix="healthdoc-demo-v8-stage-", dir=upload_dir.parent,
+        prefix="healthdoc-demo-v10-stage-", dir=upload_dir.parent,
     ) as staging_name:
         staging_dir = Path(staging_name)
         app = _make_app(database, staging_dir)
@@ -266,6 +322,7 @@ def main():
                         + ", ".join(changed_accounts)
                     )
                 attachment_manifest = _validate_staged_files(staging_dir, new_keys)
+                media_manifest = _build_media_manifest(attachment_manifest, staging_dir)
                 db.session.commit()
             except Exception:
                 db.session.rollback()
@@ -274,6 +331,10 @@ def main():
             _remove_replaced_files(upload_dir, old_keys, new_keys)
             db.session.remove()
             db.engine.dispose()
+    (BACKEND_DIR / "demo_media_manifest.json").write_text(
+        json.dumps(media_manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     _postflight(database)
     manifest_digest = hashlib.sha256(

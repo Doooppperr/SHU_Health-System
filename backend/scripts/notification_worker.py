@@ -60,6 +60,33 @@ def _email_content(row):
             "该邮箱现已成为您的HealthDoc绑定邮箱。后续预约、空位提醒、"
             "账户安全及其他平台邮件都会发送到这里。"
         )
+    elif row.event_type == "admin_password_changed":
+        subject = "HealthDoc 账号密码已由管理员修改"
+        body = (
+            f"{payload.get('account_label') or payload.get('username') or '用户'}，您好，"
+            "系统管理员已经修改您的 HealthDoc 账号密码。"
+            f"您的新密码为：{payload.get('new_password') or '密码内容不可用'}。"
+            "旧登录状态已经失效，请使用新密码重新登录。"
+            "邮件包含账号敏感信息，请妥善保管并避免转发。"
+        )
+    elif row.event_type == "appointment_institution_cancelled":
+        subject = "HealthDoc 体检预约取消致歉及解决方案"
+        alternatives = payload.get("alternatives") if isinstance(payload.get("alternatives"), list) else []
+        branch_text = "；".join(
+            f"{item.get('name') or '体检机构'}·{item.get('branch_name') or '分院'}，"
+            f"地址{item.get('address') or '请在平台查看'}，电话{item.get('consult_phone') or '请在平台查看'}"
+            for item in alternatives if isinstance(item, dict)
+        )
+        solution = branch_text or (
+            f"请联系原机构{payload.get('institution_phone') or ''}"
+            f"或平台客服{payload.get('support_phone') or '021-666666'}重新安排"
+        )
+        body = (
+            f"{payload.get('recipient_name') or '用户'}，您好，非常抱歉，"
+            f"{institution_label}因“{payload.get('reason') or '机构突发情况'}”"
+            f"无法在{appointment_date}提供{payload.get('package') or '体检服务'}。"
+            f"可选解决方案：{solution}。请登录平台查看并重新预约。"
+        )
     elif row.event_type == "booking_group_created":
         subject = "HealthDoc 新预约提醒"
         body = (
@@ -89,10 +116,15 @@ def _email_content(row):
             )
         else:
             identity_text = "本次预约的受检者信息可在平台中查看"
+        preparation_items = payload.get("preparation_items") if isinstance(payload.get("preparation_items"), list) else []
+        preparation = "、".join(str(item) for item in preparation_items if str(item).strip())
+        phone = str(payload.get("consult_phone") or "请在平台查看").strip()
         body = (
             f"{recipient_name}，您好，您的体检预约已经成功。预约服务为{payload.get('package') or '体检服务'}，"
             f"体检日期为{appointment_date}，地点为{institution_label}，地址是{address}，{identity_text}。"
-            f"检查前请注意：{notice}。请登录康康健健 HealthDoc 平台查看或管理本次预约。"
+            f"请携带：{preparation or '身份证原件、预约凭证、病历本、既往报告和用药清单'}。"
+            f"机构联系电话：{phone}。检查前请注意：{notice}。"
+            "请登录康康健健 HealthDoc 平台查看或管理本次预约。"
         )
     elif row.event_type == "appointment_date_full":
         subject = "HealthDoc 预约容量提醒"
@@ -108,6 +140,13 @@ def _email_content(row):
             f"可供您登记的{party_size}位受检者重新尝试预约。名额先到先得，"
             "本邮件仅用于提醒，不代表预约已经成功，也不会为您保留名额。"
             "请尽快登录康康健健 HealthDoc 平台查看最新容量并确认预约。"
+        )
+    elif row.event_type == "report_published":
+        subject = "HealthDoc 体检报告已交付"
+        body = (
+            f"{payload.get('recipient_name') or '用户'}，您好，您于"
+            f"{payload.get('exam_date') or '近期'}在{institution_label}完成的体检报告已经正式交付。"
+            "请登录康康健健 HealthDoc 平台查看结构化指标、检查附件及机构批注。"
         )
     else:
         subject = "HealthDoc 服务通知"
@@ -174,7 +213,7 @@ def run_batch(app, limit=50):
         try:
             provider_id = _send(app, row)
             row.status = "sent"; row.sent_at = datetime.now(timezone.utc)
-            if row.event_type == "password_verification_code":
+            if row.event_type in {"password_verification_code", "admin_password_changed"}:
                 row.payload = {"challenge_id": (row.payload or {}).get("challenge_id"), "sensitive_content_cleared": True}
             db.session.add(NotificationDelivery(outbox_id=row.id, success=True, provider_message_id=provider_id))
             delivered += 1

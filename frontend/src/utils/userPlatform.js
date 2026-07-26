@@ -3,8 +3,28 @@ export const APPOINTMENT_STATUS = {
   awaiting_report: { label: "待出结果", type: "warning", hint: "机构正在整理本次健康数据" },
   fulfilled: { label: "已完成", type: "success", hint: "本次健康数据已归档" },
   invalidated: { label: "已失效", type: "danger", hint: "本次预约未能按时完成" },
+  no_show: { label: "未到检", type: "danger", hint: "受检者未按预约到检" },
+  institution_cancelled: { label: "机构取消", type: "danger", hint: "机构因自身原因取消，请查看解决方案" },
   cancelled: { label: "已取消", type: "info", hint: "本次预约已取消" },
 };
+
+export function resultStatusMeta(status, indicator = {}, value = null) {
+  if (indicator.code === "BMI" && status === "high") {
+    const numeric = Number(value);
+    return numeric >= 28
+      ? { label: "肥胖", type: "danger" }
+      : { label: "超重", type: "warning" };
+  }
+  return ({
+    normal: { label: "正常", type: "success" },
+    high: { label: "偏高", type: "danger" },
+    low: { label: "偏低", type: "warning" },
+    positive: { label: "阳性", type: "danger" },
+    negative: { label: "阴性", type: "success" },
+    abnormal: { label: "异常", type: "danger" },
+    unknown: { label: "未判定", type: "info" },
+  })[status] || { label: "未判定", type: "info" };
+}
 
 export const GENDER_LABELS = {
   all: "不限人群",

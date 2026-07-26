@@ -31,7 +31,7 @@
             <el-form-item label="密码" class="auth-form-full"><el-input v-model="form.password" size="large" type="password" show-password placeholder="至少 6 位" autocomplete="new-password" /></el-form-item>
             <el-form-item v-if="mode === 'staff'" label="机构邀请码" class="auth-form-full">
               <el-input v-model="form.invite_code" size="large" placeholder="请输入系统管理员提供的一次性邀请码" />
-              <p class="auth-field-tip">邀请码仅可使用一次，系统会自动绑定对应机构和机构管理员角色。</p>
+              <p class="auth-field-tip">请联系系统管理员 021-666666 获取机构邀请码。邀请码仅可使用一次，系统会自动绑定对应机构和机构管理员角色。</p>
             </el-form-item>
             <el-form-item label="图片验证码" class="auth-form-full">
               <div class="captcha-row">

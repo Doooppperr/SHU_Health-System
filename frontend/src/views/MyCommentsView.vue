@@ -50,12 +50,13 @@
           </template>
         </el-table-column>
       </el-table>
+      <el-pagination v-if="pagination.total>pagination.page_size" v-model:current-page="pagination.page" :page-size="pagination.page_size" :total="pagination.total" layout="total, prev, pager, next" style="margin-top:16px;justify-content:flex-end" @current-change="loadComments"/>
     </el-card>
   </div>
 </template>
 
 <script setup>
-import { onMounted, ref } from "vue";
+import { onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
 import MainNavActions from "../components/MainNavActions.vue";
@@ -64,14 +65,16 @@ import { deleteComment, fetchMyComments, markCommentRepliesRead } from "../api/c
 const loading = ref(false);
 const comments = ref([]);
 const errorMessage = ref("");
+const pagination = reactive({ page: 1, page_size: 15, total: 0, pages: 0 });
 
 const loadComments = async () => {
   loading.value = true;
   errorMessage.value = "";
 
   try {
-    const { data } = await fetchMyComments();
+    const { data } = await fetchMyComments({ page: pagination.page, page_size: 15 });
     comments.value = data.items || [];
+    Object.assign(pagination, data.pagination || {});
   } catch (error) {
     errorMessage.value = error?.response?.data?.message || "我的评论加载失败";
   } finally {

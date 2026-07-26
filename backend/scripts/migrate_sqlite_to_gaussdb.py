@@ -200,6 +200,12 @@ def migrate(
                             and value == "withdrawn"
                         ):
                             value = "published"
+                        if (
+                            table.name == "appointments"
+                            and column.name == "status"
+                            and value == "invalidated"
+                        ):
+                            value = "no_show"
                         item[column.name] = _adapt_value(column, value)
                     payload.append(item)
                 target.execute(table.insert(), payload)

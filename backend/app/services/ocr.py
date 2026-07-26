@@ -353,8 +353,21 @@ class HuaweiOCRProvider(OCRProvider):
                 elif HuaweiOCRProvider._is_label_like_line(cell.get("text", "")):
                     stats["label_like"] += 1
 
+        auxiliary_columns = {}
+        auxiliary_tokens = {
+            "unit": ("单位", "unit"),
+            "reference_text": ("参考范围", "参考值", "正常范围", "reference", "ref"),
+            "abnormal_flag": ("异常标志", "提示", "标志", "flag", "高低"),
+        }
+        for row_index in sorted(row_map.keys()):
+            for cell in row_map[row_index]:
+                text = HuaweiOCRProvider._normalize_cell_text(cell.get("text", ""))
+                for field_name, tokens in auxiliary_tokens.items():
+                    if any(token in text for token in tokens):
+                        auxiliary_columns.setdefault(field_name, cell["col"])
+
         if not column_hits:
-            return 0, 1
+            return 0, 1, auxiliary_columns
 
         label_col = max(
             column_hits.items(),
@@ -379,10 +392,11 @@ class HuaweiOCRProvider(OCRProvider):
             else:
                 value_col = 1 if label_col == 0 else label_col + 1
 
-        return label_col, value_col
+        return label_col, value_col, auxiliary_columns
 
     @classmethod
-    def _table_row_field(cls, cols, label_col, value_col):
+    def _table_row_field(cls, cols, label_col, value_col, auxiliary_columns=None):
+        auxiliary_columns = auxiliary_columns or {}
         col_text_map = {}
         for cell in sorted(cols, key=lambda item: item["col"]):
             text = str(cell.get("text") or "").strip()
@@ -411,8 +425,9 @@ class HuaweiOCRProvider(OCRProvider):
         label_candidates = []
         if primary_label:
             label_candidates.append(primary_label)
+        excluded_columns = {value_col, *auxiliary_columns.values()}
         for col, text in sorted(col_text_map.items()):
-            if col == value_col or text in label_candidates:
+            if col in excluded_columns or text in label_candidates:
                 continue
             if cls._is_label_like_line(text):
                 label_candidates.append(text)
@@ -422,12 +437,17 @@ class HuaweiOCRProvider(OCRProvider):
         if cls._is_header_like(label_candidates[0], value):
             return None
 
-        return {
+        result = {
             "label": label_candidates[0],
             "label_candidates": label_candidates[1:],
             "value": value,
             "source": "table",
         }
+        for field_name, col in auxiliary_columns.items():
+            text = col_text_map.get(col)
+            if text:
+                result[field_name] = text
+        return result
 
     @classmethod
     def _parse_text_lines(cls, lines, source="text"):
@@ -473,9 +493,14 @@ class HuaweiOCRProvider(OCRProvider):
             for item in rows:
                 row_map.setdefault(item["row"], []).append(item)
 
-            label_col, value_col = self._detect_table_columns(row_map)
+            label_col, value_col, auxiliary_columns = self._detect_table_columns(row_map)
             for row_index in sorted(row_map.keys()):
-                field = self._table_row_field(row_map[row_index], label_col, value_col)
+                field = self._table_row_field(
+                    row_map[row_index],
+                    label_col,
+                    value_col,
+                    auxiliary_columns,
+                )
                 if field is not None:
                     fields.append(field)
                     continue
@@ -962,6 +987,9 @@ class OCRMappingService:
                 "score": round(float(score), 4),
                 "matched_key": matched_key,
                 "source": field.get("source", "unknown"),
+                "unit": str(field.get("unit") or "").strip() or None,
+                "reference_text": str(field.get("reference_text") or "").strip() or None,
+                "abnormal_flag": str(field.get("abnormal_flag") or "").strip() or None,
             }
             raw_candidates_by_indicator.setdefault(indicator_dict.id, []).append(
                 (candidate_payload, indicator_dict)
@@ -1020,9 +1048,24 @@ class OCRMappingService:
                     self.REVIEW_SCORE_THRESHOLD - 0.01,
                 )
 
+            expected_unit = self._normalize_text(indicator_dict.unit or "").replace(" ", "")
+            detected_unit = self._normalize_text(candidate_payload.get("unit") or "").replace(" ", "")
+            unit_incompatible = bool(
+                expected_unit
+                and detected_unit
+                and expected_unit.replace("µ", "μ") != detected_unit.replace("µ", "μ")
+            )
+            if unit_incompatible:
+                candidate_payload["unit_incompatible"] = True
+                candidate_payload["score"] = min(
+                    candidate_payload["score"],
+                    self.REVIEW_SCORE_THRESHOLD - 0.01,
+                )
+
             requires_review = (
                 has_conflict
                 or value_error is not None
+                or unit_incompatible
                 or candidate_payload["score"] < self.REVIEW_SCORE_THRESHOLD
             )
             candidate_payload["requires_review"] = requires_review
@@ -1040,6 +1083,9 @@ class OCRMappingService:
                     "score": candidate_payload["score"],
                     "matched_key": candidate_payload["matched_key"],
                     "field_index": candidate_payload["field_index"],
+                    "unit": candidate_payload.get("unit"),
+                    "reference_text": candidate_payload.get("reference_text"),
+                    "abnormal_flag": candidate_payload.get("abnormal_flag"),
                     "requires_review": requires_review,
                 }
             )

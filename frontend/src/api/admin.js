@@ -7,8 +7,8 @@ export const deactivateAdminOrganization = (id) => http.post(`/admin/organizatio
 export const restoreAdminOrganization = (id) => http.post(`/admin/organizations/${id}/restore`);
 export const createAdminOrganizationBranch = (id, payload) => http.post(`/admin/organizations/${id}/branches`, payload);
 
-export function fetchAdminInstitutions() {
-  return http.get("/admin/institutions");
+export function fetchAdminInstitutions(params = {}) {
+  return http.get("/admin/institutions", { params });
 }
 
 export function createAdminInstitution(payload) {
@@ -31,8 +31,8 @@ export function restoreAdminInstitution(institutionId) {
   return http.post(`/admin/institutions/${institutionId}/restore`);
 }
 
-export function fetchAdminPackages(institutionId) {
-  return http.get(`/admin/institutions/${institutionId}/packages`);
+export function fetchAdminPackages(institutionId, params = {}) {
+  return http.get(`/admin/institutions/${institutionId}/packages`, { params });
 }
 
 export function createAdminPackage(institutionId, payload) {
@@ -67,8 +67,8 @@ export function deleteAdminImage(institutionId, imageId) {
   return http.delete(`/admin/institutions/${institutionId}/images/${imageId}`);
 }
 
-export function fetchAdminInvites() {
-  return http.get("/admin/invites");
+export function fetchAdminInvites(params = {}) {
+  return http.get("/admin/invites", { params });
 }
 
 export function issueInstitutionInvite(institutionId) {

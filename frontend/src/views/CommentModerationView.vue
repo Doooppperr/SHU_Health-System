@@ -65,12 +65,13 @@
           </template>
         </el-table-column>
       </el-table>
+      <el-pagination v-if="!forbiddenMessage && pagination.total>pagination.page_size" v-model:current-page="pagination.page" :page-size="pagination.page_size" :total="pagination.total" layout="total, prev, pager, next" style="margin-top:16px;justify-content:flex-end" @current-change="loadComments"/>
     </el-card>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
 import MainNavActions from "../components/MainNavActions.vue";
@@ -81,6 +82,7 @@ const comments = ref([]);
 const errorMessage = ref("");
 const forbiddenMessage = ref("");
 const mode = ref("comments");
+const pagination = reactive({ page: 1, page_size: 15, total: 0, pages: 0 });
 const moderationOptions = computed(() => [
   { label: `用户评价待审核（${comments.value.filter((item)=>!item.is_visible).length}）`, value: "comments" },
   { label: `机构回复待审核（${comments.value.filter((item)=>item.reply?.status==="pending").length}）`, value: "replies" },
@@ -94,8 +96,9 @@ const loadComments = async () => {
   forbiddenMessage.value = "";
 
   try {
-    const { data } = await fetchCommentModerationList();
+    const { data } = await fetchCommentModerationList({ page: pagination.page, page_size: 15 });
     comments.value = data.items || [];
+    Object.assign(pagination, data.pagination || {});
   } catch (error) {
     if (error?.response?.status === 403) {
       forbiddenMessage.value = "仅管理员可以访问评论审核。";

@@ -73,7 +73,7 @@ def test_v8_demo_catalog_and_platform_scenarios_are_visible(app):
         family_groups = BookingGroup.query.filter_by(party_size=3).all()
         assert family_groups and any(len(item.appointments) == 3 for item in family_groups)
         assert {row.status for row in Appointment.query.all()} >= {
-            "unfulfilled", "awaiting_report", "fulfilled", "cancelled", "invalidated"
+            "unfulfilled", "awaiting_report", "fulfilled", "cancelled", "no_show"
         }
         assert {row.status for row in WaitlistSubscription.query.all()} >= {"active", "invalid"}
         assert NotificationOutbox.query.filter_by(event_type="waitlist_available", status="sent").count() >= 1

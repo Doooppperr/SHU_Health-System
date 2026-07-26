@@ -160,10 +160,13 @@ def test_system_administrator_cannot_change_email(client):
 
 def test_open_license_demo_media_manifest_is_complete_and_clean():
     items = validate_demo_media(BACKEND_ROOT / "uploads")
-    assert len(items) == 30
-    assert sum(item["kind"] == "report_attachment" for item in items) == 15
+    assert len(items) == 34
+    assert sum(item["kind"] == "report_attachment" for item in items) == 19
     assert sum(item["kind"] == "institution_cover" for item in items) == 15
-    assert all(item["license"] and item["source_url"].startswith("https://") for item in items)
+    assert all(
+        item["license"] and item["source_url"].startswith(("https://", "synthetic://"))
+        for item in items
+    )
 
 
 def test_institution_reply_requires_admin_review_and_notifies_comment_owner(app, client):

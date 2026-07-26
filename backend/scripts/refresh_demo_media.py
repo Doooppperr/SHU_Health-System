@@ -1,8 +1,8 @@
-"""Validate or apply the narrowly scoped demo-v8 media refresh.
+"""Validate or apply the narrowly scoped schema-v10 demo media refresh.
 
 The command never creates or deletes business rows. In apply mode it only
 updates metadata for report assets whose exact storage keys are present in the
-checked-in 30-file license manifest.
+checked-in generated-and-licensed media manifest.
 """
 
 from __future__ import annotations
@@ -19,7 +19,11 @@ from sqlalchemy import create_engine, text
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = BACKEND_ROOT / "demo_media_manifest.json"
-EXPECTED_PREFIXES = ("health-assets/demo-v8/", "institutions/demo-v8/")
+EXPECTED_PREFIXES = (
+    "health-assets/demo-v8/",
+    "health-assets/demo-v10/",
+    "institutions/demo-v8/",
+)
 CORE_TABLES = ("users", "institutions", "appointments", "institution_reports", "comments", "packages")
 
 
@@ -37,12 +41,12 @@ def parse_args():
 def validate(upload_dir: Path) -> list[dict]:
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     items = manifest.get("items") or []
-    if len(items) != 30 or len({item.get("storage_key") for item in items}) != 30:
-        raise RuntimeError("素材授权清单必须恰好包含 30 个不同文件")
+    if not items or len({item.get("storage_key") for item in items}) != len(items):
+        raise RuntimeError("素材清单不能为空且不得包含重复文件")
     expected_report_count = sum(item.get("kind") == "report_attachment" for item in items)
     expected_cover_count = sum(item.get("kind") == "institution_cover" for item in items)
-    if (expected_report_count, expected_cover_count) != (15, 15):
-        raise RuntimeError("素材授权清单必须包含 15 张体检附件和 15 张机构封面")
+    if expected_report_count < 15 or expected_cover_count < 15:
+        raise RuntimeError("素材清单至少应包含 15 张体检附件和 15 张机构封面")
     upload_root = upload_dir.resolve()
     for item in items:
         key = item["storage_key"]
@@ -114,7 +118,9 @@ def main():
     args = parse_args()
     items = validate(args.upload_dir)
     if args.check_only:
-        print("开放授权演示素材校验通过：15 张体检附件、15 张机构封面")
+        report_count = sum(item.get("kind") == "report_attachment" for item in items)
+        cover_count = sum(item.get("kind") == "institution_cover" for item in items)
+        print(f"演示素材校验通过：{report_count} 张体检附件、{cover_count} 张机构封面")
         return
     if not args.yes:
         raise RuntimeError("应用素材刷新必须同时传入 --yes")

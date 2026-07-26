@@ -19,7 +19,7 @@ export function buildHealthOwnerOptions(payload = {}, currentUser = {}) {
     options.push({
       value: String(friend.id),
       ownerId: friend.id,
-      label: `${friend.username || "亲友"}（${relation.relation_name || "亲友"}）`,
+      label: `${friend.display_name || "亲友"}（${relation.relation_name || "亲友"}）`,
     });
   }
 

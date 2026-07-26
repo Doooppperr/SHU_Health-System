@@ -29,6 +29,7 @@ def institution_payload(institution):
     payload = base_institution_payload(institution)
     payload["administrators"] = [item.to_dict(include_profile=False) for item in institution.administrators]
     payload["administrator_count"] = len(institution.administrators)
+    payload["invite"] = institution.invite.to_dict() if institution.invite else None
     return payload
 
 
@@ -77,6 +78,22 @@ def institution_or_error(institution_id):
     return (item, None) if item else (None, ({"message": "institution not found"}, 404))
 
 
+def paginated_items(query, serializer, default_size=15):
+    page = max(request.args.get("page", 1, type=int) or 1, 1)
+    size = min(max(request.args.get("page_size", default_size, type=int) or default_size, 1), 100)
+    total = query.count()
+    rows = query.offset((page - 1) * size).limit(size).all()
+    return {
+        "items": [serializer(row) for row in rows],
+        "pagination": {
+            "page": page,
+            "page_size": size,
+            "total": total,
+            "pages": (total + size - 1) // size,
+        },
+    }, 200
+
+
 @admin_bp.get("/dashboard")
 @roles_required(ROLE_ADMIN)
 def dashboard():
@@ -109,7 +126,7 @@ def list_institutions():
         query = query.filter_by(is_active=True)
     elif active in {"false", "0"}:
         query = query.filter_by(is_active=False)
-    return {"items": [institution_payload(item) for item in query.order_by(Institution.id).all()]}, 200
+    return paginated_items(query.order_by(Institution.id), institution_payload)
 
 
 @admin_bp.post("/institutions")
@@ -277,7 +294,10 @@ def list_packages(institution_id):
     item, error = institution_or_error(institution_id)
     if error:
         return error
-    return {"items": [p.to_dict() for p in Package.query.filter_by(institution_id=item.id).order_by(Package.id).all()]}, 200
+    return paginated_items(
+        Package.query.filter_by(institution_id=item.id).order_by(Package.id),
+        lambda package: package.to_dict(),
+    )
 
 
 @admin_bp.post("/institutions/<int:institution_id>/packages")
@@ -305,8 +325,10 @@ def list_package_change_requests():
     status = (request.args.get("status") or "").strip()
     if status:
         query = query.filter_by(status=status)
-    rows = query.order_by(PackageChangeRequest.requested_at.desc(), PackageChangeRequest.id.desc()).all()
-    return {"items": [item.to_dict() for item in rows]}, 200
+    return paginated_items(
+        query.order_by(PackageChangeRequest.requested_at.desc(), PackageChangeRequest.id.desc()),
+        lambda item: item.to_dict(),
+    )
 
 
 def _pending_change_request(request_id):
@@ -394,7 +416,10 @@ def delete_image(institution_id, image_id):
 @admin_bp.get("/invites")
 @roles_required(ROLE_ADMIN)
 def list_invites():
-    return {"items": [item.to_dict() for item in InstitutionInvite.query.order_by(InstitutionInvite.issued_at.desc()).all()]}, 200
+    return paginated_items(
+        InstitutionInvite.query.order_by(InstitutionInvite.issued_at.desc()),
+        lambda item: item.to_dict(),
+    )
 
 
 @admin_bp.post("/institutions/<int:institution_id>/invite")

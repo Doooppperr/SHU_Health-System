@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import hashlib
+from io import BytesIO
 from pathlib import Path
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
@@ -15,11 +16,12 @@ from app.models import (
     Appointment, AppointmentEvent, HealthDomain, IndicatorDict, Institution,
     InstitutionReport, Package, PackageChangeRequest, ReportAsset,
     ReportAccessLog, ReportIndicator, ReportTextResult, WaitlistSubscription,
-    User,
+    User, PackageVersionAssetRequirement, ReportAssetType,
 )
 from app.org import org_bp
 from app.services import get_ocr_provider, get_storage_backend
-from app.services.indicator_values import IndicatorValueError, evaluate_is_abnormal, normalize_indicator_value, normalize_ocr_indicator_value
+from app.services.indicator_values import IndicatorValueError, evaluate_result_status, normalize_indicator_value, normalize_ocr_indicator_value
+from app.services.notifications import enqueue_user_notification
 from app.services.institution_management import (
     ManagementValidationError, apply_institution_payload, apply_package_payload,
     delete_institution_image, image_payload, institution_payload,
@@ -100,7 +102,7 @@ def report_payload(report, current_institution, *, include_indicators=False):
         },
         "access_mode": "editable" if own_branch else "cross_branch_read_only",
         "can_edit": own_branch and report.status != "published",
-        "subject_username": report.owner.username if report.owner else None,
+        "subject_display_name": report.owner.real_name if report.owner else report.subject_name_snapshot,
     })
     return payload
 
@@ -286,13 +288,33 @@ def list_packages():
     item, error = managed_institution()
     if error:
         return error
+    query = Package.query.filter_by(institution_id=item.id)
+    page = max(request.args.get("page", 1, type=int) or 1, 1)
+    size = min(max(request.args.get("page_size", 15, type=int) or 15, 1), 100)
+    total = query.count()
     rows = []
-    for package in Package.query.filter_by(institution_id=item.id).order_by(Package.id).all():
+    for package in query.order_by(Package.id).offset((page - 1) * size).limit(size).all():
         payload = package.to_dict()
         pending = PackageChangeRequest.query.filter_by(package_id=package.id, status="pending").first()
         payload["pending_request"] = pending.to_dict() if pending else None
         rows.append(payload)
-    return {"items": rows}, 200
+    return {
+        "items": rows,
+        "summary": {
+            "total": total,
+            "active": query.filter_by(is_active=True).count(),
+            "pending": PackageChangeRequest.query.filter_by(
+                institution_id=item.id,
+                status="pending",
+            ).count(),
+        },
+        "pagination": {
+            "page": page,
+            "page_size": size,
+            "total": total,
+            "pages": (total + size - 1) // size,
+        },
+    }, 200
 
 
 @org_bp.post("/packages")
@@ -359,8 +381,22 @@ def reactivate_package(package_id):
 def list_package_change_requests():
     institution, error = managed_institution()
     if error: return error
-    rows = PackageChangeRequest.query.filter_by(institution_id=institution.id).order_by(PackageChangeRequest.requested_at.desc(), PackageChangeRequest.id.desc()).all()
-    return {"items": [item.to_dict() for item in rows]}, 200
+    query = PackageChangeRequest.query.filter_by(institution_id=institution.id).order_by(
+        PackageChangeRequest.requested_at.desc(), PackageChangeRequest.id.desc()
+    )
+    page = max(request.args.get("page", 1, type=int) or 1, 1)
+    size = min(max(request.args.get("page_size", 15, type=int) or 15, 1), 100)
+    total = query.count()
+    rows = query.offset((page - 1) * size).limit(size).all()
+    return {
+        "items": [item.to_dict() for item in rows],
+        "pagination": {
+            "page": page,
+            "page_size": size,
+            "total": total,
+            "pages": (total + size - 1) // size,
+        },
+    }, 200
 
 
 @org_bp.post("/package-change-requests/<int:request_id>/withdraw")
@@ -398,7 +434,14 @@ def list_appointments():
     if view == "all" and status: query = query.filter_by(status=status)
     day = parse_date(request.args.get("appointment_date")) if request.args.get("appointment_date") else None
     if day: query = query.filter_by(appointment_date=day)
-    page = max(request.args.get("page", 1, type=int) or 1, 1); size = min(max(request.args.get("page_size", 30, type=int) or 30, 1), 100)
+    subject = (request.args.get("subject") or "").strip()
+    if subject:
+        pattern = f"%{subject}%"
+        query = query.filter(db.or_(
+            Appointment.user_name_snapshot.ilike(pattern),
+            Appointment.user_health_id_snapshot.ilike(pattern),
+        ))
+    page = max(request.args.get("page", 1, type=int) or 1, 1); size = min(max(request.args.get("page_size", 15, type=int) or 15, 1), 100)
     total = query.count(); rows = query.order_by(Appointment.appointment_date.desc(), Appointment.booking_group_id, Appointment.id).offset((page - 1) * size).limit(size).all()
     summary = None
     if day:
@@ -427,6 +470,114 @@ def attend_appointment(appointment_id):
     return {"item": item.to_dict(include_user=True)}, 200
 
 
+def _close_appointment(item, institution, *, reason_type, reason_code, reason_text):
+    now = datetime.now(timezone.utc)
+    item.status = reason_type
+    item.active_date_key = None
+    item.invalidated_at = now
+    item.termination_party = "subject" if reason_type == "no_show" else "institution"
+    item.termination_reason_code = reason_code
+    item.termination_reason_text = reason_text or None
+    message = "受检者未到检" if reason_type == "no_show" else f"机构原因取消：{reason_text}"
+    db.session.add(AppointmentEvent(
+        appointment_id=item.id,
+        event_type=reason_type,
+        status_snapshot=reason_type,
+        message=message,
+        actor_user_id=g.current_user.id,
+        occurred_at=now,
+    ))
+    from app.booking_v7.routes import _lock_capacity, enqueue_available
+    slot = _lock_capacity(institution, item.appointment_date)
+    slot.revision += 1
+    enqueue_available(institution, item.appointment_date, slot)
+
+    if reason_type == "institution_cancelled":
+        alternatives = [
+            {
+                "id": branch.id,
+                "name": branch.organization.name if branch.organization else branch.name,
+                "branch_name": branch.branch_name,
+                "address": branch.address,
+                "consult_phone": branch.consult_phone,
+            }
+            for branch in institution.organization.branches
+            if branch.id != institution.id and branch.is_active
+        ]
+        notified_ids = {item.user_id}
+        if item.booked_by_user_id:
+            notified_ids.add(item.booked_by_user_id)
+        for user_id in notified_ids:
+            user = db.session.get(User, user_id)
+            if user is None:
+                continue
+            branch_text = "；".join(
+                f"{row['name']}·{row['branch_name']}，{row['address']}，电话{row['consult_phone'] or '请在平台查看'}"
+                for row in alternatives
+            )
+            solution = branch_text or f"暂无可用兄弟分院，请联系本院{institution.consult_phone or '平台客服'}或平台 021-666666"
+            email_payload = {
+                "recipient_name": user.real_name or "用户",
+                "institution": institution.name,
+                "branch": institution.branch_name,
+                "appointment_date": item.appointment_date.isoformat(),
+                "package": item.package_name_snapshot,
+                "reason": reason_text,
+                "alternatives": alternatives,
+                "institution_phone": institution.consult_phone,
+                "support_phone": "021-666666",
+                "login_url": "/appointments",
+            }
+            enqueue_user_notification(
+                user,
+                event_type="appointment_institution_cancelled",
+                idempotency_key=f"appointment:{item.id}:institution-cancelled:user:{user.id}",
+                title="很抱歉，机构取消了本次预约",
+                body=f"{institution.name}·{institution.branch_name}因“{reason_text}”无法按期提供体检。可选方案：{solution}",
+                action_url="/appointments",
+                payload={
+                    "appointment_id": item.id,
+                    "reason": reason_text,
+                    "alternatives": alternatives,
+                },
+                email_payload=email_payload,
+            )
+
+
+@org_bp.post("/appointments/<int:appointment_id>/close")
+@roles_required(ROLE_INSTITUTION_ADMIN)
+def close_appointment(appointment_id):
+    institution, error = managed_institution()
+    if error: return error
+    item = Appointment.query.filter_by(id=appointment_id, institution_id=institution.id).first()
+    if item is None: return {"message": "appointment not found"}, 404
+    if item.status != "unfulfilled": return {"message": "只有待到检预约可以结束"}, 409
+    payload = request.get_json(silent=True) or {}
+    reason_type = (payload.get("reason_type") or "").strip()
+    if reason_type not in {"no_show", "institution_cancelled"}:
+        return {"message": "请选择未到检或机构原因取消"}, 400
+    reason_text = (payload.get("reason_text") or "").strip()
+    reason_code = (payload.get("reason_code") or "").strip()
+    if reason_type == "institution_cancelled":
+        allowed_codes = {"equipment_failure", "staffing_shortage", "facility_issue", "emergency", "other"}
+        if reason_code not in allowed_codes:
+            return {"message": "请选择有效的机构取消原因"}, 400
+        if len(reason_text) < 5 or len(reason_text) > 500:
+            return {"message": "机构取消说明应为 5 至 500 个字符"}, 400
+    else:
+        reason_code = "no_show"
+        reason_text = reason_text[:500]
+    _close_appointment(
+        item,
+        institution,
+        reason_type=reason_type,
+        reason_code=reason_code,
+        reason_text=reason_text,
+    )
+    db.session.commit()
+    return {"item": item.to_dict(include_user=True)}, 200
+
+
 @org_bp.post("/appointments/<int:appointment_id>/invalidate")
 @roles_required(ROLE_INSTITUTION_ADMIN)
 def invalidate_appointment(appointment_id):
@@ -434,12 +585,14 @@ def invalidate_appointment(appointment_id):
     if error: return error
     item = Appointment.query.filter_by(id=appointment_id, institution_id=institution.id).first()
     if item is None: return {"message": "appointment not found"}, 404
-    if item.status != "unfulfilled": return {"message": "only unfulfilled appointments can be invalidated"}, 409
-    item.status = "invalidated"; item.active_date_key = None; item.invalidated_at = datetime.now(timezone.utc)
-    db.session.add(AppointmentEvent(appointment_id=item.id, event_type="invalidated", status_snapshot="invalidated",
-                                    message="预约已失效", actor_user_id=g.current_user.id, occurred_at=item.invalidated_at))
-    from app.booking_v7.routes import _lock_capacity, enqueue_available
-    slot = _lock_capacity(institution, item.appointment_date); slot.revision += 1; enqueue_available(institution, item.appointment_date, slot)
+    if item.status != "unfulfilled": return {"message": "只有待到检预约可以标记未到检"}, 409
+    _close_appointment(
+        item,
+        institution,
+        reason_type="no_show",
+        reason_code="no_show",
+        reason_text="",
+    )
     db.session.commit()
     return {"item": item.to_dict(include_user=True)}, 200
 
@@ -537,12 +690,20 @@ def list_reports():
             InstitutionReport.assets.any(health_domain_id=domain_id),
         ))
     filtered_total = query.count()
-    rows = query.order_by(InstitutionReport.exam_date.desc(), InstitutionReport.id.desc()).all()
+    page = max(request.args.get("page", 1, type=int) or 1, 1)
+    size = min(max(request.args.get("page_size", 15, type=int) or 15, 1), 100)
+    rows = query.order_by(InstitutionReport.exam_date.desc(), InstitutionReport.id.desc()).offset((page - 1) * size).limit(size).all()
     return {
         "scope": scope,
         "total": total,
         "filtered_total": filtered_total,
         "items": [report_payload(row, institution) for row in rows],
+        "pagination": {
+            "page": page,
+            "page_size": size,
+            "total": filtered_total,
+            "pages": (filtered_total + size - 1) // size,
+        },
     }, 200
 
 
@@ -618,8 +779,16 @@ def add_indicator(report_id):
     except DomainAdmissionError as exc: return {"message": str(exc), "code": "DOMAIN_NOT_ALLOWED"}, 400
     try: value = normalize_indicator_value(definition, payload.get("value"))
     except IndicatorValueError as exc: return {"message": str(exc)}, 400
+    result_status = evaluate_result_status(
+        definition,
+        value,
+        subject=report.owner,
+        on_date=report.exam_date,
+        abnormal_flag=payload.get("abnormal_flag"),
+    )
     row = ReportIndicator(report_id=report.id, indicator_dict_id=definition.id, value=value,
-        is_abnormal=evaluate_is_abnormal(definition, value),
+        is_abnormal=result_status in {"high", "low", "positive", "abnormal"},
+        result_status=result_status,
         input_source=payload.get("input_source") if payload.get("input_source") in {"manual", "ocr"} else "manual",
         display_domain_id=display_domain_id, original_name=(payload.get("original_name") or definition.name).strip(),
         original_value=str(payload.get("original_value", payload.get("value"))),
@@ -649,7 +818,16 @@ def update_indicator(report_id, indicator_id):
     except DomainAdmissionError as exc: return {"message": str(exc), "code": "DOMAIN_NOT_ALLOWED"}, 400
     try: value = normalize_indicator_value(definition, payload.get("value", row.value))
     except IndicatorValueError as exc: return {"message": str(exc)}, 400
-    row.indicator_dict_id = definition.id; row.value = value; row.is_abnormal = evaluate_is_abnormal(definition, value); row.display_domain_id = display_domain_id
+    row.indicator_dict_id = definition.id; row.value = value
+    row.result_status = evaluate_result_status(
+        definition,
+        value,
+        subject=report.owner,
+        on_date=report.exam_date,
+        abnormal_flag=payload.get("abnormal_flag", row.abnormal_flag),
+    )
+    row.is_abnormal = row.result_status in {"high", "low", "positive", "abnormal"}
+    row.display_domain_id = display_domain_id
     row.original_name = (payload.get("original_name") or row.original_name or definition.name).strip()
     row.original_value = str(payload.get("original_value", payload.get("value", row.original_value or value)))
     row.original_unit = payload.get("original_unit", row.original_unit or definition.unit); row.normalized_unit = definition.unit
@@ -745,13 +923,34 @@ def _asset_metadata(path, extension):
     with Image.open(path) as image:
         image.verify()
     with Image.open(path) as image:
-        format_name = image.format; width, height = image.size
+        format_name = image.format
+        image.load()
+        width, height = image.size
+        clean_image = image.copy()
     expected = {"JPEG": ("image/jpeg", {".jpg", ".jpeg"}), "PNG": ("image/png", {".png"}), "WEBP": ("image/webp", {".webp"})}
     if format_name not in expected or extension not in expected[format_name][1]:
         raise ValueError("file extension does not match its actual image type")
     if width * height > current_app.config.get("HEALTH_ASSET_MAX_PIXELS", 40_000_000):
         raise ValueError("image pixel count exceeds the limit")
-    return expected[format_name][0], width, height, None, size
+    if format_name == "JPEG" and clean_image.mode not in {"RGB", "L"}:
+        clean_image = clean_image.convert("RGB")
+    buffer = BytesIO()
+    clean_image.save(buffer, format=format_name)
+    Path(path).write_bytes(buffer.getvalue())
+    return expected[format_name][0], width, height, None, os.path.getsize(path)
+
+
+@org_bp.get("/report-asset-types")
+@roles_required(ROLE_INSTITUTION_ADMIN)
+def list_report_asset_types():
+    query = ReportAssetType.query.filter_by(is_active=True)
+    report_id = request.args.get("report_id", type=int)
+    if report_id:
+        report, error = scoped_report(report_id)
+        if error: return error
+        query = query.filter(ReportAssetType.health_domain_id.in_(report_allowed_domain_ids(report)))
+    rows = query.order_by(ReportAssetType.sort_order, ReportAssetType.id).all()
+    return {"items": [row.to_dict() for row in rows]}, 200
 
 
 @org_bp.post("/health-data/<int:report_id>/assets")
@@ -766,13 +965,26 @@ def add_asset(report_id):
     if extension not in {".pdf", ".png", ".jpg", ".jpeg", ".webp"}: return {"message": "unsupported file type"}, 400
     domain, error = _allowed_report_domain(report, request.form.get("health_domain_id"))
     if error: return error
-    title = str(request.form.get("title") or Path(upload.filename).stem).strip()
-    modality = str(request.form.get("modality") or ("pdf" if extension == ".pdf" else "image")).strip()
+    try: asset_type_id = int(request.form.get("asset_type_id"))
+    except (TypeError, ValueError): return {"message": "请选择规范的检查附件类型"}, 400
+    asset_type = ReportAssetType.query.filter_by(id=asset_type_id, is_active=True).first()
+    if asset_type is None or asset_type.health_domain_id != domain.id:
+        return {"message": "附件类型与健康方向不匹配"}, 400
+    if len(report.assets) >= 12:
+        return {"message": "每份报告最多上传 12 份检查附件"}, 409
+    existing_count = ReportAsset.query.filter_by(
+        report_id=report.id,
+        asset_type_id=asset_type.id,
+    ).count()
+    if existing_count >= asset_type.max_files:
+        return {"message": f"{asset_type.name}最多上传 {asset_type.max_files} 份"}, 409
+    title = str(request.form.get("title") or asset_type.name).strip()
+    modality = str(request.form.get("modality") or asset_type.modality or ("pdf" if extension == ".pdf" else "image")).strip()
     storage = get_storage_backend(current_app.config); saved = storage.save(upload, subdir="health-assets")
     try:
         mime, width, height, pages, size = _asset_metadata(saved["abs_path"], extension)
         digest = hashlib.sha256(Path(saved["abs_path"]).read_bytes()).hexdigest()
-        row = ReportAsset(report_id=report.id, health_domain_id=domain.id, modality=modality,
+        row = ReportAsset(report_id=report.id, health_domain_id=domain.id, asset_type_id=asset_type.id, modality=modality,
             title=title, storage_key=saved["key"], mime_type=mime, byte_size=size,
             width=width, height=height, page_count=pages, sha256=digest,
             annotation_text=str(request.form.get("annotation") or "").strip() or None,
@@ -798,6 +1010,18 @@ def update_asset(report_id, asset_id):
         domain, error = _allowed_report_domain(report, payload.get("health_domain_id"))
         if error: return error
         row.health_domain_id = domain.id
+    if "asset_type_id" in payload:
+        asset_type = ReportAssetType.query.filter_by(id=payload.get("asset_type_id"), is_active=True).first()
+        if asset_type is None or asset_type.health_domain_id != row.health_domain_id:
+            return {"message": "附件类型与健康方向不匹配"}, 400
+        existing_count = ReportAsset.query.filter(
+            ReportAsset.report_id == report.id,
+            ReportAsset.asset_type_id == asset_type.id,
+            ReportAsset.id != row.id,
+        ).count()
+        if existing_count >= asset_type.max_files:
+            return {"message": f"{asset_type.name}已达到上传数量上限"}, 409
+        row.asset_type_id = asset_type.id
     for field, attr in (("title", "title"), ("modality", "modality"), ("annotation", "annotation_text")):
         if field in payload:
             value = str(payload.get(field) or "").strip()
@@ -843,11 +1067,21 @@ def ocr_report():
                 excluded.append({"field": candidate.get("raw_name") or definition.name, "reason": "outside_package_domain"}); continue
             try: value = normalize_ocr_indicator_value(definition, candidate["value"])
             except IndicatorValueError: continue
+            result_status = evaluate_result_status(
+                definition,
+                value,
+                subject=report.owner,
+                on_date=report.exam_date,
+                abnormal_flag=candidate.get("abnormal_flag"),
+            )
             report.indicators.append(ReportIndicator(indicator_dict_id=definition.id, value=value,
-                is_abnormal=evaluate_is_abnormal(definition, value), input_source="ocr",
+                is_abnormal=result_status in {"high", "low", "positive", "abnormal"},
+                result_status=result_status, input_source="ocr",
                 display_domain_id=display_domain_id, original_name=candidate.get("raw_name") or definition.name,
                 original_value=str(candidate.get("value")), original_unit=candidate.get("unit") or definition.unit,
-                normalized_unit=definition.unit, mapping_confidence=candidate.get("score"), mapping_status="confirmed"))
+                normalized_unit=definition.unit, reference_text=candidate.get("reference_text"),
+                abnormal_flag=candidate.get("abnormal_flag"),
+                mapping_confidence=candidate.get("score"), mapping_status="confirmed"))
             admitted_candidates.append(candidate)
         report.ocr_diagnostics = {**(report.ocr_diagnostics or {}), "excluded": excluded, "excluded_count": len(excluded)}
         db.session.commit()
@@ -865,6 +1099,18 @@ def lock_report(report_id):
     if not report.indicators and not report.text_results and not report.assets: return {"message": "at least one indicator, text result or asset is required"}, 400
     try: validate_report_domains(report)
     except DomainAdmissionError as exc: return {"message": str(exc), "code": "DOMAIN_NOT_ALLOWED"}, 400
+    requirements = PackageVersionAssetRequirement.query.filter_by(
+        package_version_id=report.package_version_id,
+        is_required=True,
+    ).all() if report.package_version_id else []
+    uploaded_types = {row.asset_type_id for row in report.assets if row.asset_type_id}
+    missing = [
+        requirement.asset_type.name
+        for requirement in requirements
+        if requirement.asset_type_id not in uploaded_types and requirement.asset_type
+    ]
+    if missing:
+        return {"message": f"缺少必需检查附件：{'、'.join(missing)}", "code": "REQUIRED_ASSET_MISSING"}, 409
     if find_subject_user(report) is None:
         return {"message": "registered user not found or identity does not match"}, 409
     temp_url = report.temporary_file_url
@@ -889,6 +1135,25 @@ def submit(report_id):
             db.session.add(AppointmentEvent(appointment_id=report.appointment.id, event_type="archived",
                 status_snapshot="fulfilled", message="健康数据已归档", actor_user_id=g.current_user.id,
                 occurred_at=report.appointment.fulfilled_at))
+        owner = report.owner
+        if owner is not None:
+            enqueue_user_notification(
+                owner,
+                event_type="report_published",
+                idempotency_key=f"report:{report.id}:published",
+                title="体检报告已交付",
+                body=f"{report.exam_date.isoformat()} 在 {report.institution.name}·{report.institution.branch_name} 的体检报告已可查看。",
+                action_url=f"/health-data/hd-i-{report.id:x}",
+                payload={"report_id": report.id},
+                email_payload={
+                    "recipient_name": owner.real_name or "用户",
+                    "institution": report.institution.name,
+                    "branch": report.institution.branch_name,
+                    "exam_date": report.exam_date.isoformat(),
+                    "report_id": report.id,
+                    "login_url": f"/health-data/{report.id}",
+                },
+            )
         db.session.commit()
     except ValueError as exc: db.session.rollback(); return {"message": str(exc)}, 409
     except IntegrityError: db.session.rollback(); return {"message": "report publishing conflict; reload and retry"}, 409

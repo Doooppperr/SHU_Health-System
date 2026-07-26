@@ -29,7 +29,13 @@ def test_capacity_is_rechecked_and_cancellation_releases_the_slot(app, client):
         db.session.commit()
     user1 = login(client, "test1")
     user2 = login(client, "test2")
-    payload = {"institution_id": institution_id, "package_id": package_id, "appointment_date": day.isoformat()}
+    payload = {
+        "institution_id": institution_id,
+        "package_id": package_id,
+        "appointment_date": day.isoformat(),
+        "height_cm": 170,
+        "weight_kg": 65,
+    }
     first = client.post("/api/appointments", headers=user1, json=payload)
     assert first.status_code == 201
     availability = client.get(f"/api/appointments/availability?appointment_date={day.isoformat()}", headers=user2).get_json()
@@ -46,8 +52,20 @@ def test_user_has_only_one_effective_appointment_per_day_across_institutions(app
     second_institution, second_package = booking_fixture(app, 1)
     headers = login(client, "test1")
     day = date.today() + timedelta(days=4)
-    assert client.post("/api/appointments", headers=headers, json={"institution_id": first_institution, "package_id": first_package, "appointment_date": day.isoformat()}).status_code == 201
-    duplicate = client.post("/api/appointments", headers=headers, json={"institution_id": second_institution, "package_id": second_package, "appointment_date": day.isoformat()})
+    assert client.post("/api/appointments", headers=headers, json={
+        "institution_id": first_institution,
+        "package_id": first_package,
+        "appointment_date": day.isoformat(),
+        "height_cm": 170,
+        "weight_kg": 65,
+    }).status_code == 201
+    duplicate = client.post("/api/appointments", headers=headers, json={
+        "institution_id": second_institution,
+        "package_id": second_package,
+        "appointment_date": day.isoformat(),
+        "height_cm": 170,
+        "weight_kg": 65,
+    })
     assert duplicate.status_code == 409
 
 
@@ -57,7 +75,13 @@ def test_institution_invalidation_is_final_and_visible_in_friend_timeline(app, c
     viewer = login(client, "test1")
     org = login(client, "institution1_staff1")
     day = date.today() + timedelta(days=5)
-    created = client.post("/api/appointments", headers=owner, json={"institution_id": institution_id, "package_id": package_id, "appointment_date": day.isoformat()})
+    created = client.post("/api/appointments", headers=owner, json={
+        "institution_id": institution_id,
+        "package_id": package_id,
+        "appointment_date": day.isoformat(),
+        "height_cm": 170,
+        "weight_kg": 65,
+    })
     appointment_id = created.get_json()["item"]["id"]
     with app.app_context():
         owner_id = User.query.filter_by(username="test2").first().id
@@ -68,15 +92,15 @@ def test_institution_invalidation_is_final_and_visible_in_friend_timeline(app, c
     assert booked_event["item"]["package_name"]
 
     invalidated = client.post(f"/api/org/appointments/{appointment_id}/invalidate", headers=org)
-    assert invalidated.status_code == 200 and invalidated.get_json()["item"]["status"] == "invalidated"
+    assert invalidated.status_code == 200 and invalidated.get_json()["item"]["status"] == "no_show"
     assert client.post(f"/api/org/appointments/{appointment_id}/attend", headers=org).status_code == 409
     assert client.post("/api/org/reports", headers=org, json={"appointment_id": appointment_id}).status_code == 409
     timeline = client.get(f"/api/health/timeline?owner_id={owner_id}", headers=viewer).get_json()["items"]
     event = next(item for item in timeline if item["type"] == "appointment" and item["item"]["id"] == appointment_id)
     assert event["item"]["appointment_date"] == day.isoformat()
-    assert event["item"]["status"] == "invalidated"
-    assert event["item"]["status_label"] == "已失效"
-    assert "请重新预约或联系机构" in event["item"]["status_message"]
+    assert event["item"]["status"] == "no_show"
+    assert event["item"]["status_label"] == "未到检"
+    assert "未到检" in event["item"]["status_message"]
 
 
 def test_package_changes_require_admin_review_and_support_withdrawal(app, client):

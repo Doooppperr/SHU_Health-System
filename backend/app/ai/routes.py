@@ -5,7 +5,7 @@ import threading
 import time
 import uuid
 from collections import defaultdict, deque
-from datetime import date
+from datetime import date, timedelta
 
 from flask import Response, current_app, request, stream_with_context
 from flask_jwt_extended import get_jwt_identity, jwt_required
@@ -40,7 +40,7 @@ from app.ai.rag import (
     get_knowledge_retriever,
 )
 from app.extensions import db
-from app.models import FriendRelation, HealthDomain, HealthIndicator, HealthRecord, IndicatorDict, IndicatorDomainLink, ReportAsset, User
+from app.models import Appointment, FriendRelation, HealthDomain, HealthIndicator, HealthRecord, IndicatorDict, IndicatorDomainLink, Institution, ReportAsset, User
 
 
 _rate_buckets = defaultdict(deque)
@@ -280,6 +280,108 @@ def _load_record_scope(user, record_scope):
     return records, None
 
 
+def _auto_select_records(user, message):
+    if user is None or user.role != "user" or not needs_record_selection(message):
+        return []
+    owner_id = user.id
+    mentioned_friend_ids = []
+    for relation in FriendRelation.query.filter_by(user_id=user.id, auth_status=True).all():
+        friend = relation.friend_user
+        if friend and friend.real_name and friend.real_name in message:
+            mentioned_friend_ids.append(friend.id)
+    if len(set(mentioned_friend_ids)) > 1:
+        return []
+    if mentioned_friend_ids:
+        owner_id = mentioned_friend_ids[0]
+    elif not any(token in message for token in ("我", "我的", "本人")):
+        return []
+    limit = 3 if any(token in message for token in ("趋势", "变化", "对比", "最近几年", "历史")) else 1
+    return (
+        HealthRecord.query.options(*_record_load_options())
+        .filter(
+            HealthRecord.owner_id == owner_id,
+            HealthRecord.status == "published",
+            HealthRecord.indicators.any(),
+        )
+        .order_by(HealthRecord.exam_date.desc(), HealthRecord.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+
+def _institution_context_for_message(message):
+    if not any(token in message for token in ("推荐", "体检机构", "体检中心", "分院", "附近", "预约机构")):
+        return None
+    today = date.today()
+    institutions = Institution.query.filter_by(is_active=True).order_by(Institution.id).all()
+    ranked = []
+    for institution in institutions:
+        organization_name = institution.organization.name if institution.organization else institution.name
+        searchable = " ".join(filter(None, (
+            organization_name,
+            institution.branch_name,
+            institution.district,
+            institution.address,
+            institution.metro_info,
+        )))
+        score = sum(1 for token in (
+            organization_name,
+            institution.branch_name,
+            institution.district,
+            institution.address,
+        ) if token and token in message)
+        # Match useful address fragments such as a district or road name.
+        score += sum(1 for fragment in searchable.replace("，", " ").split() if len(fragment) >= 2 and fragment in message)
+        packages = []
+        for package in institution.packages:
+            if not package.is_active:
+                continue
+            domain_names = [row.get("name") for row in package.to_dict().get("domains", []) if row.get("name")]
+            relevance = sum(1 for token in [package.name, package.focus_area, *domain_names] if token and token in message)
+            packages.append((relevance, package))
+            score += relevance
+        ranked.append((score, institution, packages))
+    positive = [row for row in ranked if row[0] > 0]
+    selected = sorted(positive or ranked, key=lambda row: (-row[0], row[1].id))[:8]
+    if not selected:
+        return {
+            "reply": "【系统机构数据】平台内当前没有启用的体检机构，暂时无法给出平台内推荐。请稍后再试或联系平台 021-666666。",
+            "sources": [],
+        }
+    lines = ["【系统机构数据】以下结果只来自 HealthDoc 当前启用机构和实时预约数据："]
+    sources = []
+    for _score, institution, packages in selected:
+        organization_name = institution.organization.name if institution.organization else institution.name
+        availability = []
+        for offset in range(0, 7):
+            day = today + timedelta(days=offset)
+            booked = Appointment.query.filter(
+                Appointment.institution_id == institution.id,
+                Appointment.appointment_date == day,
+                Appointment.status.in_(("unfulfilled", "awaiting_report", "fulfilled")),
+            ).count()
+            remaining = None if institution.daily_appointment_limit is None else max(institution.daily_appointment_limit - booked, 0)
+            if remaining is None or remaining > 0:
+                availability.append(f"{day.isoformat()}（{'有名额' if remaining is None else f'余{remaining}人'}）")
+            if len(availability) >= 2:
+                break
+        package_rows = [package for _relevance, package in sorted(packages, key=lambda row: (-row[0], row[1].id))[:3]]
+        package_text = "；".join(f"{package.name} ¥{float(package.price):.0f}" for package in package_rows) or "暂无启用套餐"
+        available_text = "、".join(availability) or "未来 7 天暂未显示空位"
+        lines.append(
+            f"- {organization_name}·{institution.branch_name}｜{institution.address}｜电话 {institution.consult_phone or '未填写'}"
+            f"｜套餐：{package_text}｜近期：{available_text}"
+        )
+        sources.append({
+            "type": "system_institution",
+            "label": f"{organization_name}·{institution.branch_name}",
+            "action_url": f"/institutions/{institution.id}",
+            "booking_url": f"/appointments?institution_id={institution.id}",
+        })
+    lines.append("可在机构详情查看套餐，或进入预约页确认最终名额；系统内无匹配时我不会用互联网机构冒充平台数据。")
+    return {"reply": "\n".join(lines), "sources": sources}
+
+
 def _indicator_codes_from_records(records):
     return sorted(
         {
@@ -464,6 +566,21 @@ def _validate_chat_request(user, payload):
         records, load_error = _load_record_scope(user, record_scope)
         if load_error:
             return None, load_error
+    elif payload.get("auto_select_records") is True:
+        if user is None or user.role != "user":
+            return None, _json_error(
+                "只有普通用户可以自动引用健康档案",
+                "regular_user_required",
+                403,
+            )
+        if payload.get("consent") is not True:
+            return None, _json_error(
+                "自动引用档案前需要开启本会话授权",
+                "record_consent_required",
+                400,
+            )
+        records = _auto_select_records(user, message)
+        record_ids = [record.id for record in records]
 
     model_history, updated_summary, compacted_count = _compact_history(history, summary)
     return {
@@ -474,6 +591,8 @@ def _validate_chat_request(user, payload):
         "record_ids": record_ids,
         "record_scope": record_scope,
         "records": records,
+        "auto_selected": bool(records and payload.get("auto_select_records") is True),
+        "system_context": _institution_context_for_message(message),
         "retrieval": RetrievalResult(status="disabled"),
     }, None
 
@@ -488,6 +607,17 @@ def _resolve_chat_locally(user, chat_request):
                 "usage": {},
             },
             "source": "safety_rule",
+            "client": None,
+        }
+    if chat_request.get("system_context") is not None:
+        return {
+            "result": {
+                "reply": chat_request["system_context"]["reply"],
+                "decision": "answer",
+                "usage": {},
+            },
+            "source": "system_data",
+            "context_sources": chat_request["system_context"]["sources"],
             "client": None,
         }
     if (
@@ -583,6 +713,8 @@ def _chat_response_payload(user, chat_request, resolution):
         "knowledge_source_count": len(
             {item.source_id for item in chat_request["retrieval"].hits}
         ),
+        "context_sources": resolution.get("context_sources", []),
+        "auto_selected_records": chat_request.get("auto_selected", False),
     }
     if payload["decision"] == "support":
         payload["support_phone"] = support_phone or None
@@ -813,7 +945,7 @@ def analyzable_records():
                 "owner_id": record.owner_id,
                 "owner": {
                     "id": record.owner_id,
-                    "username": record.owner.username if record.owner else "未知",
+                    "display_name": record.owner.real_name if record.owner else "未知",
                     "label": "本人" if record.owner_id == user.id else "已授权亲友",
                 },
                 "exam_date": record.exam_date.isoformat(),
@@ -1005,6 +1137,9 @@ def chat_stream():
                 "rag_used": response_payload["rag_used"],
                 "retrieval_status": response_payload["retrieval_status"],
                 "knowledge_source_count": response_payload["knowledge_source_count"],
+                "context_sources": response_payload.get("context_sources", []),
+                "auto_selected_records": response_payload.get("auto_selected_records", False),
+                "selected_record_ids": response_payload.get("selected_record_ids", []),
             }
             if response_payload.get("support_phone"):
                 done_payload["support_phone"] = response_payload["support_phone"]
@@ -1287,9 +1422,25 @@ def analyze_trends_stream():
     from app.health.routes import effective_points
     links = IndicatorDomainLink.query.filter_by(health_domain_id=domain.id).order_by(
         IndicatorDomainLink.sort_order, IndicatorDomainLink.indicator_dict_id).all()
+    raw_indicator_ids = payload.get("indicator_ids")
+    selected_indicator_ids = None
+    if raw_indicator_ids is not None:
+        if not isinstance(raw_indicator_ids, list):
+            return _json_error("指标筛选格式不正确", "invalid_indicator_ids", 400)
+        try:
+            selected_indicator_ids = {int(value) for value in raw_indicator_ids}
+        except (TypeError, ValueError):
+            return _json_error("指标筛选格式不正确", "invalid_indicator_ids", 400)
+        if not selected_indicator_ids:
+            return _json_error("请至少选择一个需要分析的指标", "empty_indicator_selection", 400)
+        allowed_ids = {link.indicator_dict_id for link in links}
+        if not selected_indicator_ids.issubset(allowed_ids):
+            return _json_error("选择的指标不属于当前健康方向", "indicator_outside_domain", 400)
     indicators = []
     for link in links:
         definition = link.indicator
+        if selected_indicator_ids is not None and definition.id not in selected_indicator_ids:
+            continue
         points = effective_points(owner.id, definition.id, start_date, end_date,
                                   source_type=source_type, institution_id=institution_id,
                                   domain_id=domain.id)[-120:]

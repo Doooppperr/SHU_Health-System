@@ -21,6 +21,14 @@
           <el-form-item label="体检日期" required>
             <el-date-picker v-model="form.appointment_date" type="date" value-format="YYYY-MM-DD" :disabled-date="disabledDate" style="width: 100%" @change="dateChanged" />
           </el-form-item>
+          <el-form-item label="搜索体检机构">
+            <el-input
+              v-model="institutionQuery"
+              clearable
+              placeholder="输入机构、分院、地区、地址或交通信息"
+              @input="searchInstitutions"
+            />
+          </el-form-item>
           <div v-loading="availabilityLoading" class="booking-institution-grid">
             <button
               v-for="option in availability"
@@ -64,10 +72,28 @@
         <div class="booking-step-heading"><span>第三步</span><h3>确认谁参加这次体检</h3><p>最多 5 人。只有已经授权你代预约的亲友才会出现在这里。</p></div>
         <el-form label-position="top">
           <el-form-item label="受检者" required>
-            <el-select v-model="form.participant_user_ids" multiple :multiple-limit="5" style="width: 100%">
+            <el-select v-model="form.participant_user_ids" multiple :multiple-limit="5" style="width: 100%" @change="participantChanged">
               <el-option v-for="person in participantOptions" :key="person.id" :label="person.label" :value="person.id" />
             </el-select>
           </el-form-item>
+          <div class="participant-intake-grid">
+            <el-card v-for="person in selectedParticipants" :key="person.id" shadow="never">
+              <template #header><strong>{{ person.label }}</strong></template>
+              <el-row :gutter="12">
+                <el-col :xs="24" :sm="12">
+                  <el-form-item label="身高（cm）" required>
+                    <el-input-number v-model="participantIntakes[person.id].height_cm" :min="80" :max="250" :precision="1" controls-position="right" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+                <el-col :xs="24" :sm="12">
+                  <el-form-item label="体重（kg）" required>
+                    <el-input-number v-model="participantIntakes[person.id].weight_kg" :min="20" :max="300" :precision="1" controls-position="right" style="width: 100%" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+              <small v-if="person.id !== auth.user.id">仅提交本次身高和体重；病史由系统生成隐私快照并只交付预约机构。</small>
+            </el-card>
+          </div>
         </el-form>
 
         <div v-if="selectedPackage" class="booking-review-card">
@@ -80,6 +106,8 @@
         <el-alert v-if="selectedPackage" type="info" :closable="false" show-icon>
           <template #title>预约前请确认</template>
           <p>{{ selectedPackage.booking_notice || "具体检查安排和注意事项以机构现场说明为准。" }}</p>
+          <p>请携带：身份证原件、HealthDoc 预约凭证、病历本、既往体检报告或影像资料、正在使用的药物清单。</p>
+          <p>{{ selectedInstitution?.institution?.address }} · 咨询电话 {{ selectedInstitution?.institution?.consult_phone || "请通过平台联系机构" }}</p>
         </el-alert>
         <el-checkbox v-model="form.notice_confirmed" class="booking-notice-check">我已阅读并确认上述预约与检查须知</el-checkbox>
         <el-alert v-if="selectedInstitution" :type="enough ? 'success' : 'warning'" :closable="false" :title="quotaText" show-icon />
@@ -100,7 +128,26 @@
 
     <section class="booking-management-grid">
       <el-card shadow="never" class="user-panel">
-        <template #header><div class="user-section-heading"><div><span>我的安排</span><h3>预约记录</h3></div><small>{{ groups.length }} 组</small></div></template>
+        <template #header><div class="user-section-heading"><div><span>我的安排</span><h3>预约记录</h3></div><small>共 {{ groupPagination.total }} 组</small></div></template>
+        <div class="booking-history-filters">
+          <el-select v-model="historyPreset" style="width: 150px" @change="applyHistoryPreset">
+            <el-option label="全部记录" value="all" />
+            <el-option label="近一周" value="week" />
+            <el-option label="近一月" value="month" />
+            <el-option label="近半年" value="half_year" />
+            <el-option label="自定义范围" value="custom" />
+          </el-select>
+          <el-date-picker
+            v-if="historyPreset === 'custom'"
+            v-model="historyRange"
+            type="daterange"
+            value-format="YYYY-MM-DD"
+            range-separator="至"
+            start-placeholder="开始日期"
+            end-placeholder="结束日期"
+            @change="historyRangeChanged"
+          />
+        </div>
         <div class="booking-record-list">
           <article v-for="group in groups" :key="group.id" class="booking-record-card">
             <div class="booking-record-card__date"><strong>{{ dayOfMonth(group.appointment_date) }}</strong><span>{{ monthLabel(group.appointment_date) }}</span></div>
@@ -114,6 +161,14 @@
           </article>
           <el-empty v-if="!groups.length" description="还没有预约记录" :image-size="80" />
         </div>
+        <el-pagination
+          v-if="groupPagination.total > groupPagination.page_size"
+          v-model:current-page="groupPagination.page"
+          :page-size="groupPagination.page_size"
+          :total="groupPagination.total"
+          layout="prev, pager, next"
+          @current-change="loadGroups"
+        />
       </el-card>
 
       <el-card shadow="never" class="user-panel">
@@ -125,13 +180,21 @@
           </article>
           <el-empty v-if="!waitlists.length" description="没有空位提醒" :image-size="80" />
         </div>
+        <el-pagination
+          v-if="waitlistPagination.total > waitlistPagination.page_size"
+          v-model:current-page="waitlistPagination.page"
+          :page-size="waitlistPagination.page_size"
+          :total="waitlistPagination.total"
+          layout="prev, pager, next"
+          @current-change="loadWaitlists"
+        />
       </el-card>
     </section>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { useRoute } from "vue-router";
 import {
@@ -140,6 +203,7 @@ import {
   createBookingGroup,
   createWaitlistSubscription,
   fetchAppointmentAvailability,
+  fetchBookingIntakeDefaults,
   fetchBookingGroups,
   fetchWaitlistSubscriptions,
 } from "../api/appointments";
@@ -163,6 +227,14 @@ const relations = ref([]);
 const submitting = ref(false);
 const availabilityLoading = ref(false);
 const errorMessage = ref("");
+const institutionQuery = ref("");
+const participantIntakes = reactive({});
+const historyPreset = ref("all");
+const historyRange = ref([]);
+const groupPagination = reactive({ page: 1, page_size: 10, total: 0, pages: 0 });
+const waitlistPagination = reactive({ page: 1, page_size: 15, total: 0, pages: 0 });
+const waitlistActiveCount = ref(0);
+let searchTimer;
 
 function localDate() {
   const date = new Date();
@@ -182,9 +254,15 @@ const participantOptions = computed(() => [
   { id: auth.user.id, label: `我本人（${auth.user.real_name || auth.user.username}）` },
   ...relations.value.filter((item) => item.booking_auth_status).map((item) => ({
     id: item.friend_user.id,
-    label: `${item.friend_user.real_name || item.friend_user.username}（已授权代预约）`,
+    label: `${item.friend_user.display_name || "亲友"}（已授权代预约）`,
   })),
 ]);
+const selectedParticipants = computed(() => participantOptions.value.filter((item) => form.participant_user_ids.includes(item.id)));
+const intakesComplete = computed(() => selectedParticipants.value.every((person) => {
+  const intake = participantIntakes[person.id] || {};
+  return Number(intake.height_cm) >= 80 && Number(intake.height_cm) <= 250
+    && Number(intake.weight_kg) >= 20 && Number(intake.weight_kg) <= 300;
+}));
 const remaining = computed(() => selectedInstitution.value?.remaining);
 const enough = computed(() => remaining.value == null || remaining.value >= form.participant_user_ids.length);
 const quotaText = computed(() => {
@@ -200,10 +278,11 @@ const canBook = computed(() => Boolean(
   && form.institution_id
   && form.package_id
   && form.participant_user_ids.length
+  && intakesComplete.value
   && form.notice_confirmed
   && enough.value
 ));
-const activeWaitlistCount = computed(() => waitlists.value.filter((item) => item.status === "active").length);
+const activeWaitlistCount = computed(() => waitlistActiveCount.value);
 
 function disabledDate(value) {
   const start = new Date();
@@ -235,7 +314,7 @@ async function dateChanged() {
 async function loadAvailability() {
   availabilityLoading.value = true;
   try {
-    availability.value = (await fetchAppointmentAvailability(form.appointment_date)).data.items || [];
+    availability.value = (await fetchAppointmentAvailability(form.appointment_date, institutionQuery.value.trim())).data.items || [];
     if (form.institution_id && !selectedInstitution.value) {
       form.institution_id = null;
       form.package_id = null;
@@ -245,14 +324,82 @@ async function loadAvailability() {
   }
 }
 
+function searchInstitutions() {
+  window.clearTimeout(searchTimer);
+  searchTimer = window.setTimeout(loadAvailability, 300);
+}
+
+function participantChanged(ids) {
+  for (const id of ids) {
+    if (!participantIntakes[id]) participantIntakes[id] = { height_cm: null, weight_kg: null };
+  }
+}
+
+function dateOffset(days) {
+  const value = new Date();
+  value.setHours(0, 0, 0, 0);
+  value.setDate(value.getDate() - days);
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+}
+
+async function applyHistoryPreset() {
+  historyRange.value = [];
+  groupPagination.page = 1;
+  await loadGroups();
+}
+
+async function historyRangeChanged() {
+  groupPagination.page = 1;
+  await loadGroups();
+}
+
+function historyParams() {
+  const params = { page: groupPagination.page, page_size: 10 };
+  const offsets = { week: 7, month: 30, half_year: 183 };
+  if (offsets[historyPreset.value]) {
+    params.start_date = dateOffset(offsets[historyPreset.value]);
+    params.end_date = localDate();
+  } else if (historyPreset.value === "custom" && historyRange.value?.length === 2) {
+    [params.start_date, params.end_date] = historyRange.value;
+  }
+  return params;
+}
+
+async function loadGroups() {
+  const response = await fetchBookingGroups(historyParams());
+  groups.value = response.data.items || [];
+  Object.assign(groupPagination, response.data.pagination || { page: 1, page_size: 10, total: groups.value.length, pages: 1 });
+}
+
+async function loadWaitlists() {
+  const response = await fetchWaitlistSubscriptions({ page: waitlistPagination.page, page_size: 15 });
+  waitlists.value = response.data.items || [];
+  waitlistActiveCount.value = Number(response.data.active_count || 0);
+  Object.assign(waitlistPagination, response.data.pagination || { page: 1, page_size: 15, total: waitlists.value.length, pages: 1 });
+}
+
 async function reload() {
-  const [groupResponse, waitlistResponse] = await Promise.all([fetchBookingGroups(), fetchWaitlistSubscriptions()]);
+  const [groupResponse, waitlistResponse] = await Promise.all([
+    fetchBookingGroups(historyParams()),
+    fetchWaitlistSubscriptions({ page: waitlistPagination.page, page_size: 15 }),
+  ]);
   groups.value = groupResponse.data.items || [];
+  Object.assign(groupPagination, groupResponse.data.pagination || { page: 1, page_size: 10, total: groups.value.length, pages: 1 });
   waitlists.value = waitlistResponse.data.items || [];
+  waitlistActiveCount.value = Number(waitlistResponse.data.active_count || 0);
+  Object.assign(waitlistPagination, waitlistResponse.data.pagination || { page: 1, page_size: 15, total: waitlists.value.length, pages: 1 });
 }
 
 function payload() {
-  return { ...form, participant_user_ids: [...form.participant_user_ids] };
+  return {
+    ...form,
+    participant_user_ids: [...form.participant_user_ids],
+    participant_intakes: form.participant_user_ids.map((userId) => ({
+      user_id: userId,
+      height_cm: participantIntakes[userId]?.height_cm,
+      weight_kg: participantIntakes[userId]?.weight_kg,
+    })),
+  };
 }
 
 async function book() {
@@ -322,10 +469,15 @@ onMounted(async () => {
     const friendResponse = await fetchFriends();
     relations.value = friendResponse.data.outgoing || [];
     form.participant_user_ids = [auth.user.id];
+    participantChanged(form.participant_user_ids);
+    const intakeResponse = await fetchBookingIntakeDefaults();
+    Object.assign(participantIntakes[auth.user.id], intakeResponse.data.item || {});
     await Promise.all([loadAvailability(), reload()]);
     if (form.institution_id && selectedInstitution.value) step.value = form.package_id ? 3 : 2;
   } catch (error) {
     errorMessage.value = error?.response?.data?.message || "预约信息暂时没有加载成功，请稍后重试";
   }
 });
+
+onBeforeUnmount(() => window.clearTimeout(searchTimer));
 </script>

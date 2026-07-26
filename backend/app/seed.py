@@ -7,10 +7,11 @@ from flask import current_app
 from app.extensions import db
 from app.models import (
     Appointment, AppointmentEvent, BookingGroup, FriendRelation, HealthDomain,
-    IndicatorCategory, IndicatorDict, IndicatorDomainLink, Institution,
+    IndicatorCategory, IndicatorDict, IndicatorDomainLink, IndicatorReferenceRule, Institution,
     InstitutionReport, Package, PackageChangeRequest, PackageVersion,
-    PackageVersionDomain, ReportIndicator, SelfMeasurement, User,
+    PackageVersionDomain, ReportAssetType, ReportIndicator, SelfMeasurement, User,
 )
+from app.catalog_v10 import ASSET_TYPE_SEEDS, V10_INDICATOR_CATEGORIES, V10_INDICATOR_SEEDS
 import uuid
 
 
@@ -262,21 +263,23 @@ def seed_institutions_and_packages():
     db.session.commit()
 
 
-def seed_indicator_dicts():
-    if IndicatorDict.query.first() is not None:
-        return
+def seed_indicator_dicts(*, commit: bool = True):
+    category_map = {row.name: row for row in IndicatorCategory.query.all()}
+    for category_payload in [*INDICATOR_CATEGORY_SEEDS, *V10_INDICATOR_CATEGORIES]:
+        category = category_map.get(category_payload["name"])
+        if category is None:
+            category = IndicatorCategory(
+                name=category_payload["name"],
+                sort_order=category_payload["sort_order"],
+            )
+            db.session.add(category)
+            db.session.flush()
+            category_map[category.name] = category
 
-    category_map = {}
-    for category_payload in INDICATOR_CATEGORY_SEEDS:
-        category = IndicatorCategory(
-            name=category_payload["name"],
-            sort_order=category_payload["sort_order"],
-        )
-        db.session.add(category)
-        db.session.flush()
-        category_map[category.name] = category
-
-    for item in INDICATOR_DICT_SEEDS:
+    existing_codes = {row.code for row in IndicatorDict.query.all()}
+    for item in [*INDICATOR_DICT_SEEDS, *V10_INDICATOR_SEEDS]:
+        if item["code"] in existing_codes:
+            continue
         category = category_map[item["category"]]
         indicator = IndicatorDict(
             category_id=category.id,
@@ -291,8 +294,9 @@ def seed_indicator_dicts():
             allow_self_measurement=item.get("allow_self_measurement", False),
         )
         db.session.add(indicator)
+        existing_codes.add(item["code"])
 
-    db.session.commit()
+    db.session.commit() if commit else db.session.flush()
 
 
 def seed_core_data():
@@ -301,6 +305,8 @@ def seed_core_data():
     # The v7 snapshot is deliberately built as a coherent platform story
     # instead of backfilling the old A-E package/status-matrix fixtures.
     seed_health_domains_and_versions()
+    seed_v10_reference_rules()
+    seed_v10_asset_types()
     from app.demo_v7 import (
         ensure_v7_demo_accounts,
         ensure_v7_demo_catalog,
@@ -331,6 +337,63 @@ INDICATOR_DOMAIN_CODES = {
     "LDL": ("metabolic", "cardio"), "ALT": ("digestive",),
     "AST": ("digestive",), "UA": ("renal", "metabolic"), "CREA": ("renal",),
 }
+INDICATOR_DOMAIN_CODES.update({
+    item["code"]: tuple(item["domains"])
+    for item in V10_INDICATOR_SEEDS
+})
+
+
+def seed_v10_asset_types(*, commit: bool = True):
+    domains = {row.code: row for row in HealthDomain.query.all()}
+    existing = {row.code for row in ReportAssetType.query.all()}
+    for order, (code, domain_code, name, modality, max_files) in enumerate(ASSET_TYPE_SEEDS, start=1):
+        if code in existing or domain_code not in domains:
+            continue
+        db.session.add(ReportAssetType(
+            code=code,
+            health_domain_id=domains[domain_code].id,
+            name=name,
+            modality=modality,
+            max_files=max_files,
+            sort_order=order,
+        ))
+    db.session.commit() if commit else db.session.flush()
+
+
+def seed_v10_reference_rules(*, commit: bool = True):
+    if IndicatorReferenceRule.query.first() is not None:
+        return
+    definitions = {row.code: row for row in IndicatorDict.query.all()}
+    source_title = "国家卫生健康委临床常用检验项目参考区间"
+    source_url = "https://www.nhc.gov.cn/zwgkzt/pyzgl1/201303/906048b809e04849b0f14daeea92ff2c.shtml"
+    rules = [
+        ("RBC", "male", 4.3, 5.8, "4.3–5.8 ×10^12/L"),
+        ("RBC", "female", 3.8, 5.1, "3.8–5.1 ×10^12/L"),
+        ("HGB", "male", 130, 175, "130–175 g/L"),
+        ("HGB", "female", 115, 150, "115–150 g/L"),
+        ("HCT", "male", 40, 50, "40–50%"),
+        ("HCT", "female", 35, 45, "35–45%"),
+        ("CREA", "male", 57, 111, "57–111 μmol/L"),
+        ("CREA", "female", 41, 81, "41–81 μmol/L"),
+        ("UA", "male", 208, 428, "208–428 μmol/L"),
+        ("UA", "female", 155, 357, "155–357 μmol/L"),
+    ]
+    for code, gender, low, high, text in rules:
+        definition = definitions.get(code)
+        if definition is None:
+            continue
+        db.session.add(IndicatorReferenceRule(
+            indicator_dict_id=definition.id,
+            gender_scope=gender,
+            min_age=18,
+            reference_low=Decimal(str(low)),
+            reference_high=Decimal(str(high)),
+            reference_text=text,
+            source_title=source_title,
+            source_url=source_url,
+            priority=100,
+        ))
+    db.session.commit() if commit else db.session.flush()
 
 
 def _package_domain_codes(package):
@@ -346,7 +409,7 @@ def _package_domain_codes(package):
     return ("basic", "cardio", "metabolic", "digestive", "respiratory", "renal", "hematology")
 
 
-def seed_health_domains_and_versions():
+def seed_health_domains_and_versions(*, commit: bool = True):
     domains = {row.code: row for row in HealthDomain.query.all()}
     for code, name, order in HEALTH_DOMAIN_SEEDS:
         if code not in domains:
@@ -396,7 +459,7 @@ def seed_health_domains_and_versions():
                     indicator.original_unit = indicator.original_unit or indicator.indicator_dict.unit
                     indicator.normalized_unit = indicator.normalized_unit or indicator.indicator_dict.unit
                     indicator.mapping_status = "legacy_backfill"
-    db.session.commit()
+    db.session.commit() if commit else db.session.flush()
 
 
 def seed_v7_workflow_snapshots():

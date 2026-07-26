@@ -169,8 +169,12 @@ class Appointment(db.Model):
     __tablename__ = "appointments"
     __table_args__ = (
         db.CheckConstraint(
-            "status in ('unfulfilled', 'awaiting_report', 'fulfilled', 'invalidated', 'cancelled')",
+            "status in ('unfulfilled', 'awaiting_report', 'fulfilled', 'cancelled', 'no_show', 'institution_cancelled')",
             name="ck_appointments_status",
+        ),
+        db.CheckConstraint(
+            "termination_party is null or termination_party in ('user', 'institution', 'subject')",
+            name="ck_appointments_termination_party",
         ),
         db.UniqueConstraint("user_id", "active_date_key", name="uq_appointments_user_active_date"),
     )
@@ -190,6 +194,15 @@ class Appointment(db.Model):
     user_birth_date_snapshot = db.Column(db.Date, nullable=True)
     user_gender_snapshot = db.Column(db.String(20), nullable=True)
     user_contact_snapshot = db.Column(db.String(120), nullable=True)
+    height_cm_snapshot = db.Column(db.Numeric(6, 2), nullable=True)
+    weight_kg_snapshot = db.Column(db.Numeric(6, 2), nullable=True)
+    bmi_snapshot = db.Column(db.Numeric(5, 2), nullable=True)
+    allergy_history_snapshot = db.Column(db.Text, nullable=True)
+    medical_history_snapshot = db.Column(db.Text, nullable=True)
+    intake_captured_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    termination_party = db.Column(db.String(20), nullable=True)
+    termination_reason_code = db.Column(db.String(40), nullable=True)
+    termination_reason_text = db.Column(db.String(500), nullable=True)
     package_name_snapshot = db.Column(db.String(120), nullable=False)
     package_price_snapshot = db.Column(db.Numeric(10, 2), nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utc_now)
@@ -230,6 +243,9 @@ class Appointment(db.Model):
             "attended_at": self.attended_at.isoformat() if self.attended_at else None,
             "invalidated_at": self.invalidated_at.isoformat() if self.invalidated_at else None,
             "fulfilled_at": self.fulfilled_at.isoformat() if self.fulfilled_at else None,
+            "termination_party": self.termination_party,
+            "termination_reason_code": self.termination_reason_code,
+            "termination_reason_text": self.termination_reason_text,
         }
         if include_user:
             payload["user"] = {
@@ -238,6 +254,13 @@ class Appointment(db.Model):
                 "health_id": self.user_health_id_snapshot,
                 "birth_date": self.user_birth_date_snapshot.isoformat() if self.user_birth_date_snapshot else None,
                 "gender": self.user_gender_snapshot,
+                "contact": self.user_contact_snapshot,
+                "height_cm": float(self.height_cm_snapshot) if self.height_cm_snapshot is not None else None,
+                "weight_kg": float(self.weight_kg_snapshot) if self.weight_kg_snapshot is not None else None,
+                "bmi": float(self.bmi_snapshot) if self.bmi_snapshot is not None else None,
+                "allergy_history": self.allergy_history_snapshot,
+                "medical_history": self.medical_history_snapshot,
+                "intake_captured_at": self.intake_captured_at.isoformat() if self.intake_captured_at else None,
             }
         return payload
 

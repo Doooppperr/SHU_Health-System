@@ -1216,6 +1216,25 @@
   white-space: normal;
 }
 
+.participant-intake-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  margin-bottom: 18px;
+}
+
+.participant-intake-grid small {
+  color: var(--user-text-muted);
+  line-height: 1.6;
+}
+
+.booking-history-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
 .booking-flow-actions {
   display: flex;
   gap: 10px;

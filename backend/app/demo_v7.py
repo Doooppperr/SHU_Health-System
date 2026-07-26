@@ -19,6 +19,7 @@ from pathlib import Path
 from flask import current_app
 
 from app.extensions import db
+from app.services.indicator_values import evaluate_result_status
 from app.models import (
     Appointment,
     AppointmentCapacitySlot,
@@ -45,15 +46,18 @@ from app.models import (
     ReportIndicator,
     ReportTextResult,
     ReportAccessLog,
+    ReportAssetType,
     SelfMeasurement,
     User,
+    UserNotification,
+    PackageVersionAssetRequirement,
     WaitlistSubscription,
     WaitlistSubscriptionParticipant,
 )
 
 
 DEMO_PASSWORD = "Shuhealthdoc！"
-DEMO_DATASET_VERSION = 5
+DEMO_DATASET_VERSION = 10
 DEMO_USERNAMES = tuple(f"test{index}" for index in range(1, 6))
 DEMO_STAFF_USERNAMES = (
     *(f"institution{institution}_staff{staff}" for institution in range(1, 4) for staff in range(1, 3)),
@@ -723,7 +727,9 @@ def _create_booking_group(
     db.session.flush()
     appointments = []
     for participant in participants:
-        active_date = appointment_date if status not in {"cancelled", "invalidated"} else None
+        active_date = appointment_date if status not in {"cancelled", "invalidated", "no_show", "institution_cancelled"} else None
+        height = Decimal("176.0") if participant.gender == "male" else Decimal("163.0")
+        weight = Decimal("72.0") if participant.gender == "male" else Decimal("59.0")
         appointment = Appointment(
             user_id=participant.id,
             institution_id=institution.id,
@@ -739,6 +745,12 @@ def _create_booking_group(
             user_birth_date_snapshot=participant.birth_date,
             user_gender_snapshot=participant.gender,
             user_contact_snapshot=participant.phone or participant.email,
+            height_cm_snapshot=height,
+            weight_kg_snapshot=weight,
+            bmi_snapshot=(weight / ((height / Decimal("100")) ** 2)).quantize(Decimal("0.01")),
+            allergy_history_snapshot=participant.allergy_history,
+            medical_history_snapshot=participant.medical_history,
+            intake_captured_at=created_at,
             package_name_snapshot=version.name_snapshot,
             package_price_snapshot=version.price_snapshot,
             created_at=created_at,
@@ -749,8 +761,15 @@ def _create_booking_group(
             appointment.fulfilled_at = _utc(appointment_date, 17, 30)
         elif status == "cancelled":
             appointment.cancelled_at = created_at + timedelta(days=1)
-        elif status == "invalidated":
+        elif status in {"invalidated", "no_show"}:
             appointment.invalidated_at = _utc(appointment_date + timedelta(days=1), 8)
+            appointment.termination_party = "subject"
+            appointment.termination_reason_code = "no_show"
+        elif status == "institution_cancelled":
+            appointment.invalidated_at = created_at + timedelta(hours=2)
+            appointment.termination_party = "institution"
+            appointment.termination_reason_code = "equipment_failure"
+            appointment.termination_reason_text = "设备突发故障，机构已致歉并提供兄弟分院联系方式。"
         db.session.add(appointment)
         db.session.flush()
         db.session.add(AppointmentEvent(
@@ -787,11 +806,12 @@ def _create_booking_group(
                 occurred_at=appointment.cancelled_at,
             ))
         if appointment.invalidated_at:
+            event_type = "institution_cancelled" if status == "institution_cancelled" else "no_show"
             db.session.add(AppointmentEvent(
                 appointment_id=appointment.id,
-                event_type="invalidated",
-                status_snapshot="invalidated",
-                message="超过预约日期且未到检，预约已失效",
+                event_type=event_type,
+                status_snapshot=event_type,
+                message=appointment.termination_reason_text or "受检者未到检",
                 occurred_at=appointment.invalidated_at,
             ))
         appointments.append(appointment)
@@ -833,10 +853,18 @@ def _create_report(
     db.session.flush()
     for code, value, domain_code, abnormal in values:
         definition = indicators[code]
+        result_status = evaluate_result_status(
+            definition,
+            value,
+            subject=appointment.user,
+            on_date=appointment.appointment_date,
+            abnormal_flag="high" if abnormal else None,
+        )
         report.indicators.append(ReportIndicator(
             indicator_dict_id=definition.id,
             value=value,
             is_abnormal=abnormal,
+            result_status=result_status,
             input_source="manual",
             display_domain_id=domains[domain_code].id,
             original_name=definition.name,
@@ -924,10 +952,18 @@ def _create_imported_historical_report(
     db.session.flush()
     for code, value, domain_code, abnormal in values:
         definition = indicators[code]
+        result_status = evaluate_result_status(
+            definition,
+            value,
+            subject=user,
+            on_date=exam_date,
+            abnormal_flag="high" if abnormal else None,
+        )
         report.indicators.append(ReportIndicator(
             indicator_dict_id=definition.id,
             value=value,
             is_abnormal=abnormal,
+            result_status=result_status,
             input_source="manual",
             display_domain_id=domains[domain_code].id,
             original_name=definition.name,
@@ -1066,7 +1102,7 @@ def _expand_v8_demo_data(users, institutions, packages, indicators, domains, tod
             _create_booking_group(
                 booker=participants[0], participants=participants, institution=branch,
                 package=package_by_branch[branch_index], appointment_date=today - timedelta(days=260 + group_sequence),
-                status="cancelled" if group_sequence % 2 == 0 else "invalidated",
+                status="cancelled" if group_sequence % 2 == 0 else "no_show",
                 created_at=now - timedelta(days=300 + group_sequence),
             )
             group_sequence += 1
@@ -1107,6 +1143,167 @@ def _expand_v8_demo_data(users, institutions, packages, indicators, domains, tod
                 access_type="detail",
                 accessed_at=now - timedelta(days=organization.id + index),
             ))
+
+
+def _demo_indicator_value(definition, sequence):
+    if definition.value_type == "text":
+        return ("阳性", "positive") if sequence in {2, 7} else ("阴性", "negative")
+    low = Decimal(str(definition.reference_low)) if definition.reference_low is not None else None
+    high = Decimal(str(definition.reference_high)) if definition.reference_high is not None else None
+    if sequence == 0 and low is not None:
+        value = low * Decimal("0.80") if low > 0 else Decimal("-1")
+    elif sequence == 7 and high is not None:
+        value = high * Decimal("1.20") if high > 0 else Decimal("1")
+    elif low is not None and high is not None:
+        value = low + (high - low) * Decimal(str((sequence + 1) / 10))
+    elif low is not None:
+        value = low * (Decimal("1.05") + Decimal(sequence) / Decimal("100"))
+    elif high is not None:
+        value = high * (Decimal("0.65") + Decimal(sequence) / Decimal("50"))
+    else:
+        value = Decimal("10") + Decimal(definition.id % 17) + Decimal(sequence) / Decimal("10")
+    normalized = value.quantize(Decimal("0.01"))
+    return (format(normalized, "f").rstrip("0").rstrip("."), None)
+
+
+def _expand_v10_test1(users, institutions, packages, indicators, domains, today, now):
+    """Give test1 eight broad adult-exam snapshots across roughly 18 months."""
+    if current_app.config.get("TESTING", False):
+        return
+    user = users["test1"]
+    types_by_domain = {}
+    for asset_type in ReportAssetType.query.order_by(ReportAssetType.sort_order, ReportAssetType.id).all():
+        types_by_domain.setdefault(asset_type.health_domain_id, asset_type)
+    for asset in ReportAsset.query.filter(ReportAsset.asset_type_id.is_(None)).all():
+        matched_type = types_by_domain.get(asset.health_domain_id)
+        if matched_type:
+            asset.asset_type_id = matched_type.id
+            asset.modality = matched_type.modality
+            asset.title = matched_type.name
+    dates = [today - timedelta(days=days) for days in (548, 470, 390, 310, 230, 150, 70, 70)]
+    reports = []
+    for sequence, exam_date in enumerate(dates):
+        institution = institutions[sequence % 3]
+        branch_index = institutions.index(institution) + 1
+        package = sorted(institution.packages, key=lambda item: item.id)[0]
+        staff = users[f"institution{branch_index}_staff1"]
+        version = _package_version(package)
+        published_at = _utc(exam_date + timedelta(days=2), 16)
+        report = InstitutionReport(
+            institution_id=institution.id,
+            created_by_user_id=staff.id,
+            created_by_username_snapshot=staff.username,
+            subject_name_snapshot=user.real_name,
+            subject_health_id=user.health_id,
+            exam_date=exam_date,
+            package_id=package.id,
+            package_version_id=version.id,
+            matched_user_id=user.id,
+            status="published",
+            ocr_diagnostics={
+                "import_kind": "v10_full_scale_demo",
+                "sequence": sequence + 1,
+                "contains_ocr_rows": sequence in {1, 5},
+            },
+            locked_at=published_at - timedelta(hours=1),
+            submitted_at=published_at,
+            published_at=published_at,
+            created_at=published_at - timedelta(hours=3),
+        )
+        db.session.add(report)
+        db.session.flush()
+        for definition in sorted(indicators.values(), key=lambda item: item.id):
+            value, explicit_status = _demo_indicator_value(definition, sequence)
+            status = explicit_status or evaluate_result_status(
+                definition,
+                value,
+                subject=user,
+                on_date=exam_date,
+            )
+            domain = next(
+                (link.domain for link in sorted(definition.domain_links, key=lambda link: (not link.is_primary, link.sort_order, link.id)) if link.domain),
+                domains["other"],
+            )
+            report.indicators.append(ReportIndicator(
+                indicator_dict_id=definition.id,
+                value=value,
+                is_abnormal=status in {"high", "low", "positive", "abnormal"},
+                result_status=status,
+                input_source="ocr" if sequence in {1, 5} and definition.id % 3 == 0 else "manual",
+                display_domain_id=domain.id,
+                original_name=(definition.aliases or [definition.name])[-1],
+                original_value=value,
+                original_unit=definition.unit,
+                normalized_unit=definition.unit,
+                reference_text=_reference_text(definition),
+                method_snapshot="v10 合成体检演示",
+                abnormal_flag={"high": "H", "low": "L", "positive": "+"}.get(status),
+                mapping_confidence=Decimal("0.9900") if sequence in {1, 5} else Decimal("1.0000"),
+                mapping_status="confirmed",
+            ))
+        report.text_results.append(ReportTextResult(
+            health_domain_id=domains["basic"].id,
+            title=f"第 {sequence + 1} 次全量成人体检演示",
+            body="本报告及全部数值均为合成测试内容，仅用于分页、OCR、异常方向和趋势功能验收，不作为诊断依据。",
+            source_snapshot="v10 合成演示数据",
+            sort_order=0,
+            created_by_user_id=staff.id,
+        ))
+        reports.append((report, staff))
+
+    asset_types = {row.code: row for row in ReportAssetType.query.all()}
+    for sequence, (report, staff) in enumerate(reports[-2:]):
+        for order, code in enumerate(("ECG_12", "ECHO_HEART")):
+            asset_type = asset_types.get(code)
+            if asset_type is None:
+                continue
+            key = f"health-assets/demo-v10/report-{report.id}-{code.lower()}.png"
+            width, height = 960, 540
+            raw = _write_png(
+                Path(current_app.config["UPLOAD_DIR"]) / key,
+                ((23, 91, 86), (75, 153, 145), (220, 241, 238)),
+                width,
+                height,
+            )
+            db.session.add(ReportAsset(
+                report_id=report.id,
+                health_domain_id=asset_type.health_domain_id,
+                asset_type_id=asset_type.id,
+                modality="image",
+                title=asset_type.name,
+                storage_key=key,
+                mime_type="image/png",
+                byte_size=len(raw),
+                width=width,
+                height=height,
+                sha256=hashlib.sha256(raw).hexdigest(),
+                annotation_text=f"{asset_type.name}合成演示批注：图像仅用于功能测试，不作为诊断依据。",
+                sort_order=order,
+                uploaded_by_user_id=staff.id,
+            ))
+
+    db.session.add_all([
+        UserNotification(
+            user_id=user.id,
+            event_type="report_published",
+            idempotency_key="demo-v10-report-published",
+            title="体检报告已交付",
+            body="最新一份全量成人体检演示报告已交付，可查看规范附件和机构批注。",
+            action_url=f"/health-data/hd-i-{reports[-1][0].id:x}",
+            payload={"report_id": reports[-1][0].id},
+            created_at=now - timedelta(days=2),
+        ),
+        UserNotification(
+            user_id=user.id,
+            event_type="appointment_institution_cancelled",
+            idempotency_key="demo-v10-institution-cancelled",
+            title="很抱歉，机构取消了本次预约",
+            body="机构因设备突发故障取消预约，请查看平台提供的兄弟分院解决方案。",
+            action_url="/appointments",
+            payload={"reason": "设备突发故障"},
+            created_at=now - timedelta(days=1),
+        ),
+    ])
 
 
 def _seed_waitlists(users, institutions, packages, today, now):
@@ -1470,7 +1667,7 @@ def seed_v7_demo_experience(*, commit: bool = True) -> bool:
     _create_booking_group(
         booker=users["test5"], participants=[users["test5"]], institution=institutions[2],
         package=packages[_package_key(3, "心电与循环影像专项")], appointment_date=today - timedelta(days=2),
-        status="invalidated", created_at=now - timedelta(days=12),
+        status="no_show", created_at=now - timedelta(days=12),
     )
     _create_booking_group(
         booker=users["test4"], participants=[users["test4"]], institution=institutions[0],
@@ -1503,6 +1700,7 @@ def seed_v7_demo_experience(*, commit: bool = True) -> bool:
                 created_at=now - timedelta(days=5)),
     ])
     _expand_v8_demo_data(users, institutions, packages, indicators, domains, today, now)
+    _expand_v10_test1(users, institutions, packages, indicators, domains, today, now)
     if commit:
         db.session.commit()
     else:
@@ -1549,12 +1747,12 @@ def validate_reset_target() -> None:
 def _clear_demo_business_data() -> None:
     """Delete in FK-safe order while deliberately leaving every user row intact."""
     models = (
-        ReportAccessLog, ReportAssetAnnotation, ReportAsset, ReportTextResult, ReportIndicator,
+        UserNotification, ReportAccessLog, ReportAssetAnnotation, ReportAsset, ReportTextResult, ReportIndicator,
         InstitutionReport, AppointmentEvent, NotificationDelivery, NotificationOutbox,
         AvailabilityNotificationEvent, WaitlistSubscriptionParticipant,
         WaitlistSubscription, Appointment, BookingGroup, AppointmentCapacitySlot,
         PackageChangeRequest, Comment, FriendRelation, SelfMeasurement,
-        InstitutionInvite, InstitutionImage, PackageVersionDomain,
+        InstitutionInvite, InstitutionImage, PackageVersionAssetRequirement, PackageVersionDomain,
     )
     for model in models:
         model.query.delete(synchronize_session=False)
@@ -1583,6 +1781,19 @@ def rebuild_v7_demo_data(*, commit: bool = True) -> dict:
             temperature.reference_high = Decimal("37.20")
         _create_catalog(institutions)
         db.session.flush()
+        # A reset must also work immediately after a v9-to-v10 upgrade, where
+        # the persisted dictionary can still contain only the legacy entries.
+        # These inserts stay in the reset transaction and roll back together.
+        from app.seed import (
+            seed_health_domains_and_versions,
+            seed_indicator_dicts,
+            seed_v10_asset_types,
+            seed_v10_reference_rules,
+        )
+        seed_indicator_dicts(commit=False)
+        seed_health_domains_and_versions(commit=False)
+        seed_v10_asset_types(commit=False)
+        seed_v10_reference_rules(commit=False)
         seeded = seed_v7_demo_experience(commit=False)
         if not seeded:
             raise RuntimeError("v8 demo experience was not rebuilt")

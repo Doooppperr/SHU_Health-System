@@ -140,6 +140,10 @@ class ReportIndicator(db.Model):
         db.UniqueConstraint("report_id", "indicator_dict_id", name="uq_report_indicator"),
         db.CheckConstraint("length(trim(value)) > 0", name="ck_report_indicators_value_not_blank"),
         db.CheckConstraint("input_source in ('manual', 'ocr')", name="ck_report_indicators_input_source"),
+        db.CheckConstraint(
+            "result_status in ('normal', 'high', 'low', 'positive', 'negative', 'abnormal', 'unknown')",
+            name="ck_report_indicators_result_status",
+        ),
     )
 
     id = db.Column(db.Integer, primary_key=True)
@@ -147,6 +151,7 @@ class ReportIndicator(db.Model):
     indicator_dict_id = db.Column(db.Integer, db.ForeignKey("indicator_dicts.id"), nullable=False, index=True)
     value = db.Column(db.String(120), nullable=False)
     is_abnormal = db.Column(db.Boolean, nullable=False, default=False)
+    result_status = db.Column(db.String(20), nullable=False, default="unknown", server_default="unknown")
     input_source = db.Column(db.String(20), nullable=False, default="manual")
     display_domain_id = db.Column(db.Integer, db.ForeignKey("health_domains.id"), nullable=True, index=True)
     original_name = db.Column(db.String(160), nullable=True)
@@ -172,6 +177,7 @@ class ReportIndicator(db.Model):
             "indicator_dict_id": self.indicator_dict_id,
             "value": self.value,
             "is_abnormal": self.is_abnormal,
+            "result_status": self.result_status,
             "input_source": self.input_source,
             "source": self.input_source,
             "indicator": self.indicator_dict.to_dict() if self.indicator_dict else None,

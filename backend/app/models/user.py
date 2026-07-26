@@ -115,5 +115,5 @@ class User(db.Model):
         return result
 
     def friend_identity_dict(self) -> dict:
-        """Deliberately excludes every health-profile and contact field."""
-        return {"id": self.id, "username": self.username}
+        """Return the display identity allowed in health-owner selectors."""
+        return {"id": self.id, "display_name": self.real_name or "未完善姓名"}

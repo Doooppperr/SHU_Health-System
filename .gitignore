@@ -12,7 +12,7 @@ frontend/dist/
 frontend/coverage/
 
 # Local runtime files
-# Runtime uploads stay private/ignored. The deterministic, watermarked v8
+# Runtime uploads stay private/ignored. The deterministic, watermarked v8/v10
 # fixtures are the only exception so a fresh clone matches the tracked demo DB.
 backend/uploads/*
 !backend/uploads/institutions/
@@ -27,6 +27,8 @@ backend/uploads/health-assets/*
 !backend/uploads/health-assets/demo-v7/*.png
 !backend/uploads/health-assets/demo-v8/
 !backend/uploads/health-assets/demo-v8/*.png
+!backend/uploads/health-assets/demo-v10/
+!backend/uploads/health-assets/demo-v10/*.png
 backend/.env
 backend/.env.*
 !backend/.env.example

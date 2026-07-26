@@ -23,7 +23,25 @@ class FriendRelation(db.Model):
     user = db.relationship("User", foreign_keys=[user_id])
     friend_user = db.relationship("User", foreign_keys=[friend_user_id])
 
-    def to_dict(self):
+    @staticmethod
+    def _masked_name(user):
+        name = (user.real_name or "").strip()
+        if not name:
+            return "未完善姓名"
+        if len(name) == 1:
+            return f"{name}*"
+        return f"{name[0]}{'*' * max(1, len(name) - 1)}"
+
+    @classmethod
+    def _identity(cls, user, *, authorized):
+        if user is None:
+            return None
+        return {
+            "id": user.id,
+            "display_name": (user.real_name or "未完善姓名") if authorized else cls._masked_name(user),
+        }
+
+    def to_dict(self, *, viewer_id=None):
         return {
             "id": self.id,
             "user_id": self.user_id,
@@ -33,16 +51,6 @@ class FriendRelation(db.Model):
             "booking_auth_status": self.booking_auth_status,
             "booking_authorized_at": self.booking_authorized_at.isoformat() if self.booking_authorized_at else None,
             "created_at": self.created_at.isoformat(),
-            "user": {
-                "id": self.user.id,
-                "username": self.user.username,
-            }
-            if self.user
-            else None,
-            "friend_user": {
-                "id": self.friend_user.id,
-                "username": self.friend_user.username,
-            }
-            if self.friend_user
-            else None,
+            "user": self._identity(self.user, authorized=bool(self.auth_status)),
+            "friend_user": self._identity(self.friend_user, authorized=bool(self.auth_status)),
         }

@@ -1,13 +1,13 @@
 # 康康健健 HealthDoc 后端
 
-Flask 后端负责认证与三角色授权、账号邮件验证、机构主体/分院协作、领域化体检数据、多人预约、评价回复、空位提醒、私有附件、OCR 和健康 AI。本地使用 SQLite schema v9；服务器通过 `DATABASE_URL` 连接 GaussDB/openGauss，并使用 Alembic 增量迁移。
+Flask 后端负责认证与三角色授权、健康身份码亲友授权、预约隐私快照、站内/邮件通知、规范附件、104 项成人体检指标、OCR 和系统数据优先的健康 AI。本地使用 SQLite schema v10；服务器通过 `DATABASE_URL` 连接 GaussDB/openGauss，并使用 Alembic 增量迁移。
 
 ## 1.0—3.0 后端演进
 
 - 1.0 建立 Flask API、JWT 三角色授权、机构/套餐、基础预约和健康记录。
 - 2.0 增加自主测量、报告草稿/锁定/归档、时间线、趋势、亲友授权和 AI/OCR 权限链。
 - 3.0 引入健康领域、套餐版本、预约组、容量候补、通知 outbox、图文报告；schema v8 进一步增加机构主体、分院和跨院访问审计。
-- 当前只维护 schema v9 的统一模型和接口；旧地址仅在有明确兼容价值时保留，旧数据库通过迁移脚本升级。
+- 当前只维护 schema v10 的统一模型和接口；旧地址仅在有明确兼容价值时保留，旧数据库通过迁移脚本升级。
 
 ## 环境与安装
 
@@ -29,9 +29,9 @@ if (-not (Test-Path .env)) {
 
 根目录的 `scripts/start-full-dev.ps1` 和 `scripts/start-full-prod.ps1` 会在后端就绪后自动启动隐藏的常驻 worker，每 5 秒处理一次 Outbox，并在前端命令退出时停止。单独运行可使用 `scripts/start-notification-worker.ps1`，或在后端目录执行 `python scripts/notification_worker.py --watch --interval-seconds 5`。条件更新保证误开两个 worker 时同一条通知只会被一个进程领取；发送前会把 Outbox 载荷转换为连续的中文业务文本，不会把 JSON 原文发给用户。
 
-## 数据库与 schema v9
+## 数据库与 schema v10
 
-默认数据库为 `instance/health_system.db`。SQLite 连接启用外键；`PRAGMA user_version=8` 标识当前结构。新空库会直接创建 v8，v4–v7 使用升级脚本全量保留迁移；生产 openGauss/GaussDB 使用 `migrations/versions/20260720_schema_v8.py`，其下修订为 schema v7。
+默认数据库为 `instance/health_system.db`。SQLite 连接启用外键；`PRAGMA user_version=10` 标识当前结构。新空库直接创建 v10，v4–v9 使用升级脚本保留迁移；生产 openGauss/GaussDB 使用 `migrations/versions/20260726_schema_v10.py`，其下修订为 schema v9。
 
 ```powershell
 .\.venv\Scripts\python.exe .\scripts\upgrade_local_database.py --check-only
@@ -41,17 +41,19 @@ if (-not (Test-Path .env)) {
 演示业务数据可通过专用脚本重建；`--check-only` 只校验目标库和账号边界，`--apply --yes` 才会覆盖演示业务记录并保留全部演示账号及密码哈希：
 
 ```powershell
-.\.venv\Scripts\python.exe .\scripts\reset_v8_demo_data.py --check-only
-.\.venv\Scripts\python.exe .\scripts\reset_v8_demo_data.py --apply --yes
+.\.venv\Scripts\python.exe .\scripts\reset_v10_demo_data.py --check-only
+.\.venv\Scripts\python.exe .\scripts\reset_v10_demo_data.py --apply --yes
+.\.venv\Scripts\python.exe .\scripts\validate_v10_demo.py
 ```
 
 升级与重建都会先校验完整性并生成时间戳备份。当前核心表包括：
 
 - 平台与授权：`users`、`friend_relations`、`organizations`、`institutions`、`packages`、`institution_invites`、`institution_images`、`comments`；
-- 指标字典：`indicator_categories`、`indicator_dicts`；
+- 指标字典：`indicator_categories`、`indicator_dicts`、`indicator_reference_rules`；
 - 健康模型：`health_domains`、`indicator_domain_links`、`self_measurements`、`institution_reports`、`report_indicators`、`report_text_results`、`report_assets`、`report_access_logs`；
 - 套餐与预约：`package_versions`、`package_version_domains`、`booking_groups`、`appointments`、`appointment_events`、`appointment_capacity_slots`、`waitlist_subscriptions`、`waitlist_subscription_participants`；
-- 通知可靠性：`availability_notification_events`、`notification_outbox`。
+- 规范附件：`report_asset_types`、`package_version_asset_requirements`、`report_assets`；
+- 通知可靠性：`availability_notification_events`、`notification_outbox`、`user_notifications`。
 
 ## 角色与账号规则
 
@@ -79,6 +81,7 @@ if (-not (Test-Path .env)) {
 | `/api/organizations` | 登录用户 | 机构主体及其分院的公开分组读模型 |
 | `/api/org/context` | 机构账号 | 当前机构主体、当前分院、兄弟分院和协作权限 |
 | `/api/friends` | 普通用户 | 亲友关系与授权状态 |
+| `/api/notifications` | 普通用户 | 站内通知、未读数和业务跳转 |
 | `/api/institutions` | 登录用户 | 启用机构、详情和套餐浏览 |
 | `/api/appointments`、`/api/booking-groups` | 普通用户 | 未来 30 天余量、1–5 人预约组与整组取消 |
 | `/api/waitlist-subscriptions` | 普通用户 | 候补提醒创建、查看和取消 |
@@ -193,7 +196,7 @@ Waitress 本机演示推荐从项目根目录运行：
 .\.venv\Scripts\python.exe -m pip check
 ```
 
-当前 56 项测试使用独立内存 SQLite，不修改 `instance/health_system.db`；覆盖 schema v8、SQLite/openGauss 结构校验、v7→v8 全量保留升级、机构主体与分院权限、跨院审计、演示数据安全重建、健康领域、套餐版本、多人预约组、同日预约冲突、候补提醒、用户与机构预约邮件、Outbox 防重复与连续中文邮件、报告指标/文字/附件、亲友边界、趋势参考范围、趋势 AI 授权、时间线、RAG 降级和全量快照迁移。完整结论见 [`../项目文档/测试报告.md`](../项目文档/测试报告.md)。
+后端测试使用独立内存 SQLite，不修改 `instance/health_system.db`；覆盖 schema v10、SQLite/openGauss 结构校验、保留式升级、健康身份码授权、预约快照、取消责任、站内/邮件通知、标准附件、104 项指标、OCR 异常方向、管理员改密、AI 数据选择、权限隔离和全量演示快照。完整结论见 [`../项目文档/测试报告.md`](../项目文档/测试报告.md)。
 
 ## 生产数据库同步
 
@@ -204,4 +207,4 @@ Waitress 本机演示推荐从项目根目录运行：
   --source .\instance\health_system.db --target-url $env:TARGET_DATABASE_URL --replace
 ```
 
-脚本验证源库完整性与外键，创建完整目标 schema，复制全部表、重置生成序列并逐表核对行数。`--replace` 会清空目标应用表，只能在已备份且明确允许覆盖的隔离演示环境使用。普通服务器素材更新使用 `scripts/deploy-server.ps1 -SyncDemoMedia`，只同步 30 个清单限定的开放授权 `demo-v8` 素材；完整演示库覆盖才使用 `-SyncDemoDatabase`。
+脚本验证源库完整性与外键，创建完整目标 schema，复制全部表、重置生成序列并逐表核对行数。`--replace` 会清空目标应用表，只能在已备份且明确允许覆盖的隔离演示环境使用。普通服务器素材更新使用 `scripts/deploy-server.ps1 -SyncDemoMedia`，只同步清单限定的 `demo-v8/demo-v10` 素材；完整演示库覆盖才使用 `-SyncDemoDatabase`。

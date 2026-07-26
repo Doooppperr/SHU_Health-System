@@ -32,7 +32,7 @@ vi.mock("../api/institutions", () => ({ fetchInstitutions: mocks.fetchInstitutio
 vi.mock("../api/ai", () => ({ streamAiTrendAnalysis: mocks.streamAiTrendAnalysis }));
 
 const friendPayload = {
-  outgoing: [{ auth_status: true, relation_name: "父亲", friend_user: { id: 12, username: "亲友账号" } }],
+  outgoing: [{ auth_status: true, relation_name: "父亲", friend_user: { id: 12, display_name: "亲友姓名" } }],
   incoming: [],
 };
 const domainPayload = { items: [{ id: 1, code: "basic", name: "基础体征与体格" }] };

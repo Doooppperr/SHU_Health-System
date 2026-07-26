@@ -12,6 +12,7 @@ from app.models import (
     SelfMeasurement, User, WaitlistSubscription,
 )
 from app.services.permissions import ROLE_USER, roles_required
+from app.services.indicator_values import evaluate_result_status
 
 
 APPOINTMENT_TIMELINE_STATUS = {
@@ -20,6 +21,8 @@ APPOINTMENT_TIMELINE_STATUS = {
     "fulfilled": ("已完成", "健康数据已由机构提交并归档"),
     "invalidated": ("已失效", "该预约已失效，请重新预约或联系机构"),
     "cancelled": ("已取消", "该预约已取消"),
+    "no_show": ("未到检", "机构已将本次预约登记为受检者未到检"),
+    "institution_cancelled": ("机构取消", "机构因自身原因取消了本次预约，请查看通知中的替代方案"),
 }
 
 BUSINESS_TZ = ZoneInfo("Asia/Shanghai")
@@ -151,6 +154,8 @@ def delete_measurement(measurement_id):
 
 
 def effective_points(owner_id, indicator_id, start_date=None, end_date=None, *, source_type="all", institution_id=None, domain_id=None):
+    definition = db.session.get(IndicatorDict, indicator_id)
+    owner = db.session.get(User, owner_id)
     report_query = db.session.query(ReportIndicator, InstitutionReport).join(InstitutionReport, ReportIndicator.report_id == InstitutionReport.id).filter(
         InstitutionReport.matched_user_id == owner_id, InstitutionReport.status == "published", ReportIndicator.indicator_dict_id == indicator_id
     )
@@ -169,14 +174,38 @@ def effective_points(owner_id, indicator_id, start_date=None, end_date=None, *, 
     if source_type in {"all", "self"} and not institution_id:
         for row in measurement_query.order_by(SelfMeasurement.measured_at.asc(), SelfMeasurement.id.asc()).all():
             day = measurement_business_day(row.measured_at)
-            points[day] = {"date": day.isoformat(), "value": float(row.value), "source": "self_measurement", "measurement_id": row.id, "measured_at": row.measured_at.isoformat()}
+            points[day] = {
+                "date": day.isoformat(),
+                "value": float(row.value),
+                "source": "self_measurement",
+                "measurement_id": row.id,
+                "measured_at": row.measured_at.isoformat(),
+                "result_status": evaluate_result_status(
+                    definition,
+                    str(row.value),
+                    subject=owner,
+                    on_date=day,
+                ) if definition else "unknown",
+                "indicator_code": definition.code if definition else None,
+            }
     if source_type == "self":
         return [points[key] for key in sorted(points)]
     for indicator, report in report_query.order_by(InstitutionReport.exam_date.asc(), InstitutionReport.published_at.asc(), InstitutionReport.id.asc()).all():
         try: value = float(indicator.value)
         except (TypeError, ValueError): continue
         report_day = as_calendar_date(report.exam_date)
-        points[report_day] = {"date": report_day.isoformat(), "value": value, "source": "institution_report", "report_id": report.id, "institution": report.institution.name if report.institution else None}
+        points[report_day] = {
+            "date": report_day.isoformat(),
+            "value": value,
+            "source": "institution_report",
+            "report_id": report.id,
+            "institution": report.institution.name if report.institution else None,
+            "result_status": indicator.result_status or (
+                evaluate_result_status(definition, indicator.value, subject=owner, on_date=report_day)
+                if definition else "unknown"
+            ),
+            "indicator_code": definition.code if definition else None,
+        }
     return [points[key] for key in sorted(points)]
 
 
@@ -231,7 +260,12 @@ def _appointment_history(row):
     if row.cancelled_at:
         history.append({"type": "cancelled", "status": "cancelled", "message": "预约已取消", "occurred_at": row.cancelled_at.isoformat()})
     if row.invalidated_at:
-        history.append({"type": "invalidated", "status": "invalidated", "message": "预约已失效", "occurred_at": row.invalidated_at.isoformat()})
+        event_type = row.status if row.status in {"no_show", "institution_cancelled"} else "invalidated"
+        message = {
+            "no_show": "机构登记受检者未到检",
+            "institution_cancelled": "机构因自身原因取消预约",
+        }.get(event_type, "预约已失效")
+        history.append({"type": event_type, "status": event_type, "message": message, "occurred_at": row.invalidated_at.isoformat()})
     return history
 
 

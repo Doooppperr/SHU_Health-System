@@ -10,7 +10,7 @@
     </section>
 
     <section class="package-summary" aria-label="服务概况">
-      <article><strong>{{ items.length }}</strong><span>全部服务</span></article>
+      <article><strong>{{ packageSummary.total }}</strong><span>全部服务</span></article>
       <article><strong>{{ activeCount }}</strong><span>预约中</span></article>
       <article><strong>{{ pendingCount }}</strong><span>等待平台审核</span></article>
     </section>
@@ -49,6 +49,7 @@
       </article>
       <el-empty v-if="!loading && !items.length" description="还没有体检服务，先设计第一项服务吧" />
     </section>
+    <el-pagination v-if="pagination.total>pagination.page_size" v-model:current-page="pagination.page" :page-size="pagination.page_size" :total="pagination.total" layout="total, prev, pager, next" @current-change="load"/>
 
     <el-dialog v-model="dialogVisible" :title="form.id ? '编辑体检服务' : '设计体检服务'" width="min(760px, 94vw)" :close-on-click-modal="false" @closed="step=0">
       <el-steps :active="step" finish-status="success" simple class="package-steps">
@@ -81,6 +82,11 @@
               <el-option v-for="domain in domains" :key="domain.id" :label="domain.name" :value="domain.id" />
             </el-select>
           </el-form-item>
+          <el-form-item label="报告锁定前必须上传的附件槽位">
+            <el-select v-model="form.required_asset_type_ids" multiple filterable placeholder="可选；未选择则不强制附件">
+              <el-option v-for="type in availableAssetTypes" :key="type.id" :label="type.name" :value="type.id"/>
+            </el-select>
+          </el-form-item>
           <el-alert title="健康领域用于约束本次体检可归档的结果范围，不代表套餐包含固定指标清单。" type="info" show-icon :closable="false" />
         </section>
 
@@ -110,7 +116,7 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
-import { createOrgPackage, deactivateOrgPackage, fetchOrgPackages, reactivateOrgPackage, updateOrgPackage } from "../../api/org";
+import { createOrgPackage, deactivateOrgPackage, fetchOrgPackages, fetchOrgReportAssetTypes, reactivateOrgPackage, updateOrgPackage } from "../../api/org";
 import { fetchHealthDomains } from "../../api/health";
 
 const genderOptions = [{ value: "all", label: "不限人群" }, { value: "male", label: "男性" }, { value: "female", label: "女性" }, { value: "female_all", label: "女性全龄" }];
@@ -118,27 +124,31 @@ const genderLabel = (value) => genderOptions.find((item) => item.value === value
 const packageTypeLabel = (value) => value === "combined" ? "组合服务" : "专项服务";
 const items = ref([]);
 const domains = ref([]);
+const assetTypes = ref([]);
 const loading = ref(false);
 const saving = ref(false);
 const errorMessage = ref("");
 const dialogVisible = ref(false);
 const step = ref(0);
-const form = reactive({ id: null, name: "", focus_area: "", gender_scope: "all", price: 0, description: "", package_type: "special", domain_ids: [], audience: "", booking_notice: "" });
-const activeCount = computed(() => items.value.filter((item) => item.is_active).length);
-const pendingCount = computed(() => items.value.filter((item) => item.pending_request).length);
+const pagination = reactive({ page: 1, page_size: 15, total: 0, pages: 0 });
+const packageSummary = reactive({ total: 0, active: 0, pending: 0 });
+const form = reactive({ id: null, name: "", focus_area: "", gender_scope: "all", price: 0, description: "", package_type: "special", domain_ids: [], required_asset_type_ids: [], audience: "", booking_notice: "" });
+const activeCount = computed(() => packageSummary.active);
+const pendingCount = computed(() => packageSummary.pending);
 const selectedDomainNames = computed(() => domains.value.filter((item) => form.domain_ids.includes(item.id)).map((item) => item.name).join("、"));
+const availableAssetTypes = computed(() => assetTypes.value.filter((item) => form.domain_ids.includes(item.domain_id)));
 
-function reset() { Object.assign(form, { id: null, name: "", focus_area: "", gender_scope: "all", price: 0, description: "", package_type: "special", domain_ids: [], audience: "", booking_notice: "体检前一天保持清淡饮食，具体要求以预约成功后的通知为准。" }); step.value = 0; }
+function reset() { Object.assign(form, { id: null, name: "", focus_area: "", gender_scope: "all", price: 0, description: "", package_type: "special", domain_ids: [], required_asset_type_ids: [], audience: "", booking_notice: "体检前一天保持清淡饮食，具体要求以预约成功后的通知为准。" }); step.value = 0; }
 function openCreate() { reset(); dialogVisible.value = true; }
-function openEdit(item) { Object.assign(form, { id: item.id, name: item.name || "", focus_area: item.focus_area || "", gender_scope: item.gender_scope || "all", price: Number(item.price || 0), description: item.description || "", package_type: item.package_type || "special", domain_ids: (item.domains || []).map((x) => x.id), audience: item.audience || "", booking_notice: item.booking_notice || "" }); step.value = 0; dialogVisible.value = true; }
+function openEdit(item) { Object.assign(form, { id: item.id, name: item.name || "", focus_area: item.focus_area || "", gender_scope: item.gender_scope || "all", price: Number(item.price || 0), description: item.description || "", package_type: item.package_type || "special", domain_ids: (item.domains || []).map((x) => x.id), required_asset_type_ids: (item.version?.asset_requirements||[]).filter((x)=>x.is_required).map((x)=>x.asset_type_id), audience: item.audience || "", booking_notice: item.booking_notice || "" }); step.value = 0; dialogVisible.value = true; }
 function validateBasic() { if (!form.name.trim() || !form.focus_area.trim()) { ElMessage.error("请填写服务名称和主要关注方向"); return false; } if (Number(form.price) < 0) { ElMessage.error("请填写正确的服务价格"); return false; } return true; }
 function validateDomains() { const valid = form.package_type === "special" ? form.domain_ids.length === 1 : form.domain_ids.length >= 2; if (!valid) ElMessage.error(form.package_type === "special" ? "专项服务需要选择一个健康领域" : "组合服务至少选择两个健康领域"); return valid; }
 function nextStep() { if (step.value === 0 && !validateBasic()) return; if (step.value === 1 && !validateDomains()) return; step.value += 1; }
-async function load() { loading.value = true; errorMessage.value = ""; try { items.value = (await fetchOrgPackages()).data.items || []; } catch (error) { errorMessage.value = error?.response?.data?.message || "体检服务加载失败"; } finally { loading.value = false; } }
-async function save() { if (!validateBasic() || !validateDomains()) return; saving.value = true; const payload = { name: form.name.trim(), focus_area: form.focus_area.trim(), gender_scope: form.gender_scope, price: Number(form.price), description: form.description.trim() || null, package_type: form.package_type, domain_ids: form.domain_ids, audience: form.audience.trim() || null, booking_notice: form.booking_notice.trim() || null }; try { if (form.id) await updateOrgPackage(form.id, payload); else await createOrgPackage(payload); ElMessage.success("服务变更已提交平台审核"); dialogVisible.value = false; await load(); } catch (error) { ElMessage.error(error?.response?.data?.message || "提交失败"); } finally { saving.value = false; } }
+async function load() { loading.value = true; errorMessage.value = ""; try { const { data } = await fetchOrgPackages({ page: pagination.page, page_size: 15 }); items.value = data.items || []; Object.assign(pagination, data.pagination || {}); Object.assign(packageSummary, data.summary || { total: items.value.length, active: items.value.filter((item)=>item.is_active).length, pending: items.value.filter((item)=>item.pending_request).length }); } catch (error) { errorMessage.value = error?.response?.data?.message || "体检服务加载失败"; } finally { loading.value = false; } }
+async function save() { if (!validateBasic() || !validateDomains()) return; saving.value = true; const payload = { name: form.name.trim(), focus_area: form.focus_area.trim(), gender_scope: form.gender_scope, price: Number(form.price), description: form.description.trim() || null, package_type: form.package_type, domain_ids: form.domain_ids, required_asset_type_ids: form.required_asset_type_ids.filter((id)=>availableAssetTypes.value.some((item)=>item.id===id)), audience: form.audience.trim() || null, booking_notice: form.booking_notice.trim() || null }; try { if (form.id) await updateOrgPackage(form.id, payload); else await createOrgPackage(payload); ElMessage.success("服务变更已提交平台审核"); dialogVisible.value = false; await load(); } catch (error) { ElMessage.error(error?.response?.data?.message || "提交失败"); } finally { saving.value = false; } }
 async function deactivate(item) { try { await ElMessageBox.confirm("审核通过后，该服务将停止接受新预约，历史预约不受影响。", "申请下架服务", { type: "warning", confirmButtonText: "提交申请", cancelButtonText: "取消" }); await deactivateOrgPackage(item.id); ElMessage.success("下架申请已提交"); await load(); } catch (error) { if (error !== "cancel" && error !== "close") ElMessage.error(error?.response?.data?.message || "申请失败"); } }
 async function restore(item) { try { await reactivateOrgPackage(item.id); ElMessage.success("恢复预约申请已提交"); await load(); } catch (error) { ElMessage.error(error?.response?.data?.message || "申请失败"); } }
-onMounted(async () => { try { domains.value = (await fetchHealthDomains()).data.items || []; } catch { ElMessage.error("健康领域加载失败"); } await load(); });
+onMounted(async () => { try { const [domainResponse,typeResponse]=await Promise.all([fetchHealthDomains(),fetchOrgReportAssetTypes()]);domains.value=domainResponse.data.items||[];assetTypes.value=typeResponse.data.items||[]; } catch { ElMessage.error("健康领域或附件槽位加载失败"); } await load(); });
 </script>
 
 <style scoped>

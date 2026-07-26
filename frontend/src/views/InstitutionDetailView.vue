@@ -78,6 +78,7 @@
               <div v-if="comment.reply" class="institution-review-reply"><strong>机构回复</strong><p>{{ comment.reply.content }}</p></div>
             </article>
             <el-empty v-if="!comments.length" description="还没有公开评价" :image-size="80" />
+            <el-pagination v-if="commentsPagination.total>commentsPagination.page_size" v-model:current-page="commentsPagination.page" :page-size="commentsPagination.page_size" :total="commentsPagination.total" layout="prev, pager, next" @current-change="loadComments"/>
           </div>
         </div>
       </el-card>
@@ -101,14 +102,16 @@ const errorMessage = ref("");
 const institution = ref(null);
 const packages = ref([]);
 const comments = ref([]);
+const commentsPagination = reactive({ page: 1, page_size: 15, total: 0, pages: 0 });
 const packageSection = ref(null);
 const commentSubmitting = ref(false);
 const commentForm = reactive({ rating: 5, content: "" });
 const phoneHref = computed(() => `tel:${String(institution.value?.consult_phone || "").replace(/[^\d+]/g, "")}`);
 
 async function loadComments() {
-  const { data } = await fetchInstitutionComments(route.params.id);
+  const { data } = await fetchInstitutionComments(route.params.id, { page: commentsPagination.page, page_size: 15 });
   comments.value = data.items || [];
+  Object.assign(commentsPagination, data.pagination || {});
 }
 
 async function loadData() {

@@ -3,11 +3,13 @@ from __future__ import annotations
 from app.extensions import db
 from app.models import (
     HealthDomain, Package, PackageChangeRequest, PackageVersion, PackageVersionDomain,
+    PackageVersionAssetRequirement, ReportAssetType,
 )
 from app.services.institution_management import ManagementValidationError, apply_package_payload
 
 
 def _package_data(package):
+    current = next((row for row in package.versions if row.id == package.current_version_id), None)
     return {
         "name": package.name,
         "focus_area": package.focus_area,
@@ -17,7 +19,10 @@ def _package_data(package):
         "package_type": package.package_type,
         "audience": package.audience,
         "booking_notice": package.booking_notice,
-        "domain_ids": [row.health_domain_id for row in package.versions[-1].domains] if package.versions else [],
+        "domain_ids": [row.health_domain_id for row in current.domains] if current else [],
+        "required_asset_type_ids": [
+            row.asset_type_id for row in current.asset_requirements if row.is_required
+        ] if current else [],
         "is_active": package.is_active,
     }
 
@@ -47,6 +52,22 @@ def _normalized_package_data(institution_id, payload, *, base=None):
     if len(domain_ids) > 8 or HealthDomain.query.filter(HealthDomain.id.in_(domain_ids), HealthDomain.is_active.is_(True)).count() != len(domain_ids):
         raise ManagementValidationError("domain_ids contains an invalid health domain")
     result["domain_ids"] = domain_ids
+    raw_asset_type_ids = source.get("required_asset_type_ids") or []
+    if not isinstance(raw_asset_type_ids, list):
+        raise ManagementValidationError("required_asset_type_ids must be an array")
+    try:
+        asset_type_ids = list(dict.fromkeys(int(value) for value in raw_asset_type_ids))
+    except (TypeError, ValueError):
+        raise ManagementValidationError("required_asset_type_ids must contain integers") from None
+    asset_types = ReportAssetType.query.filter(
+        ReportAssetType.id.in_(asset_type_ids),
+        ReportAssetType.is_active.is_(True),
+    ).all() if asset_type_ids else []
+    if len(asset_types) != len(asset_type_ids):
+        raise ManagementValidationError("required_asset_type_ids contains an invalid attachment type")
+    if any(asset_type.health_domain_id not in domain_ids for asset_type in asset_types):
+        raise ManagementValidationError("required attachment types must belong to a selected health domain")
+    result["required_asset_type_ids"] = asset_type_ids
     return result
 
 
@@ -131,6 +152,13 @@ def approve_change_request(item, reviewer, note=None):
         for order, domain_id in enumerate(proposed.get("domain_ids") or []):
             db.session.add(PackageVersionDomain(package_version_id=version.id,
                                                 health_domain_id=domain_id, sort_order=order))
+        for order, asset_type_id in enumerate(proposed.get("required_asset_type_ids") or []):
+            db.session.add(PackageVersionAssetRequirement(
+                package_version_id=version.id,
+                asset_type_id=asset_type_id,
+                is_required=True,
+                sort_order=order,
+            ))
         package.current_version_id = version.id
     item.status = "approved"
     item.reviewed_by_user_id = reviewer.id

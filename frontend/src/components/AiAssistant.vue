@@ -89,6 +89,12 @@
               <el-tag v-else-if="message.decision === 'emergency'" size="small" type="danger">紧急提醒</el-tag>
             </div>
             <div class="ai-message-content">{{ message.content }}</div>
+            <div v-if="message.contextSources?.length" class="ai-system-sources">
+              <el-tag size="small" type="success">系统机构数据</el-tag>
+              <el-button v-for="source in message.contextSources" :key="source.action_url" link type="primary" @click="router.push(source.action_url)">
+                {{source.label}}
+              </el-button>
+            </div>
             <a
               v-if="message.supportPhone"
               class="ai-phone-link"
@@ -427,6 +433,14 @@
           >
             引用档案
           </el-button>
+          <el-switch
+            v-if="authenticated"
+            :model-value="aiStore.autoSelectRecords"
+            inline-prompt
+            active-text="自动引用"
+            inactive-text="手动引用"
+            @change="aiStore.setAutoSelectRecords"
+          />
           <span>Enter 发送，Shift + Enter 换行</span>
           <el-button
             type="primary"
@@ -448,6 +462,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { useRouter } from "vue-router";
 
 import { useAiChatStore } from "../stores/aiChat";
 import { useAuthStore } from "../stores/auth";
@@ -477,6 +492,7 @@ const PANEL_FOCUSABLE_SELECTOR = [
 
 const aiStore = useAiChatStore();
 const authStore = useAuthStore();
+const router = useRouter();
 
 const inputMessage = ref("");
 const errorMessage = ref("");
@@ -1244,6 +1260,14 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
   font-size: var(--text-base, 1rem);
   line-height: 1.65;
+}
+
+.ai-system-sources {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
 }
 
 .ai-message-error {

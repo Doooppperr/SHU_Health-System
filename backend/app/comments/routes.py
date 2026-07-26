@@ -51,6 +51,22 @@ def _is_admin(user: User | None) -> bool:
     return user is not None and user.role == "admin"
 
 
+def _paginated(query, serializer, default_size=15):
+    page = max(request.args.get("page", 1, type=int) or 1, 1)
+    size = min(max(request.args.get("page_size", default_size, type=int) or default_size, 1), 100)
+    total = query.count()
+    rows = query.offset((page - 1) * size).limit(size).all()
+    return {
+        "items": [serializer(row) for row in rows],
+        "pagination": {
+            "page": page,
+            "page_size": size,
+            "total": total,
+            "pages": (total + size - 1) // size,
+        },
+    }, 200
+
+
 @comments_bp.get("")
 @jwt_required()
 def list_comments():
@@ -69,8 +85,7 @@ def list_comments():
     if user.role != "admin" or not include_hidden:
         query = query.filter_by(is_visible=True)
 
-    items = query.all()
-    return {"items": [item.to_dict() for item in items]}, 200
+    return _paginated(query, lambda item: item.to_dict())
 
 
 @comments_bp.get("/mine")
@@ -86,8 +101,7 @@ def list_my_comments():
     if institution_id is not None:
         query = query.filter_by(institution_id=institution_id)
 
-    items = query.all()
-    return {"items": [item.to_dict() for item in items]}, 200
+    return _paginated(query, lambda item: item.to_dict())
 
 
 @comments_bp.get("/mine/unread-replies")
@@ -119,11 +133,11 @@ def mark_replies_read():
 @comments_bp.get("/organization")
 @roles_required(ROLE_INSTITUTION_ADMIN)
 def organization_comments():
-    rows = Comment.query.filter_by(
+    query = Comment.query.filter_by(
         institution_id=g.current_user.managed_institution_id,
         is_visible=True,
-    ).order_by(Comment.created_at.desc(), Comment.id.desc()).all()
-    return {"items": [row.to_dict(include_unapproved_reply=True) for row in rows]}, 200
+    ).order_by(Comment.created_at.desc(), Comment.id.desc())
+    return _paginated(query, lambda row: row.to_dict(include_unapproved_reply=True))
 
 
 @comments_bp.post("/<int:comment_id>/reply")
@@ -226,8 +240,7 @@ def list_comments_for_moderation():
     if institution_id is not None:
         query = query.filter_by(institution_id=institution_id)
 
-    items = query.all()
-    return {"items": [item.to_dict(include_unapproved_reply=True) for item in items]}, 200
+    return _paginated(query, lambda item: item.to_dict(include_unapproved_reply=True))
 
 
 @comments_bp.post("/replies/<int:reply_id>/approve")

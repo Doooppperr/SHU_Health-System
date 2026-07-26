@@ -144,7 +144,7 @@ def test_org_archives_filter_by_account_identity_and_exam_date(app, client):
         assert payload["total"] >= payload["filtered_total"] >= 1
         assert report_id in {item["id"] for item in payload["items"]}
         assert all(item["exam_date"] == exam_date for item in payload["items"])
-        assert next(item for item in payload["items"] if item["id"] == report_id)["subject_username"] == username
+        assert next(item for item in payload["items"] if item["id"] == report_id)["subject_display_name"] == real_name
 
     invalid = client.get(
         "/api/org/reports",
@@ -172,6 +172,10 @@ def test_booking_group_is_atomic_and_proxy_booking_is_separate(app, client):
     response = client.post("/api/booking-groups", headers=booker, json={
         "institution_id": ids[2], "package_id": ids[3], "appointment_date": day.isoformat(),
         "participant_user_ids": [ids[0], ids[1]], "notice_confirmed": True,
+        "participant_intakes": [
+            {"user_id": ids[0], "height_cm": 176, "weight_kg": 72},
+            {"user_id": ids[1], "height_cm": 163, "weight_kg": 59},
+        ],
     })
     assert response.status_code == 201, response.get_json()
     item = response.get_json()["item"]
@@ -185,6 +189,7 @@ def test_booking_group_is_atomic_and_proxy_booking_is_separate(app, client):
     duplicate = client.post("/api/booking-groups", headers=booker, json={
         "institution_id": ids[2], "package_id": ids[3], "appointment_date": day.isoformat(),
         "participant_user_ids": [ids[0]], "notice_confirmed": True,
+        "participant_intakes": [{"user_id": ids[0], "height_cm": 176, "weight_kg": 72}],
     })
     assert duplicate.status_code == 409
     assert duplicate.get_json()["code"] == "APPOINTMENT_DATE_CONFLICT"
@@ -208,11 +213,13 @@ def test_waitlist_only_notifies_after_capacity_crosses_threshold(app, client):
         institution.daily_appointment_limit = 1
         package = package_for(institution)
         institution_id, package_id = institution.id, package.id
+        filler_id = User.query.filter_by(username="test2").one().id
         db.session.commit()
     day = date.today() + timedelta(days=7)
     filled = client.post("/api/booking-groups", headers=filler, json={
         "institution_id": institution_id, "package_id": package_id,
         "appointment_date": day.isoformat(), "notice_confirmed": True,
+        "participant_intakes": [{"user_id": filler_id, "height_cm": 163, "weight_kg": 59}],
     })
     assert filled.status_code == 201
     subscription = client.post("/api/waitlist-subscriptions", headers=subscriber, json={
@@ -246,7 +253,12 @@ def test_report_indicator_outside_package_domain_is_blocked(app, client):
         institution_id, package_id, alt_id = institution.id, package.id, alt.id
     day = date.today() + timedelta(days=8)
     appointment = client.post("/api/appointments", headers=user, json={
-        "institution_id": institution_id, "package_id": package_id, "appointment_date": day.isoformat()})
+        "institution_id": institution_id,
+        "package_id": package_id,
+        "appointment_date": day.isoformat(),
+        "height_cm": 170,
+        "weight_kg": 65,
+    })
     assert appointment.status_code == 201
     appointment_id = appointment.get_json()["item"]["id"]
     assert client.post(f"/api/org/appointments/{appointment_id}/attend", headers=org).status_code == 200

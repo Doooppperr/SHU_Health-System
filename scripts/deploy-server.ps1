@@ -133,7 +133,8 @@ finally:
         $uploadsRoot = Join-Path $projectRoot "backend\uploads"
         $requiredDemoAssetDirectories = @(
             (Join-Path $uploadsRoot "institutions\demo-v8"),
-            (Join-Path $uploadsRoot "health-assets\demo-v8")
+            (Join-Path $uploadsRoot "health-assets\demo-v8"),
+            (Join-Path $uploadsRoot "health-assets\demo-v10")
         )
         foreach ($directory in $requiredDemoAssetDirectories) {
             if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
@@ -144,7 +145,7 @@ finally:
             (Join-Path $projectRoot "backend\scripts\refresh_demo_media.py") --check-only
         Assert-LastExitCode "Demo media validation"
         Remove-Item -LiteralPath $demoAssetsPath -Force -ErrorAction SilentlyContinue
-        tar -czf $demoAssetsPath -C $uploadsRoot institutions/demo-v8 health-assets/demo-v8
+        tar -czf $demoAssetsPath -C $uploadsRoot institutions/demo-v8 health-assets/demo-v8 health-assets/demo-v10
         Assert-LastExitCode "Demo asset packaging"
         scp $demoAssetsPath "${SshUser}@${Server}:$remoteDemoAssets"
         Assert-LastExitCode "Demo asset upload"

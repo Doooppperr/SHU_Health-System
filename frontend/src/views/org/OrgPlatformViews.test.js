@@ -56,10 +56,9 @@ describe("institution platform views",()=>{
 
   it("filters both archive tabs and shows a readable exam date",async()=>{
     orgApi.fetchOrgReports.mockImplementation((params)=>Promise.resolve({data:{
-      total:params.scope==="branch"?12:8,
-      filtered_total:1,
+      pagination:{page:1,page_size:15,total:params.scope==="branch"?12:8,pages:1},
       items:[{
-        id:3,subject_name_snapshot:"林国安",subject_username:"test3",
+        id:3,subject_name_snapshot:"林国安",subject_display_name:"林国安",
         exam_date:"2026-07-23T00:00:00",indicator_count:6,
         access_mode:params.scope==="organization"?"cross_branch_read_only":"branch",
         source_branch:{name:"澄心健康管理中心",branch_name:"徐汇综合院区"},
@@ -69,7 +68,7 @@ describe("institution platform views",()=>{
     const historyTab=wrapper.findAll(".report-tabs button").find((item)=>item.text().includes("本院归档"));
     await historyTab.trigger("click");await flushPromises();
     expect(wrapper.text()).toContain("体检日期：2026年7月23日");
-    expect(wrapper.text()).toContain("用户名：test3");
+    expect(wrapper.text()).toContain("受检者：林国安");
     expect(wrapper.text()).toContain("共 12 份，当前显示 1 份");
     const subject=wrapper.find(".archive-toolbar .el-input__inner");
     await subject.setValue("test3");

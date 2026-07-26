@@ -8,8 +8,8 @@ export function updateOrgInstitution(payload) {
   return http.put("/org/institution", payload);
 }
 
-export function fetchOrgPackages() {
-  return http.get("/org/packages");
+export function fetchOrgPackages(params = {}) {
+  return http.get("/org/packages", { params });
 }
 
 export function createOrgPackage(payload) {
@@ -56,6 +56,8 @@ export const deleteOrgReportIndicator = (id, indicatorId) => http.delete(`/org/r
 export const addOrgTextResult = (id, payload) => http.post(`/org/health-data/${id}/text-results`, payload);
 export const deleteOrgTextResult = (id, resultId) => http.delete(`/org/health-data/${id}/text-results/${resultId}`);
 export function uploadOrgHealthAsset(id, file, fields) { const form=new FormData(); form.append("file",file); Object.entries(fields).forEach(([k,v])=>form.append(k,v??"")); return http.post(`/org/health-data/${id}/assets`,form,{headers:{"Content-Type":"multipart/form-data"}}); }
+export const fetchOrgReportAssetTypes = (reportId) => http.get("/org/report-asset-types", { params: { report_id: reportId } });
+export const updateOrgHealthAsset = (id, assetId, payload) => http.patch(`/org/health-data/${id}/assets/${assetId}`, payload);
 export const deleteOrgHealthAsset = (id, assetId) => http.delete(`/org/health-data/${id}/assets/${assetId}`);
 export const lockOrgReport = (id) => http.post(`/org/reports/${id}/lock`);
 export const submitOrgReport = (id) => http.post(`/org/reports/${id}/submit`);
@@ -66,10 +68,11 @@ export function uploadOrgReportOcr(file, fields) {
 }
 
 export const reactivateOrgPackage = (packageId) => http.post(`/org/packages/${packageId}/reactivate`);
-export const fetchOrgPackageChangeRequests = () => http.get("/org/package-change-requests");
+export const fetchOrgPackageChangeRequests = (params = {}) => http.get("/org/package-change-requests", { params });
 export const withdrawOrgPackageChangeRequest = (id) => http.post(`/org/package-change-requests/${id}/withdraw`);
 export const fetchOrgAppointments = (params = {}) => http.get("/org/appointments", { params });
 export const attendOrgAppointment = (id) => http.post(`/org/appointments/${id}/attend`);
 export const invalidateOrgAppointment = (id) => http.post(`/org/appointments/${id}/invalidate`);
+export const closeOrgAppointment = (id, payload) => http.post(`/org/appointments/${id}/close`, payload);
 export const fetchOrgAppointmentCapacity = () => http.get("/org/appointment-capacity");
 export const updateOrgAppointmentCapacity = (dailyAppointmentLimit) => http.put("/org/appointment-capacity", { daily_appointment_limit: dailyAppointmentLimit });

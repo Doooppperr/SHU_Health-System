@@ -11,7 +11,7 @@ import { AI_SESSION_PREFIX } from "../utils/aiSession";
 
 const PANEL_WIDTH_KEY = "health-ai-panel-width";
 const MAX_STORED_MESSAGES = 40;
-const AI_SESSION_SCHEMA_VERSION = 2;
+const AI_SESSION_SCHEMA_VERSION = 3;
 const MAX_HISTORY_CONTENT_CHARS = 4000;
 const HISTORY_TRUNCATION_MARKER = "\n…（较早内容已在本地裁剪）…\n";
 let messageSequence = 0;
@@ -102,6 +102,7 @@ function normalizeMessages(rawMessages) {
         retryRecords,
         contextOwnerId,
         retryOwnerId,
+        contextSources: Array.isArray(message.contextSources) ? message.contextSources : [],
       };
     })
     .slice(-MAX_STORED_MESSAGES);
@@ -111,7 +112,7 @@ function recordMetadata(record) {
   return {
     id: Number(record.id),
     owner_id: Number(record.owner_id),
-    owner_name: record.owner_name || record.owner?.username || "档案所有者",
+    owner_name: record.owner_name || record.owner?.display_name || "档案所有者",
     owner_label: record.owner_label || record.owner?.label || "",
     exam_date: record.exam_date || "",
     institution_name:
@@ -207,6 +208,7 @@ export const useAiChatStore = defineStore("ai-chat", {
     summary: "",
     selectedRecordIds: [],
     consentGiven: false,
+    autoSelectRecords: false,
     availableRecords: [],
     availableOwners: [],
     recordSelectionMode: "records",
@@ -243,6 +245,7 @@ export const useAiChatStore = defineStore("ai-chat", {
       this.resetAvailableRecords();
       this.lastError = "";
       this.lastModel = "";
+      this.autoSelectRecords = false;
 
       const saved = readJson(sessionStorage, sessionKey(nextIdentity), null);
       if (saved) {
@@ -252,6 +255,7 @@ export const useAiChatStore = defineStore("ai-chat", {
           currentSchema && typeof saved.summary === "string" ? saved.summary : "";
         this.isOpen = saved.isOpen === true;
         this.lastModel = typeof saved.lastModel === "string" ? saved.lastModel : "";
+        this.autoSelectRecords = currentSchema && saved.autoSelectRecords === true;
       }
       this.hydrated = true;
     },
@@ -266,6 +270,7 @@ export const useAiChatStore = defineStore("ai-chat", {
           summary: this.summary,
           isOpen: this.isOpen,
           lastModel: this.lastModel,
+          autoSelectRecords: this.autoSelectRecords,
         })
       );
     },
@@ -323,6 +328,11 @@ export const useAiChatStore = defineStore("ai-chat", {
       if (this.consentGiven) this.lastError = "";
     },
 
+    setAutoSelectRecords(value) {
+      this.autoSelectRecords = value === true;
+      this.persist();
+    },
+
     resetAvailableRecords() {
       this.recordsLoadSequence += 1;
       this.availableRecords = [];
@@ -377,7 +387,7 @@ export const useAiChatStore = defineStore("ai-chat", {
         this.availableOwners = Array.isArray(data.owners)
           ? data.owners.map((item) => ({
               owner_id: Number(item.owner_id),
-              owner_name: item.owner?.username || "档案所有者",
+              owner_name: item.owner?.display_name || "档案所有者",
               owner_label: item.owner?.label || "",
               record_count: Number(item.record_count) || 0,
               date_range: item.date_range || {},
@@ -569,6 +579,8 @@ export const useAiChatStore = defineStore("ai-chat", {
             ? { owner_id: selectedOwnerId, mode: "all_confirmed" }
             : undefined,
           consent: hasRecordContext && this.consentGiven,
+          auto_select_records: authenticated && this.autoSelectRecords,
+          ...(authenticated && this.autoSelectRecords ? { consent: true } : {}),
         },
       });
       return reactiveAssistantMessage;
@@ -667,6 +679,8 @@ export const useAiChatStore = defineStore("ai-chat", {
             ? { owner_id: selectedOwnerId, mode: "all_confirmed" }
             : undefined,
           consent: (selectedRecordIds.length > 0 || selectedOwnerId !== null) && this.consentGiven,
+          auto_select_records: authenticated && this.autoSelectRecords,
+          ...(authenticated && this.autoSelectRecords ? { consent: true } : {}),
         },
       });
       return assistantMessage;
@@ -791,6 +805,13 @@ export const useAiChatStore = defineStore("ai-chat", {
               assistantMessage.decision = event.decision || assistantMessage.decision;
               assistantMessage.supportPhone = event.support_phone || "";
               assistantMessage.source = event.source || assistantMessage.source;
+              assistantMessage.contextSources = Array.isArray(event.context_sources) ? event.context_sources : [];
+              if (event.auto_selected_records === true) {
+                assistantMessage.recordSensitive = true;
+                assistantMessage.contextRecordIds = Array.isArray(event.selected_record_ids) ? event.selected_record_ids : [];
+                userMessage.recordSensitive = true;
+                userMessage.contextRecordIds = [...assistantMessage.contextRecordIds];
+              }
               if (!assistantMessage.recordSensitive) {
                 this.summary = event.summary || this.summary;
               }

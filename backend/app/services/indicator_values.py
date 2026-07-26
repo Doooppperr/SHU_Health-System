@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from decimal import Decimal, InvalidOperation
+from datetime import date
 
 
 _NUMBER_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)")
@@ -119,14 +120,76 @@ def normalize_ocr_indicator_value(indicator_dict, raw_value) -> str:
         return normalize_indicator_value(indicator_dict, primary_result)
 
 
-def evaluate_is_abnormal(indicator_dict, normalized_value: str) -> bool:
+def resolve_reference_rule(indicator_dict, *, subject=None, on_date=None):
+    if subject is None:
+        return None
+    gender = getattr(subject, "gender", None) or "other"
+    birth_date = getattr(subject, "birth_date", None)
+    check_date = on_date or date.today()
+    age = None
+    if birth_date:
+        age = check_date.year - birth_date.year - (
+            (check_date.month, check_date.day) < (birth_date.month, birth_date.day)
+        )
+    candidates = []
+    for rule in getattr(indicator_dict, "reference_rules", []) or []:
+        if rule.gender_scope not in {"all", gender}:
+            continue
+        if age is not None and rule.min_age is not None and age < rule.min_age:
+            continue
+        if age is not None and rule.max_age is not None and age > rule.max_age:
+            continue
+        candidates.append(rule)
+    return candidates[0] if candidates else None
+
+
+def evaluate_result_status(
+    indicator_dict,
+    normalized_value: str,
+    *,
+    subject=None,
+    on_date=None,
+    abnormal_flag=None,
+) -> str:
+    flag = unicodedata.normalize("NFKC", str(abnormal_flag or "")).strip().lower()
+    if flag in {"h", "↑", "high", "偏高", "升高"}:
+        return "high"
+    if flag in {"l", "↓", "low", "偏低", "降低"}:
+        return "low"
+    if flag in {"positive", "+", "阳性"}:
+        return "positive"
+    if flag in {"negative", "-", "阴性"}:
+        return "negative"
+    if flag in {"abnormal", "异常"}:
+        return "abnormal"
+
     if indicator_dict.value_type != "numeric":
-        return False
+        text = unicodedata.normalize("NFKC", str(normalized_value or "")).strip().lower()
+        if text in {"阴性", "negative", "neg", "-"}:
+            return "negative"
+        if text in {"阳性", "positive", "pos", "+"}:
+            return "positive"
+        return "unknown"
+
     value = parse_numeric_value(normalized_value)
     if value is None:
-        return False
-    if indicator_dict.reference_low is not None and value < indicator_dict.reference_low:
-        return True
-    if indicator_dict.reference_high is not None and value > indicator_dict.reference_high:
-        return True
-    return False
+        return "unknown"
+    rule = resolve_reference_rule(indicator_dict, subject=subject, on_date=on_date)
+    low = rule.reference_low if rule is not None else indicator_dict.reference_low
+    high = rule.reference_high if rule is not None else indicator_dict.reference_high
+    if low is not None and value < low:
+        return "low"
+    if high is not None and value > high:
+        return "high"
+    if low is None and high is None:
+        return "unknown"
+    return "normal"
+
+
+def evaluate_is_abnormal(indicator_dict, normalized_value: str) -> bool:
+    return evaluate_result_status(indicator_dict, normalized_value) in {
+        "high",
+        "low",
+        "positive",
+        "abnormal",
+    }

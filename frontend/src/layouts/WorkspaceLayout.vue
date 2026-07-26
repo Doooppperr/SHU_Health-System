@@ -65,6 +65,7 @@
           <h1>{{ pageTitle }}</h1>
         </div>
         <div class="workspace-top-actions">
+          <NotificationCenter v-if="workspaceType === 'user'" />
           <AiAssistantLauncher />
           <AppearanceQuickControls />
           <router-link class="workspace-portal-link" to="/">返回门户</router-link>
@@ -87,6 +88,7 @@ import { useAuthStore } from "../stores/auth";
 import { useAppearanceStore } from "../stores/appearance";
 import { dashboardRouteForRole, roleLabel } from "../utils/roles";
 import AiAssistantLauncher from "../components/AiAssistantLauncher.vue";
+import NotificationCenter from "../components/NotificationCenter.vue";
 import AppearanceQuickControls from "../components/AppearanceQuickControls.vue";
 import { fetchUnreadCommentReplyCount } from "../api/comments";
 
