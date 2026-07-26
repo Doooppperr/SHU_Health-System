@@ -99,9 +99,9 @@ def migrate(database_url: str) -> None:
             if missing_columns:
                 raise RuntimeError(f"schema v10 verification failed: missing_columns={missing_columns}")
             expected_unique_constraints = {
-                "user_notifications": {"uq_user_notifications_idempotency"},
+                "user_notifications": {"uq_user_notifications_user_key"},
                 "report_asset_types": {"uq_report_asset_types_code"},
-                "package_version_asset_requirements": {"uq_package_asset_requirement"},
+                "package_version_asset_requirements": {"uq_package_version_asset_requirement"},
             }
             for table, expected_names in expected_unique_constraints.items():
                 present_names = {
