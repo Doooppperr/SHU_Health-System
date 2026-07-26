@@ -38,16 +38,12 @@ const notificationPayload = {
 function mountCenter() {
   const wrapper = mount(NotificationCenter, {
     global: {
-      directives: { loading: () => {} },
       stubs: {
+        Teleport: true,
         ElBadge: { template: "<div><slot /></div>" },
         ElButton: {
           emits: ["click"],
           template: '<button v-bind="$attrs" @click="$emit(\'click\')"><slot /></button>',
-        },
-        ElDrawer: {
-          props: ["modelValue"],
-          template: '<section v-if="modelValue"><header><slot name="header" /></header><slot /></section>',
         },
         ElEmpty: { template: "<div>暂无站内通知</div>" },
         ElPagination: { template: "<nav />" },
@@ -82,6 +78,10 @@ describe("站内通知中心", () => {
     expect(wrapper.text()).toContain("站内通知");
     expect(wrapper.text()).toContain("体检报告已交付");
     expect(mocks.fetchNotifications).toHaveBeenCalledWith({ page: 1, page_size: 15 });
+
+    expect(wrapper.get(".notification-panel").attributes("role")).toBe("dialog");
+    await wrapper.get('[aria-label="关闭站内通知"]').trigger("click");
+    expect(wrapper.find(".notification-panel").exists()).toBe(false);
   });
 
   it("加载失败时显示原因并允许重新加载", async () => {

@@ -4,41 +4,63 @@
       通知
     </el-button>
   </el-badge>
-  <el-drawer v-model="visible" class="notification-drawer" size="480px">
-    <template #header>
-      <div class="notification-header">
-        <strong>站内通知</strong>
-        <small>预约、报告与空位提醒</small>
+  <Teleport to="body">
+    <Transition name="notification-panel">
+      <div v-if="visible" class="notification-overlay" @mousedown.self="close">
+        <aside
+          class="notification-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="notification-panel-title"
+          @keydown.esc="close"
+        >
+          <header class="notification-header">
+            <div>
+              <strong id="notification-panel-title">站内通知</strong>
+              <small>预约、报告与空位提醒</small>
+            </div>
+            <button type="button" class="notification-close" aria-label="关闭站内通知" @click="close">×</button>
+          </header>
+
+          <div class="notification-body">
+            <div class="notification-toolbar">
+              <span>{{ unread ? `${unread} 条未读` : "已全部读完" }}</span>
+              <el-button link type="primary" :disabled="!unread" @click="readAll">全部已读</el-button>
+            </div>
+
+            <div v-if="loading" class="notification-loading" role="status" aria-live="polite">
+              <span aria-hidden="true"></span>
+              正在加载通知…
+            </div>
+            <div v-else-if="loadError" class="notification-error" role="alert">
+              <strong>通知暂时没有加载成功</strong>
+              <p>{{ loadError }}</p>
+              <el-button type="primary" plain @click="load">重新加载</el-button>
+            </div>
+            <div v-else class="notification-list">
+              <article v-for="item in items" :key="item.id" :class="{ unread: !item.is_read }">
+                <button type="button" @click="activate(item)">
+                  <strong>{{ item.title }}</strong>
+                  <p>{{ item.body }}</p>
+                  <small>{{ formatTime(item.created_at) }}</small>
+                </button>
+              </article>
+              <el-empty v-if="!items.length" description="暂无站内通知" />
+            </div>
+
+            <el-pagination
+              v-if="!loading && !loadError && pagination.total > pagination.page_size"
+              v-model:current-page="pagination.page"
+              :page-size="pagination.page_size"
+              :total="pagination.total"
+              layout="prev, pager, next"
+              @current-change="load"
+            />
+          </div>
+        </aside>
       </div>
-    </template>
-    <div class="notification-toolbar">
-      <span>{{ unread ? `${unread} 条未读` : "已全部读完" }}</span>
-      <el-button link type="primary" :disabled="!unread" @click="readAll">全部已读</el-button>
-    </div>
-    <div v-if="loadError" class="notification-error" role="alert">
-      <strong>通知暂时没有加载成功</strong>
-      <p>{{ loadError }}</p>
-      <el-button type="primary" plain @click="load">重新加载</el-button>
-    </div>
-    <div v-else v-loading="loading" class="notification-list">
-      <article v-for="item in items" :key="item.id" :class="{ unread: !item.is_read }">
-        <button type="button" @click="activate(item)">
-          <strong>{{ item.title }}</strong>
-          <p>{{ item.body }}</p>
-          <small>{{ formatTime(item.created_at) }}</small>
-        </button>
-      </article>
-      <el-empty v-if="!loading && !items.length" description="暂无站内通知" />
-    </div>
-    <el-pagination
-      v-if="!loadError && pagination.total > pagination.page_size"
-      v-model:current-page="pagination.page"
-      :page-size="pagination.page_size"
-      :total="pagination.total"
-      layout="prev, pager, next"
-      @current-change="load"
-    />
-  </el-drawer>
+    </Transition>
+  </Teleport>
 </template>
 
 <script setup>
@@ -93,6 +115,10 @@ async function open() {
   await load();
 }
 
+function close() {
+  visible.value = false;
+}
+
 async function activate(item) {
   try {
     if (!item.is_read) {
@@ -128,21 +154,87 @@ onMounted(refreshCount);
   border-radius: 999px;
 }
 
+.notification-overlay {
+  position: fixed;
+  z-index: 2400;
+  inset: 0;
+  display: flex;
+  justify-content: flex-end;
+  background: var(--color-overlay, rgba(15, 15, 17, 0.56));
+}
+
+.notification-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(480px, calc(100vw - 16px));
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--color-border, #3a3a3c);
+  color: var(--color-text, #f5f5f7);
+  background: var(--color-surface, #1c1c1e);
+  box-shadow: -16px 0 38px rgb(0 0 0 / 24%);
+}
+
 .notification-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 76px;
+  padding: max(18px, env(safe-area-inset-top)) max(22px, env(safe-area-inset-right)) 18px 22px;
+  border-bottom: 1px solid var(--color-border, #3a3a3c);
+  background: var(--color-surface, #1c1c1e);
+}
+
+.notification-header > div {
   display: grid;
   gap: 3px;
   min-width: 0;
 }
 
 .notification-header strong {
-  color: var(--color-text);
+  color: var(--color-text, #f5f5f7);
   font-size: 18px;
 }
 
 .notification-header small,
 .notification-toolbar,
 .notification-list small {
-  color: var(--color-text-secondary);
+  color: var(--color-text-secondary, #b8b8bd);
+}
+
+.notification-close {
+  display: grid;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: var(--color-text-secondary, #b8b8bd);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 25px;
+  line-height: 1;
+}
+
+.notification-close:hover,
+.notification-close:focus-visible {
+  border-color: var(--color-border, #3a3a3c);
+  color: var(--color-text, #f5f5f7);
+  background: var(--color-surface-muted, #242426);
+}
+
+.notification-body {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-height: 0;
+  padding: 18px 22px max(24px, env(safe-area-inset-bottom));
+  overflow: hidden;
 }
 
 .notification-toolbar {
@@ -152,30 +244,55 @@ onMounted(refreshCount);
   margin-bottom: 14px;
 }
 
+.notification-loading,
+.notification-list {
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .notification-list {
   display: grid;
   align-content: start;
   gap: 10px;
-  min-height: 160px;
+  padding-right: 3px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.notification-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--color-text-secondary, #b8b8bd);
+}
+
+.notification-loading span {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--color-border, #3a3a3c);
+  border-top-color: var(--color-accent, #59cdb9);
+  border-radius: 50%;
+  animation: notification-spin 0.8s linear infinite;
 }
 
 .notification-list article {
   overflow: hidden;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border, #3a3a3c);
   border-radius: 12px;
-  background: var(--color-surface);
+  background: var(--color-surface-elevated, #2c2c2e);
 }
 
 .notification-list article.unread {
-  border-color: var(--color-accent);
-  background: var(--color-accent-soft);
+  border-color: var(--color-accent, #59cdb9);
+  background: var(--color-accent-soft, #183b36);
 }
 
 .notification-list button {
   width: 100%;
   padding: 14px;
   border: 0;
-  color: inherit;
+  color: var(--color-text, #f5f5f7);
   background: transparent;
   cursor: pointer;
   text-align: left;
@@ -193,33 +310,72 @@ onMounted(refreshCount);
 
 .notification-error {
   display: grid;
+  align-self: start;
   gap: 10px;
   justify-items: start;
   padding: 18px;
-  border: 1px solid color-mix(in srgb, var(--color-danger) 44%, var(--color-border));
+  border: 1px solid color-mix(in srgb, var(--color-danger, #c9342f) 44%, var(--color-border, #3a3a3c));
   border-radius: 12px;
-  color: var(--color-text);
-  background: color-mix(in srgb, var(--color-danger) 10%, var(--color-surface));
+  color: var(--color-text, #f5f5f7);
+  background: color-mix(in srgb, var(--color-danger, #c9342f) 10%, var(--color-surface, #1c1c1e));
 }
 
 .notification-error p {
   margin: 0;
-  color: var(--color-text-secondary);
+  color: var(--color-text-secondary, #b8b8bd);
 }
 
-:global(.notification-drawer) {
-  max-width: calc(100vw - 16px);
-  border-left: 1px solid var(--color-border);
+.notification-body :deep(.el-pagination) {
+  justify-content: center;
+  padding-top: 16px;
 }
 
-:global(.notification-drawer .el-drawer__header) {
-  min-height: 76px;
-  margin-bottom: 0;
-  padding: 18px 22px;
-  border-bottom: 1px solid var(--color-border);
+.notification-panel-enter-active,
+.notification-panel-leave-active {
+  transition: background-color 0.2s ease;
 }
 
-:global(.notification-drawer .el-drawer__body) {
-  padding: 18px 22px 24px;
+.notification-panel-enter-active .notification-panel,
+.notification-panel-leave-active .notification-panel {
+  transition: transform 0.2s ease;
+}
+
+.notification-panel-enter-from,
+.notification-panel-leave-to {
+  background-color: transparent;
+}
+
+.notification-panel-enter-from .notification-panel,
+.notification-panel-leave-to .notification-panel {
+  transform: translateX(100%);
+}
+
+@keyframes notification-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 520px) {
+  .notification-panel {
+    width: 100vw;
+    max-width: 100vw;
+    border-left: 0;
+  }
+
+  .notification-header,
+  .notification-body {
+    padding-right: max(16px, env(safe-area-inset-right));
+    padding-left: max(16px, env(safe-area-inset-left));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notification-panel-enter-active,
+  .notification-panel-leave-active,
+  .notification-panel-enter-active .notification-panel,
+  .notification-panel-leave-active .notification-panel {
+    transition: none;
+  }
 }
 </style>
