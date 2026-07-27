@@ -51,7 +51,8 @@ health system/
 │  │  ├─ friends/、comments/、ai/      # 延续的亲友、评论与 AI
 │  │  └─ services/                     # OCR、报告归档、存储与权限服务
 │  ├─ instance/health_system.db        # 合成演示 SQLite 快照（Git 跟踪）
-│  ├─ uploads/                         # 清单化 demo-v8/v10 水印素材受控跟踪，其余运行时文件忽略
+│  ├─ demo_media_sources/               # 开放授权真实医学样例（处理后 PNG）
+│  ├─ uploads/                         # 清单化 demo-v8/v10 演示素材受控跟踪，其余运行时文件忽略
 │  ├─ scripts/                         # 数据库升级、同步与运行数据清理脚本
 │  ├─ rag_sources/                     # 批准的公共 RAG 来源与黄金查询
 │  └─ tests/
@@ -250,7 +251,7 @@ npm audit --omit=dev
 - `backend/uploads/`
 - `backend/.env`（单独加密保存，不进入 Git）
 
-仓库只对 `backend/uploads/` 中清单登记的 `demo-v8/demo-v10` 演示素材开放跟踪例外。全部医学附件带“非诊断依据”水印，来源或合成方式、处理方式和哈希记录在 `backend/demo_media_manifest.json`；其余上传和运行时文件仍由 `.gitignore` 排除。
+仓库只对 `backend/uploads/` 中清单登记的 `demo-v8/demo-v10` 演示素材开放跟踪例外。19 个报告附件来自开放授权的真实医学检查样例（不在像素中叠加水印），页面批注仍显示“仅用于功能展示，不作为诊断依据”；来源、许可证、处理方式和哈希记录在 `backend/demo_media_sources.json` 与 `backend/demo_media_manifest.json`。其余上传和运行时文件仍由 `.gitignore` 排除。
 
 ## 服务器状态
 
@@ -265,6 +266,7 @@ npm audit --omit=dev
 - [AI 与 OCR 开发说明](项目文档/AI与OCR开发说明.md)：保留机制、当前接口、SSE、OCR 流程和安全边界。
 - [测试报告](项目文档/测试报告.md)：当前自动化基线和验收矩阵。
 - [测试账号与演示数据](项目文档/测试账号与演示数据.md)：全部合成账号、统一密码、数据规模和推荐验收顺序。
+- [真实医学媒体来源说明](项目文档/真实医学媒体来源说明.md)：真实样例的来源、许可、隐私处理、槽位映射和媒体专项发布。
 - [服务器部署与同步](项目文档/服务器部署与同步.md)：生产拓扑、schema v10 数据同步、备份、回滚和发布验收。
 
 原 2.0 临时计划、3.0 重构方案和实施说明中的有效内容已经按主题合并到以上文档，不再维护版本孤岛。

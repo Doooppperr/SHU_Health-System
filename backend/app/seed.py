@@ -345,18 +345,19 @@ INDICATOR_DOMAIN_CODES.update({
 
 def seed_v10_asset_types(*, commit: bool = True):
     domains = {row.code: row for row in HealthDomain.query.all()}
-    existing = {row.code for row in ReportAssetType.query.all()}
+    existing = {row.code: row for row in ReportAssetType.query.all()}
     for order, (code, domain_code, name, modality, max_files) in enumerate(ASSET_TYPE_SEEDS, start=1):
-        if code in existing or domain_code not in domains:
+        if domain_code not in domains:
             continue
-        db.session.add(ReportAssetType(
-            code=code,
-            health_domain_id=domains[domain_code].id,
-            name=name,
-            modality=modality,
-            max_files=max_files,
-            sort_order=order,
-        ))
+        row = existing.get(code)
+        if row is None:
+            row = ReportAssetType(code=code)
+            db.session.add(row)
+        row.health_domain_id = domains[domain_code].id
+        row.name = name
+        row.modality = modality
+        row.max_files = max_files
+        row.sort_order = order
     db.session.commit() if commit else db.session.flush()
 
 

@@ -218,6 +218,12 @@ def _build_media_manifest(attachment_manifest: dict, staging_dir: Path) -> dict:
     }
     assets = {row.storage_key: row for row in ReportAsset.query.all()}
     images = {row.storage_key: row for row in InstitutionImage.query.all()}
+    source_catalog = json.loads(
+        (BACKEND_DIR / "demo_media_sources.json").read_text(encoding="utf-8")
+    )
+    medical_sources_by_sha = {
+        item["sha256"]: item for item in source_catalog.get("items", [])
+    }
     items = []
     for key, file_data in sorted(attachment_manifest.items()):
         existing = dict(previous_by_key.get(key) or {})
@@ -244,17 +250,38 @@ def _build_media_manifest(attachment_manifest: dict, staging_dir: Path) -> dict:
             "byte_size": file_data["bytes"],
             "sha256": file_data["sha256"],
         })
-        if key.startswith("health-assets/demo-v10/"):
+        # Real clinical examples are checked in under demo_media_sources.
+        # Never replace their auditable provenance with the former v10
+        # synthetic marker when rebuilding the SQLite snapshot.
+        if asset:
+            audited_source = medical_sources_by_sha.get(file_data["sha256"])
+            if not audited_source:
+                raise RuntimeError(f"医学附件不在已审核素材清单中：{key}")
+            existing.update(audited_source)
             existing.update({
-                "source_url": "synthetic://healthdoc/schema-v10",
-                "author": "HealthDoc 确定性演示数据生成器",
-                "license": "项目内合成演示内容",
+                "storage_key": key,
+                "kind": "report_attachment",
+                "asset_type_code": asset.asset_type.code if asset.asset_type else None,
+                "category": asset.asset_type.name if asset.asset_type else asset.domain.name,
+                "title": asset.title,
+                "annotation_text": asset.annotation_text,
+                "width": width,
+                "height": height,
+                "format": image_format,
+                "byte_size": file_data["bytes"],
+                "sha256": file_data["sha256"],
             })
+            source = existing.get("source_url") or "https://commons.wikimedia.org/"
+            if not source.startswith("https://") or "synthetic://" in source:
+                raise RuntimeError(f"医学附件缺少开放授权来源：{key}")
+            existing["annotation_text"] = (
+                "开放授权真实医学样例，仅用于系统功能展示，不对应系统用户，不作为诊断依据。"
+            )
         items.append(existing)
     return {
-        "version": 10,
+        "version": 11,
         "generated_at": datetime.now().astimezone().isoformat(),
-        "usage_notice": "仅用于 HealthDoc 功能演示；全部医学附件均带有非诊断说明，不构成诊断依据。",
+        "usage_notice": "开放授权真实医学样例，仅用于 HealthDoc 功能验收；不对应系统用户，不作为诊断依据。",
         "license_references": previous.get("license_references", {}),
         "items": items,
     }

@@ -415,6 +415,40 @@ def _load_demo_media(
     return raw, width, height
 
 
+# Checked-in real clinical examples used by the production/demo reset path.
+# They are deliberately kept outside ``uploads`` so reset cannot fall back to
+# the former synthetic colour fixtures.
+CURATED_ASSET_SOURCES = {
+    "US_THYROID": ("thyroid_normal",),
+    "US_ABDOMEN": ("abdomen_liver", "abdomen_liver", "abdomen_liver"),
+    "SPIROMETRY": ("spirometry_nih", "spirometry_nih"),
+    "ECG_12": ("ecg_10sec", "ecg_10sec", "ecg_10sec", "ecg_10sec", "ecg_10sec"),
+    "CHEST_IMAGE": ("chest_pa", "chest_lateral", "chest_pa"),
+    "ECHO_HEART": ("echo_tte", "echo_tte"),
+    "BLOOD_MICROSCOPY": ("blood_sem", "blood_sem", "blood_sem"),
+}
+CURATED_SOURCE_ROOT = Path(__file__).resolve().parents[1] / "demo_media_sources"
+
+
+def _load_curated_media(asset_code: str, destination: Path, sequence: int = 0) -> tuple[bytes, int, int]:
+    if current_app.config.get("TESTING", False):
+        return _write_png(destination, ((21, 96, 91),), 480, 270), 2, 2
+    choices = CURATED_ASSET_SOURCES.get(asset_code)
+    if not choices:
+        raise DemoResetSafetyError(f"没有登记真实医学素材槽位：{asset_code}")
+    source = CURATED_SOURCE_ROOT / f"{choices[sequence % len(choices)]}.png"
+    if not source.is_file():
+        raise DemoResetSafetyError(f"缺少真实医学素材：{source.name}")
+    raw = source.read_bytes()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(raw)
+    from PIL import Image
+    with Image.open(BytesIO(raw)) as image:
+        image.verify()
+    with Image.open(BytesIO(raw)) as image:
+        return raw, image.width, image.height
+
+
 def _create_catalog(institutions: list[Institution]) -> dict[tuple[int, str], Package]:
     domains = _domain_map()
     if len(domains) < 8:
@@ -889,22 +923,40 @@ def _create_report(
         ))
     if asset:
         domain_code, title, palette, annotation = asset
-        key = f"health-assets/demo-v8/report-{report.id}-{domain_code}.png"
-        raw, width, height = _load_demo_media(
-            key, Path(current_app.config["UPLOAD_DIR"]) / key, palette,
+        initial_asset_code = {
+            "metabolic": "US_THYROID",
+            "digestive": "US_ABDOMEN",
+            "respiratory": "SPIROMETRY",
+        }.get(domain_code)
+        asset_type = (
+            ReportAssetType.query.filter_by(code=initial_asset_code, is_active=True).first()
+            if initial_asset_code else None
         )
+        key = f"health-assets/demo-v8/report-{report.id}-{domain_code}.png"
+        if asset_type:
+            raw, width, height = _load_curated_media(
+                initial_asset_code, Path(current_app.config["UPLOAD_DIR"]) / key,
+            )
+        else:
+            raw, width, height = _load_demo_media(
+                key, Path(current_app.config["UPLOAD_DIR"]) / key, palette,
+            )
         row = ReportAsset(
             report_id=report.id,
-            health_domain_id=domains[domain_code].id,
+            health_domain_id=asset_type.health_domain_id if asset_type else domains[domain_code].id,
+            asset_type_id=asset_type.id if asset_type else None,
             modality="open_license_demo_image",
-            title=title,
+            title=asset_type.name if asset_type else title,
             storage_key=key,
             mime_type="image/png",
             byte_size=len(raw),
             width=width,
             height=height,
             sha256=hashlib.sha256(raw).hexdigest(),
-            annotation_text=annotation,
+            annotation_text=(
+                "开放授权真实医学样例，仅用于系统功能展示，不对应系统用户，不作为诊断依据。"
+                if asset_type else annotation
+            ),
             sort_order=0,
             uploaded_by_user_id=staff.id,
         )
@@ -989,39 +1041,79 @@ def _create_imported_historical_report(
 
 
 def _add_demo_report_asset(report, staff, domain, sequence):
-    palettes = (
-        ((21, 96, 91), (60, 150, 139), (214, 241, 236)),
-        ((43, 78, 132), (86, 137, 190), (220, 235, 248)),
-        ((91, 58, 126), (145, 104, 171), (238, 226, 246)),
+    # These twelve comprehensive-report assets complement the three legacy
+    # direction-specific assets (thyroid, abdomen and chest) so the complete
+    # v8 set has the exact acceptance distribution.
+    slot_plan = (
+        ("US_ABDOMEN", "ECHO_HEART"),
+        ("BLOOD_MICROSCOPY",),
+        ("ECG_12",),
+        ("ECG_12",),
+        ("CHEST_IMAGE",),
+        ("US_ABDOMEN",),
+        ("BLOOD_MICROSCOPY",),
+        ("ECG_12",),
+        ("BLOOD_MICROSCOPY",),
+        ("CHEST_IMAGE",),
+        ("ECG_12",),
+        (),
     )
-    key = f"health-assets/demo-v8/report-{report.id}-{domain.code}.png"
-    raw, width, height = _load_demo_media(
-        key,
-        Path(current_app.config["UPLOAD_DIR"]) / key,
-        palettes[sequence % len(palettes)],
-    )
-    row = ReportAsset(
-        report_id=report.id,
-        health_domain_id=domain.id,
-        modality="open_license_demo_image",
-        title=f"{domain.name}开放授权演示附件",
-        storage_key=key,
-        mime_type="image/png",
-        byte_size=len(raw),
-        width=width,
-        height=height,
-        sha256=hashlib.sha256(raw).hexdigest(),
-        annotation_text="开放授权演示附件，仅用于系统功能展示，不作为诊断依据。",
-        sort_order=0,
-        uploaded_by_user_id=staff.id,
-    )
-    db.session.add(row); db.session.flush()
-    db.session.add(ReportAssetAnnotation(
-        report_asset_id=row.id,
-        annotation_type="text",
-        text=row.annotation_text,
-        created_by_user_id=staff.id,
-    ))
+    if sequence >= len(slot_plan):
+        return
+    for asset_order, asset_code in enumerate(slot_plan[sequence]):
+        asset_type = ReportAssetType.query.filter_by(code=asset_code, is_active=True).first()
+        if asset_type is None:
+            raise DemoResetSafetyError(f"缺少附件槽位定义：{asset_code}")
+        if not PackageVersionDomain.query.filter_by(
+            package_version_id=report.package_version_id,
+            health_domain_id=asset_type.health_domain_id,
+        ).first():
+            max_order = max(
+                (
+                    row.sort_order
+                    for row in PackageVersionDomain.query.filter_by(
+                        package_version_id=report.package_version_id,
+                    ).all()
+                ),
+                default=-1,
+            )
+            db.session.add(PackageVersionDomain(
+                package_version_id=report.package_version_id,
+                health_domain_id=asset_type.health_domain_id,
+                sort_order=max_order + 1,
+            ))
+        key = (
+            f"health-assets/demo-v8/report-{report.id}-{domain.code}.png"
+            if asset_order == 0
+            else f"health-assets/demo-v8/report-{report.id}-{asset_code.lower()}.png"
+        )
+        source_sequence = ReportAsset.query.filter_by(asset_type_id=asset_type.id).count()
+        raw, width, height = _load_curated_media(
+            asset_code, Path(current_app.config["UPLOAD_DIR"]) / key, source_sequence,
+        )
+        row = ReportAsset(
+            report_id=report.id,
+            health_domain_id=asset_type.health_domain_id,
+            asset_type_id=asset_type.id,
+            modality="open_license_demo_image",
+            title=asset_type.name,
+            storage_key=key,
+            mime_type="image/png",
+            byte_size=len(raw),
+            width=width,
+            height=height,
+            sha256=hashlib.sha256(raw).hexdigest(),
+            annotation_text="开放授权真实医学样例，仅用于系统功能展示，不对应系统用户，不作为诊断依据。",
+            sort_order=asset_order,
+            uploaded_by_user_id=staff.id,
+        )
+        db.session.add(row); db.session.flush()
+        db.session.add(ReportAssetAnnotation(
+            report_asset_id=row.id,
+            annotation_type="text",
+            text=row.annotation_text,
+            created_by_user_id=staff.id,
+        ))
 
 
 def _expand_v8_demo_data(users, institutions, packages, indicators, domains, today, now):
@@ -1302,18 +1394,18 @@ def _expand_v10_test1(users, institutions, packages, indicators, domains, today,
         reports.append((report, staff))
 
     asset_types = {row.code: row for row in ReportAssetType.query.all()}
+    v10_asset_slots = (
+        ("SPIROMETRY", "CHEST_IMAGE"),
+        ("ECG_12", "ECHO_HEART"),
+    )
     for sequence, (report, staff) in enumerate(reports[-2:]):
-        for order, code in enumerate(("ECG_12", "ECHO_HEART")):
+        for order, code in enumerate(v10_asset_slots[sequence]):
             asset_type = asset_types.get(code)
             if asset_type is None:
                 continue
             key = f"health-assets/demo-v10/report-{report.id}-{code.lower()}.png"
-            width, height = 960, 540
-            raw = _write_png(
-                Path(current_app.config["UPLOAD_DIR"]) / key,
-                ((23, 91, 86), (75, 153, 145), (220, 241, 238)),
-                width,
-                height,
+            raw, width, height = _load_curated_media(
+                code, Path(current_app.config["UPLOAD_DIR"]) / key, sequence,
             )
             db.session.add(ReportAsset(
                 report_id=report.id,
@@ -1327,7 +1419,7 @@ def _expand_v10_test1(users, institutions, packages, indicators, domains, today,
                 width=width,
                 height=height,
                 sha256=hashlib.sha256(raw).hexdigest(),
-                annotation_text=f"{asset_type.name}合成演示批注：图像仅用于功能测试，不作为诊断依据。",
+                annotation_text=f"{asset_type.name}开放授权真实医学样例：仅用于系统功能展示，不对应系统用户，不作为诊断依据。",
                 sort_order=order,
                 uploaded_by_user_id=staff.id,
             ))

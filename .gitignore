@@ -12,8 +12,8 @@ frontend/dist/
 frontend/coverage/
 
 # Local runtime files
-# Runtime uploads stay private/ignored. The deterministic, watermarked v8/v10
-# fixtures are the only exception so a fresh clone matches the tracked demo DB.
+# Runtime uploads stay private/ignored. The audited demo-v8/v10 assets are the
+# only exception so a fresh clone matches the tracked demonstration database.
 backend/uploads/*
 !backend/uploads/institutions/
 backend/uploads/institutions/*

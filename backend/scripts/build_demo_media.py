@@ -1,9 +1,10 @@
 """Build the checked-in demo media set from openly licensed source files.
 
-This command is intentionally separate from database seeding. It downloads
-only the sources listed below, re-encodes every image without source metadata,
-adds a clear non-diagnostic watermark to medical examples, and writes an
-auditable manifest beside the generated files.
+This command is intentionally separate from database seeding. It publishes
+only previously reviewed open-license source files, preserves diagnostic
+content, removes embedded metadata, and writes an auditable manifest beside
+the generated files. The images contain no added pixel watermark; the product
+UI displays the non-diagnostic notice.
 """
 
 from __future__ import annotations
@@ -93,6 +94,28 @@ REPORT_ASSIGNMENTS = (
     ("report-19-basic.png", "chest_2346", "胸部影像"),
     ("report-20-basic.png", "blood", "血液基础检查"),
     ("report-21-basic.png", "liver", "腹部超声"),
+)
+
+CURATED_REPORT_SLOTS = (
+    ("health-assets/demo-v8/report-3-metabolic.png", "US_THYROID", "thyroid_normal"),
+    ("health-assets/demo-v8/report-6-digestive.png", "US_ABDOMEN", "abdomen_liver"),
+    ("health-assets/demo-v8/report-7-respiratory.png", "SPIROMETRY", "spirometry_nih"),
+    ("health-assets/demo-v8/report-10-basic.png", "US_ABDOMEN", "abdomen_liver"),
+    ("health-assets/demo-v8/report-10-echo_heart.png", "ECHO_HEART", "echo_tte"),
+    ("health-assets/demo-v8/report-11-basic.png", "BLOOD_MICROSCOPY", "blood_sem"),
+    ("health-assets/demo-v8/report-12-basic.png", "ECG_12", "ecg_10sec"),
+    ("health-assets/demo-v8/report-13-basic.png", "ECG_12", "ecg_10sec"),
+    ("health-assets/demo-v8/report-14-basic.png", "CHEST_IMAGE", "chest_pa"),
+    ("health-assets/demo-v8/report-15-basic.png", "US_ABDOMEN", "abdomen_liver"),
+    ("health-assets/demo-v8/report-16-basic.png", "BLOOD_MICROSCOPY", "blood_sem"),
+    ("health-assets/demo-v8/report-17-basic.png", "ECG_12", "ecg_10sec"),
+    ("health-assets/demo-v8/report-18-basic.png", "BLOOD_MICROSCOPY", "blood_sem"),
+    ("health-assets/demo-v8/report-19-basic.png", "CHEST_IMAGE", "chest_lateral"),
+    ("health-assets/demo-v8/report-20-basic.png", "ECG_12", "ecg_10sec"),
+    ("health-assets/demo-v10/report-65-spirometry.png", "SPIROMETRY", "spirometry_nih"),
+    ("health-assets/demo-v10/report-65-chest_image.png", "CHEST_IMAGE", "chest_pa"),
+    ("health-assets/demo-v10/report-66-ecg_12.png", "ECG_12", "ecg_10sec"),
+    ("health-assets/demo-v10/report-66-echo_heart.png", "ECHO_HEART", "echo_tte"),
 )
 
 UNSPLASH_PHOTOS = (
@@ -200,65 +223,78 @@ def _write_item(*, storage_key: str, raw: bytes, kind: str, title: str,
     }
 
 
-def main() -> None:
+def build_curated_media() -> None:
+    """Publish the audited, checked-in real clinical examples.
+
+    Network downloading is intentionally not used by demo resets.  The
+    source/permission audit lives in ``demo_media_sources.json`` and the
+    processed PNGs are immutable inputs for reset and deployment.
+    """
+    source_manifest = json.loads((BACKEND_ROOT / "demo_media_sources.json").read_text(encoding="utf-8"))
+    sources = {item["asset_key"]: item for item in source_manifest["items"]}
     rows = []
-    commons_cache: dict[str, bytes] = {}
-    for filename, source_key, category in REPORT_ASSIGNMENTS:
-        source = COMMONS_SOURCES[source_key]
-        download_url = (
-            "https://commons.wikimedia.org/wiki/Special:Redirect/file/"
-            + quote(source["filename"])
-        )
-        if source_key not in commons_cache:
-            commons_cache[source_key] = _download(download_url)
-        raw = commons_cache[source_key]
-        rows.append(_write_item(
-            storage_key=f"health-assets/demo-v8/{filename}",
-            raw=raw,
-            kind="report_attachment",
-            title=f"{category}开放授权演示附件",
-            category=category,
-            source_url=source["source_url"],
-            download_url=download_url,
-            author=source["author"],
-            license_name=source["license"],
-            watermark=True,
-        ))
-
-    for index, (photo_id, author, category) in enumerate(UNSPLASH_PHOTOS, start=1):
-        download_url = (
-            f"https://images.unsplash.com/{photo_id}"
-            "?auto=format&fit=crop&fm=jpg&q=88&w=1800"
-        )
-        rows.append(_write_item(
-            storage_key=f"institutions/demo-v8/branch-{index}-cover.png",
-            raw=_download(download_url),
-            kind="institution_cover",
-            title=f"{category}开放授权展示图",
-            category=category,
-            source_url="https://unsplash.com/s/photos/medical-interior",
-            download_url=download_url,
-            author=author,
-            license_name="Unsplash License",
-            watermark=False,
-        ))
-
-    if len(rows) != 30 or len({row["storage_key"] for row in rows}) != 30:
-        raise RuntimeError("演示素材清单必须恰好包含 30 个不同文件")
-    manifest = {
-        "version": 1,
+    for storage_key, slot_code, source_key in CURATED_REPORT_SLOTS:
+        source = sources[source_key]
+        src = BACKEND_ROOT / "demo_media_sources" / f"{source_key}.png"
+        dst = UPLOAD_ROOT / storage_key
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(src.read_bytes())
+        with Image.open(dst) as image:
+            image.verify()
+        with Image.open(dst) as image:
+            width, height = image.size
+        raw = dst.read_bytes()
+        rows.append({
+            **source,
+            "storage_key": storage_key,
+            "kind": "report_attachment",
+            "asset_type_code": slot_code,
+            "title": {
+                "US_THYROID": "甲状腺超声",
+                "US_ABDOMEN": "腹部超声",
+                "SPIROMETRY": "肺功能图",
+                "ECG_12": "十二导联心电图",
+                "CHEST_IMAGE": "胸片",
+                "ECHO_HEART": "心脏彩超",
+                "BLOOD_MICROSCOPY": "血细胞显微影像",
+            }[slot_code],
+            "category": slot_code,
+            "source_url": source["source_url"],
+            "download_url": source["original_download_url"],
+            "original_download_url": source["original_download_url"],
+            "processing": source["processing"],
+            "mime_type": "image/png",
+            "width": width,
+            "height": height,
+            "byte_size": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "format": "PNG",
+            "annotation_text": "开放授权真实医学样例，仅用于系统功能展示，不对应系统用户，不作为诊断依据。",
+        })
+    # Keep the 15 institution covers and their provenance from the previous
+    # manifest; this round only changes report attachments.
+    try:
+        previous = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        rows.extend(item for item in previous.get("items", []) if item.get("kind") == "institution_cover")
+    except (OSError, ValueError):
+        pass
+    if sum(row["kind"] == "report_attachment" for row in rows) != 19:
+        raise RuntimeError("真实医学附件清单必须包含 19 项")
+    MANIFEST_PATH.write_text(json.dumps({
+        "version": 11,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "usage_notice": "仅用于 HealthDoc 功能演示；医学附件不构成诊断依据。",
+        "usage_notice": "开放授权真实医学样例，仅用于 HealthDoc 功能验收；不对应系统用户，不作为诊断依据。",
         "license_references": {
-            "Wikimedia Commons": "https://commons.wikimedia.org/wiki/Commons:Reusing_content_outside_Wikimedia",
-            "Unsplash License": "https://unsplash.com/license",
+            "Wikimedia Commons reuse": "https://commons.wikimedia.org/wiki/Commons:Reusing_content_outside_Wikimedia",
+            "Creative Commons": "https://creativecommons.org/share-your-work/cclicenses/",
         },
         "items": rows,
-    }
-    MANIFEST_PATH.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
-    )
-    print(f"已生成 {len(rows)} 个素材并写入 {MANIFEST_PATH}")
+    }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"已发布 {len(rows)} 个可审计素材（医学附件 19，机构封面 {len(rows)-19}）")
+
+
+def main() -> None:
+    build_curated_media()
 
 
 if __name__ == "__main__":

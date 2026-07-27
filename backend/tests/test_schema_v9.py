@@ -1,4 +1,7 @@
 from datetime import datetime, timezone
+from collections import Counter
+import json
+import sqlite3
 
 from app.extensions import db
 from app.models import Comment, IndicatorDict, Institution, NotificationOutbox, User
@@ -163,10 +166,96 @@ def test_open_license_demo_media_manifest_is_complete_and_clean():
     assert len(items) == 34
     assert sum(item["kind"] == "report_attachment" for item in items) == 19
     assert sum(item["kind"] == "institution_cover" for item in items) == 15
+    report_items = [item for item in items if item["kind"] == "report_attachment"]
     assert all(
-        item["license"] and item["source_url"].startswith(("https://", "synthetic://"))
-        for item in items
+        item["license"]
+        and item["source_url"].startswith("https://")
+        and item["original_download_url"].startswith("https://")
+        and item.get("license_url")
+        and item.get("author")
+        and item.get("clinical_presentation")
+        and item.get("processing")
+        and item.get("retrieved_at")
+        and item.get("asset_type_code")
+        and "synthetic://" not in item["source_url"]
+        for item in report_items
     )
+    assert Counter(item["asset_type_code"] for item in report_items) == {
+        "US_THYROID": 1,
+        "US_ABDOMEN": 3,
+        "SPIROMETRY": 2,
+        "ECG_12": 5,
+        "CHEST_IMAGE": 3,
+        "ECHO_HEART": 2,
+        "BLOOD_MICROSCOPY": 3,
+    }
+    source_catalog = json.loads(
+        (BACKEND_ROOT / "demo_media_sources.json").read_text(encoding="utf-8")
+    )
+    assert source_catalog["items"]
+    assert all(
+        item["source_url"].startswith("https://")
+        and item["original_download_url"].startswith("https://")
+        and item["download_url"].startswith("https://")
+        and item["license_url"].startswith("https://")
+        and item["author"]
+        and item["clinical_presentation"]
+        and item["processing"]
+        and item["retrieved_at"]
+        and item["pii_review"].startswith("通过")
+        for item in source_catalog["items"]
+    )
+    with sqlite3.connect(BACKEND_ROOT / "instance" / "health_system.db") as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM report_assets WHERE asset_type_id IS NULL"
+        ).fetchone()[0] == 0
+        assert connection.execute("""
+            SELECT COUNT(*)
+            FROM report_assets AS a
+            JOIN report_asset_types AS t ON t.id = a.asset_type_id
+            WHERE a.health_domain_id != t.health_domain_id
+        """).fetchone()[0] == 0
+        assert connection.execute("""
+            SELECT COUNT(*)
+            FROM report_assets AS a
+            JOIN institution_reports AS r ON r.id = a.report_id
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM package_version_domains AS pvd
+                WHERE pvd.package_version_id = r.package_version_id
+                  AND pvd.health_domain_id = a.health_domain_id
+            )
+        """).fetchone()[0] == 0
+        rows = connection.execute("""
+            SELECT
+                a.storage_key, a.title, a.mime_type, a.byte_size,
+                a.width, a.height, a.sha256, t.code
+            FROM report_assets AS a
+            JOIN report_asset_types AS t ON t.id = a.asset_type_id
+        """).fetchall()
+        database_assets = {
+            row[0]: {
+                "title": row[1],
+                "mime_type": row[2],
+                "byte_size": row[3],
+                "width": row[4],
+                "height": row[5],
+                "sha256": row[6],
+                "asset_type_code": row[7],
+            }
+            for row in rows
+        }
+    manifest_assets = {
+        item["storage_key"]: {
+            field: item[field]
+            for field in (
+                "title", "mime_type", "byte_size", "width", "height",
+                "sha256", "asset_type_code",
+            )
+        }
+        for item in report_items
+    }
+    assert database_assets == manifest_assets
 
 
 def test_institution_reply_requires_admin_review_and_notifies_comment_owner(app, client):

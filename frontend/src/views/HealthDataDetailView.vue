@@ -72,11 +72,33 @@
       @saved="reloadAfterMeasurement"
       @deleted="reloadAfterMeasurement"
     />
+
+    <el-dialog
+      v-model="assetPreviewVisible"
+      class="health-asset-preview-dialog"
+      width="min(94vw, 1100px)"
+      :title="previewAsset?.title || '检查附件'"
+      destroy-on-close
+      @closed="closeAssetPreview"
+    >
+      <div class="health-asset-preview">
+        <img
+          v-if="previewAsset?.modality !== 'pdf'"
+          :src="previewUrl"
+          :alt="previewAsset?.title || '检查附件'"
+          :class="{ zoomed: assetZoomed }"
+          title="点击切换原图缩放"
+          @click="assetZoomed = !assetZoomed"
+        />
+        <iframe v-else :src="previewUrl" title="PDF 检查附件" />
+        <p>{{ previewAsset?.annotation || "开放授权真实医学样例，仅用于功能展示，不作为诊断依据。" }}</p>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
 import { useRoute, useRouter } from "vue-router";
 import MeasurementDrawer from "../components/MeasurementDrawer.vue";
@@ -90,6 +112,10 @@ const loading = ref(false);
 const error = ref("");
 const measurementVisible = ref(false);
 const selectedMeasurement = ref(null);
+const assetPreviewVisible = ref(false);
+const previewUrl = ref("");
+const previewAsset = ref(null);
+const assetZoomed = ref(false);
 
 const allIndicators = computed(() => (item.value?.sections || []).flatMap((section) => section.indicators || []));
 const indicatorCount = computed(() => allIndicators.value.length);
@@ -136,13 +162,68 @@ async function reloadAfterMeasurement() {
 async function openAsset(asset) {
   try {
     const { data } = await fetchHealthAssetContent(route.params.id, asset.id, ownerParams());
-    const url = URL.createObjectURL(data);
-    window.open(url, "_blank", "noopener");
-    window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+    closeAssetPreview();
+    previewAsset.value = asset;
+    previewUrl.value = URL.createObjectURL(data);
+    assetPreviewVisible.value = true;
   } catch (assetError) {
     ElMessage.error(assetError?.response?.data?.message || "附件暂时无法打开");
   }
 }
 
+function closeAssetPreview() {
+  if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
+  previewUrl.value = "";
+  previewAsset.value = null;
+  assetZoomed.value = false;
+}
+
 onMounted(load);
+onBeforeUnmount(closeAssetPreview);
 </script>
+
+<style scoped>
+.health-asset-preview {
+  display: grid;
+  gap: 14px;
+  max-height: 74vh;
+  overflow: auto;
+  padding: 4px;
+  background: #111b1d;
+  border-radius: 12px;
+}
+
+.health-asset-preview img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 66vh;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #071012;
+  cursor: zoom-in;
+}
+
+.health-asset-preview img.zoomed {
+  width: auto;
+  max-width: none;
+  max-height: none;
+  margin: auto;
+  cursor: zoom-out;
+}
+
+.health-asset-preview iframe {
+  width: 100%;
+  height: 66vh;
+  border: 0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.health-asset-preview p {
+  margin: 0;
+  color: #d3e5e2;
+  font-size: 12px;
+  line-height: 1.6;
+}
+</style>
