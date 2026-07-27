@@ -1,12 +1,17 @@
 from datetime import datetime, timezone
 from collections import Counter
 import json
+import shutil
 import sqlite3
 
 from app.extensions import db
 from app.models import Comment, IndicatorDict, Institution, NotificationOutbox, User
 from scripts import notification_worker
-from scripts.refresh_demo_media import BACKEND_ROOT, validate as validate_demo_media
+from scripts.refresh_demo_media import (
+    BACKEND_ROOT,
+    apply as apply_demo_media,
+    validate as validate_demo_media,
+)
 
 
 PASSWORD = "Shuhealthdoc！"
@@ -256,6 +261,47 @@ def test_open_license_demo_media_manifest_is_complete_and_clean():
         for item in report_items
     }
     assert database_assets == manifest_assets
+
+
+def test_demo_media_refresh_adds_missing_standard_asset_type(tmp_path):
+    database = tmp_path / "older-v10-server.db"
+    shutil.copy2(BACKEND_ROOT / "instance" / "health_system.db", database)
+    with sqlite3.connect(database) as connection:
+        blood_type = connection.execute(
+            "SELECT id FROM report_asset_types WHERE code = 'BLOOD_MICROSCOPY'"
+        ).fetchone()[0]
+        other_type, other_domain = connection.execute("""
+            SELECT id, health_domain_id
+            FROM report_asset_types
+            WHERE code = 'OTHER'
+        """).fetchone()
+        connection.execute("""
+            UPDATE report_assets
+            SET asset_type_id = ?, health_domain_id = ?
+            WHERE asset_type_id = ?
+        """, (other_type, other_domain, blood_type))
+        connection.execute(
+            "DELETE FROM report_asset_types WHERE id = ?",
+            (blood_type,),
+        )
+        connection.commit()
+
+    items = validate_demo_media(BACKEND_ROOT / "uploads")
+    apply_demo_media(f"sqlite:///{database.as_posix()}", items)
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("""
+            SELECT COUNT(*)
+            FROM report_asset_types
+            WHERE code = 'BLOOD_MICROSCOPY'
+              AND is_active = 1
+        """).fetchone()[0] == 1
+        assert connection.execute("""
+            SELECT COUNT(*)
+            FROM report_assets AS a
+            JOIN report_asset_types AS t ON t.id = a.asset_type_id
+            WHERE t.code = 'BLOOD_MICROSCOPY'
+        """).fetchone()[0] == 3
 
 
 def test_institution_reply_requires_admin_review_and_notifies_comment_owner(app, client):

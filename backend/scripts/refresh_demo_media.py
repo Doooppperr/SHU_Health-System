@@ -1,7 +1,8 @@
 """Validate or apply the narrowly scoped schema-v10 demo media refresh.
 
-The command never creates or deletes business rows. In apply mode it only
-updates metadata for report assets whose exact storage keys are present in the
+The command never creates or deletes business rows. In apply mode it may
+idempotently add missing standard attachment-type configuration, then updates
+metadata only for report assets whose exact storage keys are present in the
 checked-in generated-and-licensed media manifest.
 """
 
@@ -28,6 +29,15 @@ CORE_TABLES = ("users", "institutions", "appointments", "institution_reports", "
 ALLOWED_ASSET_TYPES = {
     "US_THYROID", "US_ABDOMEN", "SPIROMETRY", "ECG_12",
     "CHEST_IMAGE", "ECHO_HEART", "BLOOD_MICROSCOPY",
+}
+ASSET_TYPE_DEFINITIONS = {
+    "ECG_12": ("cardio", "十二导联心电图", 2),
+    "ECHO_HEART": ("cardio", "心脏彩超", 3),
+    "US_THYROID": ("metabolic", "甲状腺超声", 5),
+    "US_ABDOMEN": ("digestive", "腹部超声", 6),
+    "CHEST_IMAGE": ("respiratory", "胸片", 7),
+    "SPIROMETRY": ("respiratory", "肺功能图", 8),
+    "BLOOD_MICROSCOPY": ("hematology", "血细胞显微影像", 14),
 }
 ALLOWED_LICENSE_MARKERS = ("public domain", "cc0", "cc by", "cc-by")
 LEGACY_STORAGE_KEYS = {
@@ -120,6 +130,45 @@ def apply(database_url: str, items: list[dict]) -> None:
                 name: connection.execute(text(f'SELECT COUNT(*) FROM "{name}"')).scalar_one()
                 for name in CORE_TABLES
             }
+            for code, (domain_code, name, sort_order) in ASSET_TYPE_DEFINITIONS.items():
+                domain_id = connection.execute(
+                    text("SELECT id FROM health_domains WHERE code = :code"),
+                    {"code": domain_code},
+                ).scalar_one_or_none()
+                if domain_id is None:
+                    raise RuntimeError(f"数据库缺少附件槽位所需健康方向：{domain_code}")
+                connection.execute(text("""
+                    INSERT INTO report_asset_types (
+                        code, health_domain_id, name, modality,
+                        max_files, sort_order, is_active
+                    )
+                    SELECT
+                        :code, :health_domain_id, :name, 'image',
+                        1, :sort_order, TRUE
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM report_asset_types WHERE code = :code
+                    )
+                """), {
+                    "code": code,
+                    "health_domain_id": domain_id,
+                    "name": name,
+                    "sort_order": sort_order,
+                })
+                connection.execute(text("""
+                    UPDATE report_asset_types
+                    SET health_domain_id = :health_domain_id,
+                        name = :name,
+                        modality = 'image',
+                        max_files = 1,
+                        sort_order = :sort_order,
+                        is_active = TRUE
+                    WHERE code = :code
+                """), {
+                    "code": code,
+                    "health_domain_id": domain_id,
+                    "name": name,
+                    "sort_order": sort_order,
+                })
             matched = 0
             for item in report_items:
                 legacy = LEGACY_STORAGE_KEYS.get(item["storage_key"])
