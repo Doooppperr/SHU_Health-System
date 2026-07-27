@@ -78,6 +78,53 @@ def test_booking_and_org_dashboard_payloads_are_display_ready(client):
     assert {"capacity", "booked", "remaining", "awaiting_arrival", "awaiting_archive"} <= set(summary["today"])
 
 
+def test_booking_groups_are_paginated_ten_per_page(client):
+    headers = login(client, "test1")
+    default_page = client.get("/api/booking-groups", headers=headers)
+    first = client.get("/api/booking-groups?page=1&page_size=2", headers=headers)
+    second = client.get("/api/booking-groups?page=2&page_size=2", headers=headers)
+
+    assert default_page.status_code == 200
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert default_page.get_json()["pagination"]["page_size"] == 10
+    first_payload = first.get_json()
+    second_payload = second.get_json()
+    assert first_payload["pagination"]["page"] == 1
+    assert first_payload["pagination"]["page_size"] == 2
+    assert first_payload["pagination"]["pages"] >= 2
+    assert len(first_payload["items"]) == 2
+    assert 1 <= len(second_payload["items"]) <= 2
+    assert {item["id"] for item in first_payload["items"]}.isdisjoint(
+        {item["id"] for item in second_payload["items"]}
+    )
+
+
+def test_organization_directory_supports_literal_fuzzy_search(client):
+    headers = login(client, "test1")
+
+    branch_match = client.get("/api/organizations?q=陆家嘴", headers=headers)
+    assert branch_match.status_code == 200
+    branch_items = branch_match.get_json()["items"]
+    assert branch_items
+    assert all(
+        "陆家嘴" in branch["branch_name"]
+        for item in branch_items
+        for branch in item["branches"]
+    )
+
+    organization_match = client.get("/api/organizations?q=澄心健康", headers=headers)
+    assert organization_match.status_code == 200
+    organization_items = organization_match.get_json()["items"]
+    assert len(organization_items) == 1
+    assert organization_items[0]["name"] == "澄心健康管理中心"
+    assert len(organization_items[0]["branches"]) == 5
+
+    no_match = client.get("/api/organizations?q=%25", headers=headers)
+    assert no_match.status_code == 200
+    assert no_match.get_json()["items"] == []
+
+
 def test_health_trends_return_dates_and_explainable_reference_ranges(app, client):
     headers = login(client, "test1")
     domains = client.get("/api/health-domains", headers=headers).get_json()["items"]

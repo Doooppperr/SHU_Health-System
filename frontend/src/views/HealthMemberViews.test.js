@@ -102,4 +102,56 @@ describe("健康成员筛选请求", () => {
     expect(trend.text()).not.toContain("记录新测量");
     expect(trend.text()).not.toContain("开始记录");
   });
+
+  it("没有有效参考范围时不显示描述性或暂无范围提示卡", async () => {
+    mocks.fetchHealthTrends.mockResolvedValue({
+      data: {
+        series_by_indicator: [{
+          indicator: { id: 1, name: "身高", unit: "cm" },
+          points: [{ value: 175, measured_at: "2026-07-24" }],
+          summary: { latest: 175, change: 0 },
+          reference: {
+            label: "描述性测量值",
+            context: "该数值不单独判定正常或异常",
+          },
+        }],
+        source_options: [{ value: "all", label: "全部来源" }],
+      },
+    });
+    const wrapper = mountView(TrendView, { domain_id: "1" });
+    await flushPromises();
+    expect(wrapper.find(".trend-reference-note").exists()).toBe(false);
+    expect(wrapper.find(".trend-chart-platform").classes()).not.toContain("has-reference-note");
+    expect(wrapper.text()).not.toContain("描述性测量值");
+    expect(wrapper.text()).not.toContain("暂无统一参考范围");
+  });
+
+  it("有范围时只展示简洁的参考范围标题和数值", async () => {
+    mocks.fetchHealthTrends.mockResolvedValue({
+      data: {
+        series_by_indicator: [{
+          indicator: { id: 2, name: "体温", unit: "°C" },
+          points: [{ value: 36.4, measured_at: "2026-07-24" }],
+          summary: { latest: 36.4, change: -0.2 },
+          reference: {
+            low: 36.1,
+            high: 37.2,
+            label: "机构报告参考范围",
+            context: "优先采用机构报告提供的参考范围",
+            source_url: "https://example.test/reference",
+          },
+        }],
+        source_options: [{ value: "all", label: "全部来源" }],
+      },
+    });
+    const wrapper = mountView(TrendView, { domain_id: "1" });
+    await flushPromises();
+    const note = wrapper.get(".trend-reference-note");
+    expect(wrapper.find(".trend-chart-platform").classes()).toContain("has-reference-note");
+    expect(note.text()).toContain("参考范围");
+    expect(note.text()).toContain("36.1–37.2 °C");
+    expect(note.text()).not.toContain("机构报告参考范围");
+    expect(note.text()).not.toContain("优先采用机构报告提供的参考范围");
+    expect(note.find("a").exists()).toBe(false);
+  });
 });

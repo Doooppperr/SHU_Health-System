@@ -4,8 +4,8 @@ export function fetchInstitutions() {
   return http.get("/institutions");
 }
 
-export function fetchOrganizations() {
-  return http.get("/organizations");
+export function fetchOrganizations(params = {}) {
+  return http.get("/organizations", { params });
 }
 
 export function fetchInstitutionDetail(institutionId) {

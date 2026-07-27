@@ -1008,7 +1008,7 @@
 }
 
 @container trend-card (min-width: 920px) {
-  .trend-chart-platform {
+  .trend-chart-platform.has-reference-note {
     grid-template-columns: minmax(0, 1fr) minmax(220px, 260px);
     gap: 18px;
   }
@@ -1233,6 +1233,21 @@
   flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 14px;
+}
+
+.booking-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding-top: 16px;
+  margin-top: 8px;
+  border-top: 1px solid var(--user-border);
+}
+
+.booking-pagination__summary {
+  color: var(--user-text-soft);
+  font-size: var(--text-sm);
 }
 
 .booking-flow-actions {
@@ -1755,6 +1770,11 @@
   .booking-record-card > .el-button {
     grid-column: 2;
     justify-self: start;
+  }
+
+  .booking-pagination {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .institution-profile-hero {

@@ -161,14 +161,19 @@
           </article>
           <el-empty v-if="!groups.length" description="还没有预约记录" :image-size="80" />
         </div>
-        <el-pagination
-          v-if="groupPagination.total > groupPagination.page_size"
-          v-model:current-page="groupPagination.page"
-          :page-size="groupPagination.page_size"
-          :total="groupPagination.total"
-          layout="prev, pager, next"
-          @current-change="loadGroups"
-        />
+        <footer v-if="groupPagination.total > 0" class="booking-pagination">
+          <span class="booking-pagination__summary">
+            第 {{ groupPagination.page }} / {{ Math.max(groupPagination.pages, 1) }} 页 · 每页 {{ groupPagination.page_size }} 组
+          </span>
+          <el-pagination
+            v-model:current-page="groupPagination.page"
+            :page-size="groupPagination.page_size"
+            :total="groupPagination.total"
+            :pager-count="5"
+            layout="prev, pager, next"
+            @current-change="loadGroups"
+          />
+        </footer>
       </el-card>
 
       <el-card shadow="never" class="user-panel">
@@ -369,6 +374,10 @@ async function loadGroups() {
   const response = await fetchBookingGroups(historyParams());
   groups.value = response.data.items || [];
   Object.assign(groupPagination, response.data.pagination || { page: 1, page_size: 10, total: groups.value.length, pages: 1 });
+  if (!groups.value.length && groupPagination.total > 0 && groupPagination.page > groupPagination.pages) {
+    groupPagination.page = Math.max(groupPagination.pages, 1);
+    await loadGroups();
+  }
 }
 
 async function loadWaitlists() {
@@ -379,15 +388,7 @@ async function loadWaitlists() {
 }
 
 async function reload() {
-  const [groupResponse, waitlistResponse] = await Promise.all([
-    fetchBookingGroups(historyParams()),
-    fetchWaitlistSubscriptions({ page: waitlistPagination.page, page_size: 15 }),
-  ]);
-  groups.value = groupResponse.data.items || [];
-  Object.assign(groupPagination, groupResponse.data.pagination || { page: 1, page_size: 10, total: groups.value.length, pages: 1 });
-  waitlists.value = waitlistResponse.data.items || [];
-  waitlistActiveCount.value = Number(waitlistResponse.data.active_count || 0);
-  Object.assign(waitlistPagination, waitlistResponse.data.pagination || { page: 1, page_size: 15, total: waitlists.value.length, pages: 1 });
+  await Promise.all([loadGroups(), loadWaitlists()]);
 }
 
 function payload() {

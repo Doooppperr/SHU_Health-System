@@ -67,18 +67,16 @@
             </div>
           </div>
 
-          <div class="trend-chart-platform">
+          <div class="trend-chart-platform" :class="{ 'has-reference-note': hasReferenceRange(entry.reference) }">
             <HealthTrendChart :points="entry.points" :reference="entry.reference" :unit="entry.indicator.unit || ''" :indicator-name="entry.indicator.name" :source-name="selectedSourceLabel" />
-            <aside class="trend-reference-note" aria-label="参考范围说明">
+            <aside v-if="hasReferenceRange(entry.reference)" class="trend-reference-note" aria-label="参考范围">
               <div class="trend-reference-note__heading">
-                <span v-if="entry.reference?.low != null || entry.reference?.high != null" class="trend-reference-note__swatch" aria-hidden="true"></span>
-                <strong>{{ entry.reference?.label || "暂无统一参考范围" }}</strong>
+                <span class="trend-reference-note__swatch" aria-hidden="true"></span>
+                <strong>参考范围</strong>
               </div>
               <span v-if="entry.reference?.low != null && entry.reference?.high != null" class="trend-reference-note__value">{{ entry.reference.low }}–{{ entry.reference.high }} {{ entry.indicator.unit }}</span>
               <span v-else-if="entry.reference?.low != null" class="trend-reference-note__value">不低于 {{ entry.reference.low }} {{ entry.indicator.unit }}</span>
               <span v-else-if="entry.reference?.high != null" class="trend-reference-note__value">低于 {{ entry.reference.high }} {{ entry.indicator.unit }}</span>
-              <p v-if="entry.reference?.context">{{ entry.reference.context }}</p>
-              <a v-if="entry.reference?.source_url" :href="entry.reference.source_url" target="_blank" rel="noopener noreferrer">{{ entry.reference.source_title || "查看参考来源" }}</a>
             </aside>
           </div>
         </section>
@@ -156,6 +154,10 @@ function compact(value) {
   if (value === null || value === undefined) return "—";
   const number = Number(value);
   return Number.isInteger(number) ? number : Number(number.toFixed(2));
+}
+
+function hasReferenceRange(reference) {
+  return reference?.low != null || reference?.high != null;
 }
 
 function changeLabel(value) {
