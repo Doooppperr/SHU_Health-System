@@ -38,6 +38,7 @@ from app.services.permissions import ROLE_INSTITUTION_ADMIN, roles_required
 from app.services.package_reviews import create_change_request
 from app.services.record_files import delete_report_urls
 from app.services.reports import find_subject_user, submit_report
+from app.services.report_conclusions import missing_conclusion_domains
 from app.services.dates import calendar_date_iso
 from app.services.domain_rules import (
     DomainAdmissionError, admit_indicator, report_allowed_domain_ids,
@@ -1120,6 +1121,16 @@ def lock_report(report_id):
     if not report.indicators and not report.text_results and not report.assets: return {"message": "at least one indicator, text result or asset is required"}, 400
     try: validate_report_domains(report)
     except DomainAdmissionError as exc: return {"message": str(exc), "code": "DOMAIN_NOT_ALLOWED"}, 400
+    missing_domains = missing_conclusion_domains(report)
+    if missing_domains:
+        return {
+            "message": "请先完善所有健康方向的机构结论",
+            "code": "MISSING_DOMAIN_CONCLUSIONS",
+            "missing_domains": [
+                {"id": domain.id, "name": domain.name}
+                for domain in missing_domains
+            ],
+        }, 409
     requirements = PackageVersionAssetRequirement.query.filter_by(
         package_version_id=report.package_version_id,
         is_required=True,

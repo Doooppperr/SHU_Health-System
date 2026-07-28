@@ -20,8 +20,32 @@
 
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
 
+    <section v-if="domainOptions.length > 1" class="health-domain-filter" aria-label="筛选健康方向">
+      <div>
+        <span>筛选健康方向</span>
+        <small>已显示 {{ visibleSections.length }}/{{ domainOptions.length }} 个方向</small>
+      </div>
+      <el-select
+        :model-value="selectedDomainIds"
+        multiple
+        filterable
+        collapse-tags
+        :max-collapse-tags="2"
+        placeholder="选择一个或多个健康方向"
+        @change="handleDomainSelection"
+      >
+        <el-option
+          v-for="domain in domainOptions"
+          :key="domain.id"
+          :label="domain.name"
+          :value="domain.id"
+        />
+      </el-select>
+      <el-button plain @click="selectAllDomains">全部方向</el-button>
+    </section>
+
     <div v-loading="loading" class="health-domain-sections">
-      <section v-for="section in item?.sections || []" :key="section.domain.id" class="health-domain-card">
+      <section v-for="section in visibleSections" :key="section.domain.id" class="health-domain-card">
         <header class="health-domain-card__header">
           <div><span>健康方向</span><h3>{{ section.domain.name }}</h3></div>
           <small>{{ section.indicators.length }} 项指标</small>
@@ -55,7 +79,7 @@
           <article v-for="asset in section.assets" :key="asset.id">
             <span class="health-asset-grid__icon">{{ asset.modality === "pdf" ? "PDF" : "影" }}</span>
             <div><strong>{{ asset.title }}</strong><p>{{ asset.annotation || "机构检查附件" }}</p></div>
-            <el-button link type="primary" @click="openAsset(asset)">安全查看</el-button>
+            <el-button link type="primary" @click="openAsset(asset)">查看附件</el-button>
           </article>
         </div>
       </section>
@@ -91,7 +115,7 @@
           @click="assetZoomed = !assetZoomed"
         />
         <iframe v-else :src="previewUrl" title="PDF 检查附件" />
-        <p>{{ previewAsset?.annotation || "开放授权真实医学样例，仅用于功能展示，不作为诊断依据。" }}</p>
+        <p>{{ previewAsset?.annotation || "机构检查附件" }}</p>
       </div>
     </el-dialog>
   </div>
@@ -116,8 +140,14 @@ const assetPreviewVisible = ref(false);
 const previewUrl = ref("");
 const previewAsset = ref(null);
 const assetZoomed = ref(false);
+const selectedDomainIds = ref([]);
 
-const allIndicators = computed(() => (item.value?.sections || []).flatMap((section) => section.indicators || []));
+const domainOptions = computed(() => (item.value?.sections || []).map((section) => section.domain));
+const visibleSections = computed(() => {
+  const selected = new Set(selectedDomainIds.value);
+  return (item.value?.sections || []).filter((section) => selected.has(section.domain.id));
+});
+const allIndicators = computed(() => visibleSections.value.flatMap((section) => section.indicators || []));
 const indicatorCount = computed(() => allIndicators.value.length);
 const abnormalCount = computed(() => allIndicators.value.filter((indicator) => indicator.is_abnormal).length);
 const canEditSelf = computed(() => item.value?.source_type === "self" && !route.query.owner_id);
@@ -133,12 +163,28 @@ async function load() {
   loading.value = true;
   error.value = "";
   try {
-    item.value = (await fetchHealthDataDetail(route.params.id, ownerParams())).data.item;
+    const nextItem = (await fetchHealthDataDetail(route.params.id, ownerParams())).data.item;
+    const availableIds = (nextItem.sections || []).map((section) => section.domain.id);
+    const retainedIds = selectedDomainIds.value.filter((id) => availableIds.includes(id));
+    item.value = nextItem;
+    selectedDomainIds.value = retainedIds.length ? retainedIds : availableIds;
   } catch (fetchError) {
     error.value = fetchError?.response?.data?.message || "这份健康资料暂时无法打开";
   } finally {
     loading.value = false;
   }
+}
+
+function handleDomainSelection(ids) {
+  if (!ids.length) {
+    ElMessage.info("请至少保留一个健康方向");
+    return;
+  }
+  selectedDomainIds.value = ids;
+}
+
+function selectAllDomains() {
+  selectedDomainIds.value = domainOptions.value.map((domain) => domain.id);
 }
 
 function openNewMeasurement() {
@@ -183,6 +229,45 @@ onBeforeUnmount(closeAssetPreview);
 </script>
 
 <style scoped>
+.health-domain-filter {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(300px, 1.5fr) auto;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 18px;
+  padding: 16px 18px;
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-surface);
+}
+
+.health-domain-filter > div {
+  display: grid;
+  gap: 4px;
+}
+
+.health-domain-filter span {
+  font-weight: 700;
+}
+
+.health-domain-filter small {
+  color: var(--color-text-muted);
+}
+
+.health-domain-filter :deep(.el-select) {
+  width: 100%;
+}
+
+@media (max-width: 680px) {
+  .health-domain-filter {
+    grid-template-columns: 1fr;
+  }
+
+  .health-domain-filter :deep(.el-button) {
+    width: 100%;
+  }
+}
+
 .health-asset-preview {
   display: grid;
   gap: 14px;

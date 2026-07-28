@@ -24,15 +24,13 @@ from app.ai.service import (
     build_authenticated_messages,
     build_guest_messages,
     build_trend_analysis_messages,
-    emergency_reply,
     find_faq_answer,
     format_analysis_context,
     get_ai_client,
-    is_emergency_message,
     iter_text_chunks,
     merge_summary_deterministically,
     needs_record_selection,
-    parse_safety_completion,
+    parse_model_completion,
 )
 from app.ai.rag import (
     RetrievalResult,
@@ -1034,16 +1032,6 @@ def _validate_chat_request(user, payload):
 
 def _resolve_chat_locally(user, chat_request):
     message = chat_request["message"]
-    if user is not None and is_emergency_message(message):
-        return {
-            "result": {
-                "reply": emergency_reply(),
-                "decision": "emergency",
-                "usage": {},
-            },
-            "source": "safety_rule",
-            "client": None,
-        }
     if chat_request.get("system_context") is not None:
         return {
             "result": {
@@ -1108,14 +1096,12 @@ def _resolve_chat(user, chat_request):
     retrieval = chat_request["retrieval"]
     knowledge_context = _knowledge_context(retrieval)
     client = get_ai_client(current_app.config)
-    support_phone = (current_app.config.get("AI_SUPPORT_PHONE") or "").strip()
     if user is None:
         result = answer_guest_question(
             client,
             message,
             chat_request["history"],
             chat_request["summary"],
-            support_phone,
             knowledge_context,
         )
     else:
@@ -1125,7 +1111,6 @@ def _resolve_chat(user, chat_request):
             chat_request["history"],
             chat_request["summary"],
             chat_request["record_context"],
-            support_phone,
             knowledge_context,
             allowed_grounding_ids(retrieval),
         )
@@ -1143,7 +1128,6 @@ def _chat_response_payload(user, chat_request, resolution):
     result = resolution["result"]
     client = resolution.get("client")
     source = resolution["source"]
-    support_phone = (current_app.config.get("AI_SUPPORT_PHONE") or "").strip()
     payload = {
         "reply": result["reply"],
         "decision": result["decision"],
@@ -1172,8 +1156,6 @@ def _chat_response_payload(user, chat_request, resolution):
             "next_active_record_context"
         ),
     }
-    if payload["decision"] == "support":
-        payload["support_phone"] = support_phone or None
     return payload
 
 
@@ -1240,7 +1222,6 @@ def _consume_provider_stream(
 
 def _stream_model_chat_resolution(user, chat_request):
     client = get_ai_client(current_app.config)
-    support_phone = (current_app.config.get("AI_SUPPORT_PHONE") or "").strip()
     message = chat_request["message"]
     retrieval = chat_request["retrieval"]
     knowledge_context = _knowledge_context(retrieval)
@@ -1249,7 +1230,6 @@ def _stream_model_chat_resolution(user, chat_request):
             message,
             chat_request["history"],
             chat_request["summary"],
-            support_phone,
             knowledge_context,
         )
         completion = yield from _consume_provider_stream(
@@ -1277,11 +1257,9 @@ def _stream_model_chat_resolution(user, chat_request):
             messages,
             json_output=True,
             max_tokens=1200,
-            heartbeat_message="AI 正在进行安全判断…",
+            heartbeat_message="AI 正在整理回答…",
         )
-        result = parse_safety_completion(
-            completion, support_phone, allowed_grounding_ids(retrieval)
-        )
+        result = parse_model_completion(completion, allowed_grounding_ids(retrieval))
 
     if result.get("decision") == "select_records":
         return {
@@ -1584,7 +1562,7 @@ def chat_stream():
             usage = response_payload.pop("usage", {})
             yield _sse(
                 "status",
-                {"stage": "generating", "message": "AI 已完成安全判断，正在生成回复…"},
+                {"stage": "generating", "message": "AI 已整理所需信息，正在生成回复…"},
             )
             for chunk in iter_text_chunks(response_payload["reply"]):
                 if first_delta_at is None:
@@ -1607,8 +1585,6 @@ def chat_stream():
                     "next_active_record_context"
                 ),
             }
-            if response_payload.get("support_phone"):
-                done_payload["support_phone"] = response_payload["support_phone"]
             yield _sse("done", done_payload)
             final_status = "completed"
         except GeneratorExit:
@@ -1692,8 +1668,6 @@ def analyze_stream():
         return _json_error("selected_asset_ids must be a list of integers", "invalid_asset_ids", 400)
     try: selected_asset_ids = list(dict.fromkeys(int(value) for value in selected_asset_ids))
     except (TypeError, ValueError): return _json_error("selected_asset_ids must be a list of integers", "invalid_asset_ids", 400)
-    if selected_asset_ids and payload.get("image_consent") is not True:
-        return _json_error("explicit image consent is required for every request", "image_consent_required", 400)
     if selected_asset_ids and not current_app.config.get("AI_SUPPORTS_IMAGES", False):
         return _json_error("the configured AI model does not support image analysis", "image_analysis_unavailable", 409)
     if record_scope:
@@ -1728,7 +1702,6 @@ def analyze_stream():
     ]
     request_id = uuid.uuid4().hex
     configured_model = current_app.config.get("DEEPSEEK_MODEL")
-    support_phone = (current_app.config.get("AI_SUPPORT_PHONE") or "").strip()
     logger = current_app.logger
     prompt_chars = len(format_analysis_context(facts))
 
@@ -1768,15 +1741,15 @@ def analyze_stream():
                 messages,
                 json_output=True,
                 max_tokens=2200,
-                heartbeat_message="AI 正在进行安全判断…",
+                heartbeat_message="AI 正在整理档案分析…",
             )
-            result = parse_safety_completion(
-                completion, support_phone, allowed_grounding_ids(retrieval)
+            result = parse_model_completion(
+                completion, allowed_grounding_ids(retrieval)
             )
             usage = result.get("usage") or {}
             yield _sse(
                 "status",
-                {"stage": "generating", "message": "AI 已完成安全判断，正在整理分析…"},
+                {"stage": "generating", "message": "AI 已完成数据分析，正在整理结果…"},
             )
             for chunk in iter_text_chunks(result["reply"]):
                 if first_delta_at is None:
@@ -1794,8 +1767,6 @@ def analyze_stream():
                     {item.source_id for item in retrieval.hits}
                 ),
             }
-            if result["decision"] == "support":
-                done_payload["support_phone"] = support_phone or None
             yield _sse("done", done_payload)
             final_status = "completed"
         except GeneratorExit:
@@ -1922,7 +1893,6 @@ def analyze_trends_stream():
         "indicators": indicators,
     }
     request_id = uuid.uuid4().hex
-    support_phone = (current_app.config.get("AI_SUPPORT_PHONE") or "").strip()
 
     def generate():
         yield _sse("meta", {"request_id": request_id, "mode": "trend_analysis",
@@ -1933,11 +1903,10 @@ def analyze_trends_stream():
             completion = yield from _consume_provider_stream(
                 client, build_trend_analysis_messages(facts), json_output=True,
                 max_tokens=1800, heartbeat_message="AI 正在分析当前图表…")
-            result = parse_safety_completion(completion, support_phone)
+            result = parse_model_completion(completion)
             for chunk in iter_text_chunks(result["reply"]):
                 yield _sse("delta", {"text": chunk})
             done = {"request_id": request_id, "decision": result["decision"], "source": "model"}
-            if result["decision"] == "support": done["support_phone"] = support_phone or None
             yield _sse("done", done)
         except (AiConfigurationError, AiProviderError) as exc:
             yield _sse("error", _stream_error_payload(exc, request_id))
@@ -1950,5 +1919,4 @@ def analyze_trends_stream():
 @ai_bp.get("/capabilities")
 def capabilities():
     return {"image_analysis": bool(current_app.config.get("AI_SUPPORTS_IMAGES", False)),
-            "domain_analysis": True, "trend_analysis": True, "analysis_persisted": False,
-            "medical_diagnosis": False}, 200
+            "domain_analysis": True, "trend_analysis": True, "analysis_persisted": False}, 200

@@ -159,7 +159,7 @@ describe("AiAssistant record-aware interaction", () => {
     await flushPromises();
 
     expect(api.streamAiAnalysis).toHaveBeenCalledWith(
-      { selected_record_ids: [record.id], consent: true },
+      { selected_record_ids: [record.id] },
       expect.any(Object)
     );
     expect(wrapper.text()).toContain("分析结果");

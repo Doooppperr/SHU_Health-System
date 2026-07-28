@@ -85,18 +85,10 @@
     <aside class="trend-ai-panel" aria-live="polite">
       <span class="user-kicker">AI 图表解读</span>
       <h3>结合当前筛选解释趋势</h3>
-      <template v-if="!trendConsent">
-        <p>确认后，本页面会把当前成员、健康方向和日期范围内的趋势数据发送至 DeepSeek。授权仅在本次页面停留期间有效。</p>
-        <el-checkbox v-model="consentChecked">我已了解并同意本次页面分析</el-checkbox>
-        <el-button type="primary" :disabled="!consentChecked || !series.length" @click="grantTrendConsent">授权并开始分析</el-button>
-      </template>
-      <template v-else>
-        <div v-if="aiLoading" class="trend-ai-status"><span></span>{{ aiStatus || "正在分析当前图表…" }}</div>
-        <div v-else-if="aiError" class="trend-ai-error"><p>{{ aiError }}</p><el-button plain @click="runTrendAnalysis(true)">重新分析</el-button></div>
-        <p v-else-if="aiAnswer" class="trend-ai-answer">{{ aiAnswer }}</p>
-        <p v-else>调整筛选后，这里会自动生成对应的趋势说明。</p>
-        <small>AI 内容仅用于健康科普，不能替代医生诊断或治疗建议。</small>
-      </template>
+      <div v-if="aiLoading" class="trend-ai-status"><span></span>{{ aiStatus || "正在分析当前图表…" }}</div>
+      <div v-else-if="aiError" class="trend-ai-error"><p>{{ aiError }}</p><el-button plain @click="runTrendAnalysis(true)">重新分析</el-button></div>
+      <p v-else-if="aiAnswer" class="trend-ai-answer">{{ aiAnswer }}</p>
+      <p v-else>调整筛选后，这里会自动生成对应的趋势说明。</p>
     </aside>
     </div>
 
@@ -129,8 +121,6 @@ const series = computed(() => rawSeries.value.filter((entry) => selectedIndicato
 const loading = ref(false);
 const error = ref("");
 const dateRange = ref([]);
-const consentChecked = ref(false);
-const trendConsent = ref(false);
 const aiLoading = ref(false);
 const aiAnswer = ref("");
 const aiError = ref("");
@@ -210,7 +200,7 @@ async function load() {
       await load();
       return;
     }
-    if (trendConsent.value) scheduleTrendAnalysis();
+    if (selectedIndicatorIds.value.length) scheduleTrendAnalysis();
   } catch (fetchError) {
     error.value = fetchError?.response?.data?.message || "健康趋势暂时没有加载成功，请稍后重试";
   } finally {
@@ -223,25 +213,20 @@ function analysisPayload() {
     source_type: filters.source.startsWith("institution") ? "institution" : filters.source,
     institution_id: filters.source.startsWith("institution:") ? Number(filters.source.split(":")[1]) : undefined,
     start_date: dateRange.value?.[0], end_date: dateRange.value?.[1],
-    indicator_ids: [...selectedIndicatorIds.value], consent: true }, filters.owner_id));
+    indicator_ids: [...selectedIndicatorIds.value] }, filters.owner_id));
 }
 
 function selectAllIndicators(){selectedIndicatorIds.value=rawSeries.value.map((entry)=>entry.indicator.id);indicatorSelectionChanged();}
 function clearIndicators(){selectedIndicatorIds.value=[];analysisController?.abort();aiAnswer.value="";aiError.value="";}
-function indicatorSelectionChanged(){if(trendConsent.value&&selectedIndicatorIds.value.length)scheduleTrendAnalysis();}
+function indicatorSelectionChanged(){if(selectedIndicatorIds.value.length)scheduleTrendAnalysis();}
 
 function scheduleTrendAnalysis() {
   clearTimeout(analysisTimer);
   analysisTimer = setTimeout(() => runTrendAnalysis(), 450);
 }
 
-async function grantTrendConsent() {
-  trendConsent.value = true;
-  await runTrendAnalysis();
-}
-
 async function runTrendAnalysis(force = false) {
-  if (!trendConsent.value || !series.value.length) return;
+  if (!series.value.length) return;
   const payload = analysisPayload();
   const key = JSON.stringify(payload);
   if (!force && analysisCache.has(key)) {

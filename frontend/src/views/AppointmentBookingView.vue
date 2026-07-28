@@ -91,7 +91,7 @@
                   </el-form-item>
                 </el-col>
               </el-row>
-              <small v-if="person.id !== auth.user.id">仅提交本次身高和体重；病史由系统生成隐私快照并只交付预约机构。</small>
+              <small v-if="person.id !== auth.user.id">请填写本次受检者的身高和体重。</small>
             </el-card>
           </div>
         </el-form>

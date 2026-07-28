@@ -21,6 +21,10 @@ from flask import current_app
 from app.demo_indicator_values import demo_realistic_value
 from app.extensions import db
 from app.services.indicator_values import evaluate_result_status
+from app.services.report_conclusions import (
+    ASSET_FINDINGS,
+    normalize_report_records,
+)
 from app.models import (
     Appointment,
     AppointmentCapacitySlot,
@@ -288,6 +292,14 @@ PROFILE_SCENARIOS = {
     "test5": ("顾远", date(1978, 6, 30), "male", "无已知过敏", "有吸烟史，关注肺功能和血氧变化"),
 }
 
+PROFILE_HEALTH_IDS = {
+    "test1": "HID-8K3M2Q7A",
+    "test2": "HID-5R9T4W2C",
+    "test3": "HID-7N2P6X8D",
+    "test4": "HID-4V8J3L5F",
+    "test5": "HID-9C6H2M7K",
+}
+
 
 ACCOUNT_IDENTITY_FIELDS = (
     "id", "username", "password_hash", "role", "email", "health_id",
@@ -357,7 +369,7 @@ def _write_png(path: Path, palette: tuple[tuple[int, int, int], ...], width=480,
                 break
         if font is None:
             font = ImageFont.load_default()
-        watermark = "演示数据 · 非真实医学影像" if chinese_font else "DEMO DATA · NOT A MEDICAL IMAGE"
+        watermark = "机构影像资料" if chinese_font else "INSTITUTION IMAGE"
         overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
         overlay_draw = ImageDraw.Draw(overlay)
         box = overlay_draw.textbbox((0, 0), watermark, font=font)
@@ -398,13 +410,13 @@ def _load_demo_media(
     test_width: int = 480,
     test_height: int = 270,
 ) -> tuple[bytes, int, int]:
-    """Copy a checked-in open-license demo asset without regenerating it."""
+    """Copy a checked-in report asset without regenerating it."""
     if current_app.config.get("TESTING", False):
         raw = _write_png(destination, palette, test_width, test_height)
         return raw, 2, 2
     source = Path(__file__).resolve().parents[1] / "uploads" / storage_key
     if not source.is_file():
-        raise DemoResetSafetyError(f"缺少开放授权演示素材：{storage_key}")
+        raise DemoResetSafetyError(f"缺少报告媒体文件：{storage_key}")
     raw = source.read_bytes()
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.resolve() != source.resolve():
@@ -415,9 +427,7 @@ def _load_demo_media(
     return raw, width, height
 
 
-# Checked-in real clinical examples used by the production/demo reset path.
-# They are deliberately kept outside ``uploads`` so reset cannot fall back to
-# the former synthetic colour fixtures.
+# Checked-in report media used by the reset path.
 CURATED_ASSET_SOURCES = {
     "US_THYROID": ("thyroid_normal",),
     "US_ABDOMEN": ("abdomen_liver", "abdomen_liver", "abdomen_liver"),
@@ -427,7 +437,7 @@ CURATED_ASSET_SOURCES = {
     "ECHO_HEART": ("echo_tte", "echo_tte"),
     "BLOOD_MICROSCOPY": ("blood_sem", "blood_sem", "blood_sem"),
 }
-CURATED_SOURCE_ROOT = Path(__file__).resolve().parents[1] / "demo_media_sources"
+CURATED_SOURCE_ROOT = Path(__file__).resolve().parents[1] / "report_media"
 
 
 def _load_curated_media(asset_code: str, destination: Path, sequence: int = 0) -> tuple[bytes, int, int]:
@@ -629,7 +639,7 @@ def ensure_v7_demo_accounts(*, commit: bool = True) -> bool:
         user = User(
             username=username,
             role="user",
-            health_id=f"HID-DEMO000{index}",
+            health_id=PROFILE_HEALTH_IDS[username],
             real_name=name,
             birth_date=birth_date,
             gender=gender,
@@ -945,7 +955,7 @@ def _create_report(
             report_id=report.id,
             health_domain_id=asset_type.health_domain_id if asset_type else domains[domain_code].id,
             asset_type_id=asset_type.id if asset_type else None,
-            modality="open_license_demo_image",
+            modality=asset_type.modality if asset_type else "image",
             title=asset_type.name if asset_type else title,
             storage_key=key,
             mime_type="image/png",
@@ -953,10 +963,7 @@ def _create_report(
             width=width,
             height=height,
             sha256=hashlib.sha256(raw).hexdigest(),
-            annotation_text=(
-                "开放授权真实医学样例，仅用于系统功能展示，不对应系统用户，不作为诊断依据。"
-                if asset_type else annotation
-            ),
+            annotation_text=ASSET_FINDINGS.get(asset_type.code, annotation) if asset_type else annotation,
             sort_order=0,
             uploaded_by_user_id=staff.id,
         )
@@ -965,7 +972,7 @@ def _create_report(
         db.session.add(ReportAssetAnnotation(
             report_asset_id=row.id,
             annotation_type="text",
-            text=annotation,
+            text=ASSET_FINDINGS.get(asset_type.code, annotation) if asset_type else annotation,
             created_by_user_id=staff.id,
         ))
     return report
@@ -1095,7 +1102,7 @@ def _add_demo_report_asset(report, staff, domain, sequence):
             report_id=report.id,
             health_domain_id=asset_type.health_domain_id,
             asset_type_id=asset_type.id,
-            modality="open_license_demo_image",
+            modality=asset_type.modality,
             title=asset_type.name,
             storage_key=key,
             mime_type="image/png",
@@ -1103,7 +1110,7 @@ def _add_demo_report_asset(report, staff, domain, sequence):
             width=width,
             height=height,
             sha256=hashlib.sha256(raw).hexdigest(),
-            annotation_text="开放授权真实医学样例，仅用于系统功能展示，不对应系统用户，不作为诊断依据。",
+            annotation_text=ASSET_FINDINGS.get(asset_type.code, f"{asset_type.name}检查所见未见明显异常。"),
             sort_order=asset_order,
             uploaded_by_user_id=staff.id,
         )
@@ -1174,7 +1181,7 @@ def _expand_v8_demo_data(users, institutions, packages, indicators, domains, tod
                 exam_date=today - timedelta(days=760 + sequence * 9), indicators=indicators, domains=domains,
                 values=((indicator_code, value, domain.code, sequence % 9 == 0),),
                 title=f"{branch.branch_name}历史体检摘要",
-                body="该合成记录用于演示同机构不同分院之间的已归档报告衔接，源分院继续保留内容责任。",
+                body="该报告由源分院完成复核与归档，同机构其他分院可按权限查阅。",
             )
             if ReportAsset.query.count() < asset_target:
                 _add_demo_report_asset(report, staff_by_branch[branch_index], domain, sequence)
@@ -1323,13 +1330,12 @@ def _expand_v10_test1(users, institutions, packages, indicators, domains, today,
             status="published",
             ocr_diagnostics={
                 "import_kind": (
-                    "v10_comprehensive_exam"
+                    "comprehensive_exam"
                     if sequence in comprehensive_sequences
-                    else "v10_targeted_follow_up"
+                    else "targeted_follow_up"
                 ),
                 "sequence": sequence + 1,
                 "contains_ocr_rows": sequence in ocr_sequences,
-                "synthetic_story": "early_risk_to_improvement_with_brief_relapse",
             },
             locked_at=published_at - timedelta(hours=1),
             submitted_at=published_at,
@@ -1374,23 +1380,11 @@ def _expand_v10_test1(users, institutions, packages, indicators, domains, today,
                 original_unit=definition.unit,
                 normalized_unit=definition.unit,
                 reference_text=_reference_text(definition),
-                method_snapshot="v10 合成体检演示",
+                method_snapshot="机构常规检测",
                 abnormal_flag={"high": "H", "low": "L", "positive": "+"}.get(status),
                 mapping_confidence=Decimal("0.9900") if sequence in ocr_sequences else Decimal("1.0000"),
                 mapping_status="confirmed",
             ))
-        report_kind = "综合体检" if sequence in comprehensive_sequences else "专项复查"
-        report.text_results.append(ReportTextResult(
-            health_domain_id=domains["basic"].id,
-            title=f"第 {sequence + 1} 次{report_kind}演示",
-            body=(
-                "本报告及全部数值均为合成测试内容。四年故事用于演示早期轻度代谢风险、"
-                "生活方式改善、短期反弹和近期稳定，仅用于功能验收，不作为诊断依据。"
-            ),
-            source_snapshot="v10 合成演示数据",
-            sort_order=0,
-            created_by_user_id=staff.id,
-        ))
         reports.append((report, staff))
 
     asset_types = {row.code: row for row in ReportAssetType.query.all()}
@@ -1411,7 +1405,7 @@ def _expand_v10_test1(users, institutions, packages, indicators, domains, today,
                 report_id=report.id,
                 health_domain_id=asset_type.health_domain_id,
                 asset_type_id=asset_type.id,
-                modality="image",
+                modality=asset_type.modality,
                 title=asset_type.name,
                 storage_key=key,
                 mime_type="image/png",
@@ -1419,7 +1413,7 @@ def _expand_v10_test1(users, institutions, packages, indicators, domains, today,
                 width=width,
                 height=height,
                 sha256=hashlib.sha256(raw).hexdigest(),
-                annotation_text=f"{asset_type.name}开放授权真实医学样例：仅用于系统功能展示，不对应系统用户，不作为诊断依据。",
+                annotation_text=ASSET_FINDINGS.get(asset_type.code, f"{asset_type.name}检查所见未见明显异常。"),
                 sort_order=order,
                 uploaded_by_user_id=staff.id,
             ))
@@ -1430,7 +1424,7 @@ def _expand_v10_test1(users, institutions, packages, indicators, domains, today,
             event_type="report_published",
             idempotency_key="demo-v10-report-published",
             title="体检报告已交付",
-            body="最新一份全量成人体检演示报告已交付，可查看规范附件和机构批注。",
+            body="最新一份成人综合体检报告已交付，可查看检查结果、影像附件和机构结论。",
             action_url=f"/health-data/hd-i-{reports[-1][0].id:x}",
             payload={"report_id": reports[-1][0].id},
             created_at=now - timedelta(days=2),
@@ -1446,6 +1440,45 @@ def _expand_v10_test1(users, institutions, packages, indicators, domains, today,
             created_at=now - timedelta(days=1),
         ),
     ])
+
+
+def _normalize_report_business_records():
+    """Make every represented report domain complete and clinically readable."""
+
+    def text_result_factory(report, domain, title, body, order):
+        return ReportTextResult(
+            health_domain_id=domain.id,
+            title=title,
+            body=body,
+            source_snapshot="机构医生审核结论",
+            sort_order=order,
+            created_by_user_id=report.created_by_user_id,
+        )
+
+    def synchronize_asset_annotation(asset):
+        finding = asset.annotation_text
+        annotations = ReportAssetAnnotation.query.filter_by(report_asset_id=asset.id).all()
+        if not annotations:
+            db.session.add(ReportAssetAnnotation(
+                report_asset_id=asset.id,
+                annotation_type="text",
+                text=finding,
+                created_by_user_id=asset.uploaded_by_user_id,
+            ))
+            return
+        for annotation in annotations:
+            annotation.text = finding
+
+    reports = InstitutionReport.query.order_by(
+        InstitutionReport.matched_user_id,
+        InstitutionReport.exam_date,
+        InstitutionReport.id,
+    ).all()
+    normalize_report_records(
+        reports,
+        text_result_factory=text_result_factory,
+        asset_annotation_factory=synchronize_asset_annotation,
+    )
 
 
 def _seed_waitlists(users, institutions, packages, today, now):
@@ -1709,7 +1742,7 @@ def seed_v7_demo_experience(*, commit: bool = True) -> bool:
         ("WEIGHT", "71.9", "metabolic", False), ("FBG", "5.2", "metabolic", False),
         ("TC", "4.8", "metabolic", False), ("TG", "1.4", "metabolic", False),
     ), (("metabolic", "代谢评估摘要", "本次糖脂代谢结果总体平稳，可结合个人自测继续观察体重与空腹血糖趋势。"),),
-       ("metabolic", "代谢检查开放授权演示附件", ((31, 91, 145), (70, 145, 180), (199, 233, 238)), "开放授权演示附件，仅用于系统功能展示，不作为诊断依据。")))
+       ("metabolic", "甲状腺超声", ((31, 91, 145), (70, 145, 180), (199, 233, 238)), ASSET_FINDINGS["US_THYROID"])))
     for hour, value in ((8, 72.2), (20, 72.0)):
         _add_measurement(users["test1"], indicators["WEIGHT"], value, _utc(today - timedelta(days=4), hour))
     _add_measurement(users["test1"], indicators["HR"], 78, _utc(today - timedelta(days=4), 21))
@@ -1745,7 +1778,7 @@ def seed_v7_demo_experience(*, commit: bool = True) -> bool:
         ("FBG", "4.9", "metabolic", False), ("TC", "4.6", "metabolic", False),
         ("ALT", "22", "digestive", False), ("AST", "20", "digestive", False),
     ), (("digestive", "肝胆检查结论", "本次肝功能相关指标未见明显异常，建议保持规律饮食。"),),
-       ("digestive", "腹部超声开放授权演示附件", ((76, 63, 111), (125, 105, 154), (222, 210, 232)), "开放授权演示附件，仅用于系统功能展示，不作为诊断依据。")))
+       ("digestive", "腹部超声", ((76, 63, 111), (125, 105, 154), (222, 210, 232)), ASSET_FINDINGS["US_ABDOMEN"])))
 
     _, appointments = _create_booking_group(
         booker=users["test5"], participants=[users["test5"]], institution=institutions[2],
@@ -1755,7 +1788,7 @@ def seed_v7_demo_experience(*, commit: bool = True) -> bool:
     completed.append((appointments[0], staff[3], (
         ("SPO2", "95", "respiratory", False),
     ), (("respiratory", "肺功能检查摘要", "本次静息血氧处于参考范围下沿，建议减少吸烟暴露并按需复查。"),),
-       ("respiratory", "肺功能开放授权演示附件", ((45, 75, 89), (79, 131, 144), (205, 226, 225)), "开放授权演示附件，仅用于系统功能展示，不作为诊断依据。")))
+       ("respiratory", "肺功能图", ((45, 75, 89), (79, 131, 144), (205, 226, 225)), ASSET_FINDINGS["SPIROMETRY"])))
 
     for appointment, creator, values, texts, asset in completed:
         _create_report(
@@ -1843,6 +1876,8 @@ def seed_v7_demo_experience(*, commit: bool = True) -> bool:
     ])
     _expand_v8_demo_data(users, institutions, packages, indicators, domains, today, now)
     _expand_v10_test1(users, institutions, packages, indicators, domains, today, now)
+    db.session.flush()
+    _normalize_report_business_records()
     if commit:
         db.session.commit()
     else:

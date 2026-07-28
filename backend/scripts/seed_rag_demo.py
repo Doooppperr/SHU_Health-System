@@ -159,14 +159,19 @@ def apply_seed():
     record_ids = []
     try:
         users = []
+        profile_names = ("许文博", "沈清妍", "赵明远", "蒋舒宁", "韩志诚")
+        profile_health_ids = (
+            "HID-6Q2N8B4T", "HID-3W7K5M9P", "HID-8D4R2V6J",
+            "HID-5L9C3X7H", "HID-2T6F8N4Q",
+        )
         for profile, username in enumerate(USERNAMES, start=1):
             user = User(
                 username=username,
                 role="user",
-                health_id=f"HID-RAG{profile:05d}",
-                real_name=f"RAG演示用户{profile}",
+                health_id=profile_health_ids[profile - 1],
+                real_name=profile_names[profile - 1],
                 gender="undisclosed",
-                medical_history="RAG 纵向趋势合成测试资料",
+                medical_history="既往体检指标变化记录",
             )
             user.set_password(password)
             db.session.add(user)

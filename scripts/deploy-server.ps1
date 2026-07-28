@@ -78,7 +78,7 @@ try {
             backend/migrations `
             backend/rag_sources `
             backend/scripts `
-            backend/demo_media_manifest.json `
+            backend/report_media_manifest.json `
             backend/.env.example `
             backend/README.md `
             backend/requirements.txt `
@@ -138,7 +138,7 @@ finally:
         )
         foreach ($directory in $requiredDemoAssetDirectories) {
             if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
-                throw "Open-license demo asset directory not found: $directory"
+                throw "Report media directory not found: $directory"
             }
         }
         & (Join-Path $projectRoot "backend\.venv\Scripts\python.exe") `

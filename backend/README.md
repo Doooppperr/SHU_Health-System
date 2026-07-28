@@ -1,6 +1,6 @@
 # 康康健健 HealthDoc 后端
 
-Flask 后端负责认证与三角色授权、健康身份码亲友授权、预约隐私快照、站内/邮件通知、规范附件、104 项成人体检指标、OCR 和系统数据优先的健康 AI。本地使用 SQLite schema v10；服务器通过 `DATABASE_URL` 连接 GaussDB/openGauss，并使用 Alembic 增量迁移。
+Flask 后端负责认证与三角色授权、健康身份码亲友授权、预约预约资料副本、站内/邮件通知、规范附件、104 项成人体检指标、OCR 和系统数据优先的健康 AI。本地使用 SQLite schema v10；服务器通过 `DATABASE_URL` 连接 GaussDB/openGauss，并使用 Alembic 增量迁移。
 
 ## 1.0—3.0 后端演进
 
@@ -25,7 +25,7 @@ if (-not (Test-Path .env)) {
 
 开发后端默认监听 <http://127.0.0.1:5050>，健康检查为 `GET /api/health`。
 
-本地通知默认 `NOTIFICATION_EMAIL_DRY_RUN=1`，只验证 Outbox/重试流程而不连接外部邮箱。需要联调真实 SMTP 时，在被 Git 忽略的 `.env` 中配置 `SMTP_*` 并设为 `0`；`NOTIFICATION_EMAIL_REDIRECT` 可将所有通知统一投递到一个测试收件箱。注册必须填写有效邮箱，但邮箱只作为通知渠道，不作为账号唯一标识，因此家庭成员和演示账号可以共用一个邮箱；空位提醒直接使用当前账号绑定的通知邮箱。新建演示库时可用 `DEMO_SHARED_EMAIL` 统一绑定测试账号，真实地址不要写入受版本控制的文件。
+本地通知默认 `NOTIFICATION_EMAIL_DRY_RUN=1`，只验证 Outbox/重试流程而不连接外部邮箱。需要联调真实 SMTP 时，在被 Git 忽略的 `.env` 中配置 `SMTP_*` 并设为 `0`；`NOTIFICATION_EMAIL_REDIRECT` 可将所有通知统一投递到一个测试收件箱。注册必须填写有效邮箱，但邮箱只作为通知渠道，不作为账号唯一标识，因此家庭成员和验收账号可以共用一个邮箱；空位提醒直接使用当前账号绑定的通知邮箱。新建验收库时可用 `DEMO_SHARED_EMAIL` 统一绑定测试账号，真实地址不要写入受版本控制的文件。
 
 根目录的 `scripts/start-full-dev.ps1` 和 `scripts/start-full-prod.ps1` 会在后端就绪后自动启动隐藏的常驻 worker，每 5 秒处理一次 Outbox，并在前端命令退出时停止。单独运行可使用 `scripts/start-notification-worker.ps1`，或在后端目录执行 `python scripts/notification_worker.py --watch --interval-seconds 5`。条件更新保证误开两个 worker 时同一条通知只会被一个进程领取；发送前会把 Outbox 载荷转换为连续的中文业务文本，不会把 JSON 原文发给用户。
 
@@ -38,7 +38,7 @@ if (-not (Test-Path .env)) {
 .\.venv\Scripts\python.exe .\scripts\upgrade_local_database.py
 ```
 
-演示业务数据可通过专用脚本重建；`--check-only` 只校验目标库和账号边界，`--apply --yes` 才会覆盖演示业务记录并保留全部演示账号及密码哈希：
+验收业务数据可通过专用脚本重建；`--check-only` 只校验目标库和账号边界，`--apply --yes` 才会覆盖验收业务记录并保留全部验收账号及密码哈希：
 
 ```powershell
 .\.venv\Scripts\python.exe .\scripts\reset_v10_demo_data.py --check-only
@@ -158,7 +158,7 @@ RAG 仅索引 `rag_sources/manifest.json` 批准的公共知识，不索引用�
 - 导入 PDF、PNG、JPEG 或 WebP；总请求上限 20 MiB，PDF 默认最多 8 页。
 - `region-v2` 按表格区域独立解析，同时保留表格外文本；不依赖固定报告坐标。
 - 指标仅映射当前字典中的代码、名称和别名。英文短代码必须精确命中；未知项目进入未匹配列表。
-- 重复冲突、低置信度、非法数值和不安全单位必须人工复核，不能自动写成其他指标。
+- 重复冲突、低置信度、非法数值和不兼容单位必须人工复核，不能自动写成其他指标。
 - OCR 产生一个 `draft` 报告、`input_source=ocr` 指标和诊断信息；之后使用普通草稿接口修订。
 - 草稿可保留临时原文件用于复核；`lock` 时物理删除，数据库清空 `temporary_file_url`。
 
@@ -181,7 +181,7 @@ RAG 仅索引 `rag_sources/manifest.json` 批准的公共知识，不索引用�
 .\.venv\Scripts\python.exe run.py
 ```
 
-Waitress 本机演示推荐从项目根目录运行：
+Waitress 本机验收推荐从项目根目录运行：
 
 ```powershell
 .\scripts\start-backend-prod.ps1
@@ -196,7 +196,7 @@ Waitress 本机演示推荐从项目根目录运行：
 .\.venv\Scripts\python.exe -m pip check
 ```
 
-后端测试使用独立内存 SQLite，不修改 `instance/health_system.db`；覆盖 schema v10、SQLite/openGauss 结构校验、保留式升级、健康身份码授权、预约快照、取消责任、站内/邮件通知、标准附件、104 项指标、OCR 异常方向、管理员改密、AI 数据选择、权限隔离和全量演示快照。完整结论见 [`../项目文档/测试报告.md`](../项目文档/测试报告.md)。
+后端测试使用独立内存 SQLite，不修改 `instance/health_system.db`；覆盖 schema v10、SQLite/openGauss 结构校验、保留式升级、健康身份码授权、预约快照、取消责任、站内/邮件通知、标准附件、104 项指标、OCR 异常方向、管理员改密、AI 数据选择、权限隔离和全量验收快照。完整结论见 [`../项目文档/测试报告.md`](../项目文档/测试报告.md)。
 
 ## 生产数据库同步
 
@@ -207,4 +207,4 @@ Waitress 本机演示推荐从项目根目录运行：
   --source .\instance\health_system.db --target-url $env:TARGET_DATABASE_URL --replace
 ```
 
-脚本验证源库完整性与外键，创建完整目标 schema，复制全部表、重置生成序列并逐表核对行数。`--replace` 会清空目标应用表，只能在已备份且明确允许覆盖的隔离演示环境使用。普通服务器素材更新使用 `scripts/deploy-server.ps1 -SyncDemoMedia`，只同步清单限定的 `demo-v8/demo-v10` 素材；完整演示库覆盖才使用 `-SyncDemoDatabase`。
+脚本验证源库完整性与外键，创建完整目标 schema，复制全部表、重置生成序列并逐表核对行数。`--replace` 会清空目标应用表，只能在已备份且明确允许覆盖的隔离验收环境使用。普通服务器素材更新使用 `scripts/deploy-server.ps1 -SyncDemoMedia`，只同步清单限定的 `demo-v8/demo-v10` 素材；完整验收库覆盖才使用 `-SyncDemoDatabase`。

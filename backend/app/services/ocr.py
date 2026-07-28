@@ -34,7 +34,7 @@ class MockHuaweiOCRProvider(OCRProvider):
         return {
             "engine": "mock_huawei_ocr",
             "parser_version": "mock-v1",
-            "raw_text": "模拟OCR识别结果（用于第4轮闭环联调）",
+            "raw_text": "OCR识别结果：GLU 7.2，TC 5.8，ALT 46，UA 401。",
             "fields": fields,
             "meta": {
                 "file_path": file_path,

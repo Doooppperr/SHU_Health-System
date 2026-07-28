@@ -586,7 +586,7 @@ def seed_demo_workflows():
                 institution_id=institutions[0].id,
                 action="create",
                 status="pending",
-                proposed_data={"name": "预约联调待审套餐", "focus_area": "预约流程", "gender_scope": "all", "price": 288.0, "description": "合成待审核数据", "is_active": True},
+                proposed_data={"name": "职场轻体检套餐", "focus_area": "预约流程", "gender_scope": "all", "price": 288.0, "description": "基础体征与常规生化检查", "is_active": True},
                 requested_by_user_id=staff[0].id,
                 requested_at=now - timedelta(hours=2),
             ),
@@ -601,7 +601,7 @@ def seed_demo_workflows():
                 reviewed_by_user_id=reviewer.id,
                 requested_at=now - timedelta(days=3),
                 reviewed_at=now - timedelta(days=2),
-                review_note="合成通过记录",
+                review_note="资料完整，审核通过",
             ),
             PackageChangeRequest(
                 institution_id=institutions[2].id,
@@ -614,7 +614,7 @@ def seed_demo_workflows():
                 reviewed_by_user_id=reviewer.id,
                 requested_at=now - timedelta(days=2),
                 reviewed_at=now - timedelta(days=1),
-                review_note="合成驳回记录",
+                review_note="套餐说明不完整，请补充后重新提交",
             ),
             PackageChangeRequest(
                 institution_id=institutions[0].id,
@@ -729,18 +729,18 @@ def seed_demo_data():
     db.session.add(demo_admin)
 
     profile_seeds = (
-        ("test1", "演示用户1", "male", "无已知过敏", "模拟轻度脂代谢关注"),
-        ("test2", "演示用户2", "female", "无已知过敏", "模拟血糖随访资料"),
-        ("test3", "演示用户3", "male", "青霉素过敏", "模拟常规年度体检资料"),
-        ("test4", "演示用户4", "female", "海鲜过敏", "模拟心率与体重管理资料"),
-        ("test5", "演示用户5", "other", "无已知过敏", "模拟多指标异常关注资料"),
+        ("test1", "林晓晨", "male", "无已知过敏", "久坐办公，关注体重和年度健康变化", "HID-8K3M2Q7A"),
+        ("test2", "陈雨桐", "female", "无已知过敏", "有糖代谢家族史，持续记录空腹血糖", "HID-5R9T4W2C"),
+        ("test3", "林国安", "male", "青霉素过敏", "轻度血脂异常，家人协助安排年度体检", "HID-7N2P6X8D"),
+        ("test4", "周婧", "female", "海鲜过敏", "饮食不规律，关注肝胆与代谢健康", "HID-4V8J3L5F"),
+        ("test5", "顾远", "male", "无已知过敏", "有吸烟史，关注肺功能和血氧变化", "HID-9C6H2M7K"),
     )
     people = []
-    for index, (username, real_name, gender, allergy, history) in enumerate(profile_seeds, start=1):
+    for index, (username, real_name, gender, allergy, history, health_id) in enumerate(profile_seeds, start=1):
         user = User(
             username=username,
             role="user",
-            health_id=f"HID-DEMO000{index}",
+            health_id=health_id,
             real_name=real_name,
             birth_date=date(1983 + index * 5, index, min(index * 4, 28)),
             gender=gender,

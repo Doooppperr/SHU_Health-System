@@ -25,7 +25,7 @@
             <el-form-item label="用户名" class="auth-form-full"><el-input v-model="form.username" size="large" placeholder="用于登录，注册后可由管理员维护" autocomplete="username" /></el-form-item>
             <el-form-item label="邮箱" required>
               <el-input v-model="form.email" size="large" placeholder="name@example.com" autocomplete="email" />
-              <p class="auth-field-tip">用于接收预约和空位提醒；家庭成员或演示账号可以共用同一邮箱。</p>
+              <p class="auth-field-tip">用于接收预约和空位提醒；家庭成员可以共用同一邮箱。</p>
             </el-form-item>
             <el-form-item label="手机号（可选）"><el-input v-model="form.phone" size="large" placeholder="请输入手机号" autocomplete="tel" /></el-form-item>
             <el-form-item label="密码" class="auth-form-full"><el-input v-model="form.password" size="large" type="password" show-password placeholder="至少 6 位" autocomplete="new-password" /></el-form-item>

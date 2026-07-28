@@ -116,7 +116,6 @@ describe("persistent AI record context", () => {
     const confirmed = await store.confirmRecordPicker(true);
 
     expect(confirmed).toEqual({ selectedRecordIds: [65], ownerId: null });
-    expect(store.consentGiven).toBe(false);
     expect(store.activeRecordContext).toMatchObject({
       owner_id: 10,
       owner_name: "林晓晨",

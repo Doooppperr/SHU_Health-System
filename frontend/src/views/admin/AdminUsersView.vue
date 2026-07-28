@@ -131,6 +131,6 @@ async function retryMail(){try{await retryUserPasswordNotification(passwordTarge
 async function retryDetailMail(){try{await retryUserPasswordNotification(detail.value.id);detail.value.password_notification.status="pending";ElMessage.success("邮件已重新进入发送队列");}catch(error){ElMessage.error(error?.response?.data?.message||"重试失败");}}
 async function toggle(row){try{await updateUser(row.id,{is_active:!row.is_active});await load();}catch(error){ElMessage.error(error?.response?.data?.message||"状态更新失败");}}
 async function remove(row){try{await ElMessageBox.confirm(`将永久删除 ${row.username} 及其资料、测量、登记、已匹配报告、亲友关系和评论，无法恢复。`,"确认级联删除",{type:"error",confirmButtonText:"永久删除"});await deleteUser(row.id);ElMessage.success("用户已完整删除");await load();}catch(error){if(error!=="cancel"&&error!=="close")ElMessage.error(error?.response?.data?.message||"删除失败");}}
-async function removeStaff(row){try{await ElMessageBox.confirm("仅删除登录账号，历史报告和提交用户名快照会保留。","删除机构账号",{type:"warning"});await deleteInstitutionAccount(row.id);await load();}catch(error){if(error!=="cancel"&&error!=="close")ElMessage.error(error?.response?.data?.message||"删除失败");}}
+async function removeStaff(row){try{await ElMessageBox.confirm("仅删除登录账号，历史报告中的提交账号信息会保留。","删除机构账号",{type:"warning"});await deleteInstitutionAccount(row.id);await load();}catch(error){if(error!=="cancel"&&error!=="close")ElMessage.error(error?.response?.data?.message||"删除失败");}}
 onMounted(load);
 </script>

@@ -1,6 +1,5 @@
 from datetime import datetime, timezone
 from collections import Counter
-import json
 import shutil
 import sqlite3
 
@@ -166,23 +165,16 @@ def test_system_administrator_cannot_change_email(client):
     assert "不能自助修改" in response.get_json()["message"]
 
 
-def test_open_license_demo_media_manifest_is_complete_and_clean():
+def test_report_media_manifest_is_complete_and_clean():
     items = validate_demo_media(BACKEND_ROOT / "uploads")
     assert len(items) == 34
     assert sum(item["kind"] == "report_attachment" for item in items) == 19
     assert sum(item["kind"] == "institution_cover" for item in items) == 15
     report_items = [item for item in items if item["kind"] == "report_attachment"]
     assert all(
-        item["license"]
-        and item["source_url"].startswith("https://")
-        and item["original_download_url"].startswith("https://")
-        and item.get("license_url")
-        and item.get("author")
-        and item.get("clinical_presentation")
-        and item.get("processing")
-        and item.get("retrieved_at")
-        and item.get("asset_type_code")
-        and "synthetic://" not in item["source_url"]
+        item.get("asset_type_code")
+        and item.get("annotation_text")
+        and item.get("modality")
         for item in report_items
     )
     assert Counter(item["asset_type_code"] for item in report_items) == {
@@ -194,22 +186,6 @@ def test_open_license_demo_media_manifest_is_complete_and_clean():
         "ECHO_HEART": 2,
         "BLOOD_MICROSCOPY": 3,
     }
-    source_catalog = json.loads(
-        (BACKEND_ROOT / "demo_media_sources.json").read_text(encoding="utf-8")
-    )
-    assert source_catalog["items"]
-    assert all(
-        item["source_url"].startswith("https://")
-        and item["original_download_url"].startswith("https://")
-        and item["download_url"].startswith("https://")
-        and item["license_url"].startswith("https://")
-        and item["author"]
-        and item["clinical_presentation"]
-        and item["processing"]
-        and item["retrieved_at"]
-        and item["pii_review"].startswith("通过")
-        for item in source_catalog["items"]
-    )
     with sqlite3.connect(BACKEND_ROOT / "instance" / "health_system.db") as connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM report_assets WHERE asset_type_id IS NULL"

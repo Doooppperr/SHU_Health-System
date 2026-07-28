@@ -45,7 +45,26 @@ def create_locked_report(client, user_headers, org_headers, institution_id, pack
     response = client.post("/api/org/reports", headers=org_headers, json={"appointment_id": appointment_id})
     assert response.status_code == 201
     report_id = response.get_json()["item"]["id"]
-    assert client.post(f"/api/org/reports/{report_id}/indicators", headers=org_headers, json={"indicator_dict_id": indicator_id, "value": "73"}).status_code == 201
+    indicator_response = client.post(
+        f"/api/org/reports/{report_id}/indicators",
+        headers=org_headers,
+        json={"indicator_dict_id": indicator_id, "value": "73"},
+    )
+    assert indicator_response.status_code == 201
+    domain_id = indicator_response.get_json()["item"]["display_domain_id"]
+    missing = client.post(f"/api/org/reports/{report_id}/lock", headers=org_headers)
+    assert missing.status_code == 409
+    assert missing.get_json()["code"] == "MISSING_DOMAIN_CONCLUSIONS"
+    conclusion = client.post(
+        f"/api/org/health-data/{report_id}/text-results",
+        headers=org_headers,
+        json={
+            "health_domain_id": domain_id,
+            "title": "心血管检查结论",
+            "body": "本次静息心率处于参考范围内，节律平稳。",
+        },
+    )
+    assert conclusion.status_code == 201
     assert client.post(f"/api/org/reports/{report_id}/lock", headers=org_headers).status_code == 200
     return report_id
 
@@ -246,6 +265,18 @@ def test_org_ocr_mock_creates_reviewable_draft_and_lock_deletes_file(app, client
         report = db.session.get(InstitutionReport, report_id)
         path = report_file_path(report.temporary_file_url)
         assert path and path.exists() and report.indicators
+        domain_ids = sorted({item.display_domain_id for item in report.indicators})
+    for domain_id in domain_ids:
+        added = client.post(
+            f"/api/org/health-data/{report_id}/text-results",
+            headers=headers,
+            json={
+                "health_domain_id": domain_id,
+                "title": "检查结论",
+                "body": "本次检查结果已完成复核。",
+            },
+        )
+        assert added.status_code == 201
     locked = client.post(f"/api/org/reports/{report_id}/lock", headers=headers)
     assert locked.status_code == 200
     assert not path.exists()
@@ -266,13 +297,13 @@ def test_admin_cascade_deletes_regular_user_business_data(app, client):
         assert SelfMeasurement.query.filter_by(user_id=user_id).count() == 0
 
 
-def test_ai_emergency_skips_public_knowledge_retrieval(app, client):
-    class ForbiddenRetriever:
+def test_ai_health_question_uses_normal_answer_pipeline(app, client):
+    class AvailableRetriever:
         @staticmethod
         def retrieve(*_args, **_kwargs):
-            raise AssertionError("emergency path must not invoke RAG")
+            return RetrievalResult(status="empty")
 
-    app.extensions["knowledge_retriever"] = ForbiddenRetriever()
+    app.extensions["knowledge_retriever"] = AvailableRetriever()
     response = client.post(
         "/api/ai/chat/stream",
         headers=login(client, "test1"),
@@ -280,8 +311,8 @@ def test_ai_emergency_skips_public_knowledge_retrieval(app, client):
     )
     assert response.status_code == 200
     body = response.get_data(as_text=True)
-    assert '"decision":"emergency"' in body
-    assert '"stage":"retrieving"' not in body
+    assert '"decision":"answer"' in body
+    assert '"stage":"retrieving"' in body
 
 
 def test_ai_owner_scope_uses_published_reports_and_degrades_without_rag(app, client):

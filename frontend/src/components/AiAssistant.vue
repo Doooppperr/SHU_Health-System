@@ -64,7 +64,7 @@
           <div class="ai-welcome-icon">AI</div>
           <h2>{{ authenticated ? "你好，我是健康科普助手" : "你好，我可以介绍本系统" }}</h2>
           <p v-if="authenticated">
-            我可以解释指标含义和一般生活建议，但不能诊断疾病、推荐处方药或替代医生。
+            我可以结合系统档案分析体检报告、指标趋势并回答健康问题。
           </p>
           <p v-else>
             登录前可以询问注册、登录、导入体检报告和其他公开功能。个人指标分析需要先登录。
@@ -92,8 +92,6 @@
             <div v-if="message.role === 'assistant'" class="ai-message-label">
               AI 助手
               <el-tag v-if="message.kind === 'analysis'" size="small" type="success">智能分析</el-tag>
-              <el-tag v-if="message.decision === 'support'" size="small" type="warning">转人工</el-tag>
-              <el-tag v-else-if="message.decision === 'emergency'" size="small" type="danger">紧急提醒</el-tag>
             </div>
             <div class="ai-message-content">{{ message.content }}</div>
             <div v-if="message.contextSources?.length" class="ai-system-sources">
@@ -106,14 +104,6 @@
               <el-tag size="small" type="success">本次参考</el-tag>
               <span>{{ recordResolutionLabel(message.recordResolution) }}</span>
             </div>
-            <a
-              v-if="message.supportPhone"
-              class="ai-phone-link"
-              :href="phoneHref(message.supportPhone)"
-            >
-              拨打 {{ message.supportPhone }}
-            </a>
-
             <p v-if="message.failed" class="ai-message-error" role="alert">
               {{ message.errorMessage }}
             </p>
@@ -426,9 +416,6 @@
             发送
           </el-button>
         </div>
-        <p id="ai-chat-disclaimer" class="ai-disclaimer">
-          AI 内容仅供健康科普参考。出现急症请拨打 120；请勿输入身份证号等无关敏感信息。
-        </p>
       </footer>
     </aside>
   </transition>
@@ -803,10 +790,6 @@ function prepareRecordFollowUp(message) {
 function clearError() {
   errorMessage.value = "";
   aiStore.lastError = "";
-}
-
-function phoneHref(phone) {
-  return `tel:${String(phone).replace(/[^\d+]/g, "")}`;
 }
 
 async function scrollToBottom() {
@@ -1505,11 +1488,6 @@ onBeforeUnmount(() => {
   white-space: normal;
   text-overflow: clip;
   overflow-wrap: anywhere;
-}
-
-:global(html[data-care="on"] .ai-consent .el-checkbox__input) {
-  align-self: flex-start;
-  margin-top: 0.2em;
 }
 
 :global(html[data-care="on"] .ai-message-bubble) {

@@ -82,12 +82,10 @@ describe("AI chat store", () => {
     store.showRecordPicker({ mode: "manual" });
     await flushPromises();
     store.setSelectedRecordIds([record.id]);
-    store.setConsentGiven(true);
 
     await store.confirmRecordPicker(true);
     expect(store.pickerContext).toBeNull();
     expect(store.selectedRecordIds).toEqual([record.id]);
-    expect(store.consentGiven).toBe(true);
 
     await store.sendMessage("结合档案解释", true);
     expect(api.streamAiChat).toHaveBeenCalledWith(
@@ -96,7 +94,6 @@ describe("AI chat store", () => {
           owner_id: record.owner_id,
           anchor_record_ids: [record.id],
         }),
-        consent: true,
       }),
       expect.any(Object)
     );
@@ -124,7 +121,6 @@ describe("AI chat store", () => {
     await flushPromises();
     store.setRecordSelectionMode("owner");
     store.setSelectedOwnerId(10);
-    store.setConsentGiven(true);
 
     await store.confirmRecordPicker(true);
     await store.sendMessage("分析全部历史档案", true);
@@ -132,7 +128,7 @@ describe("AI chat store", () => {
     const payload = api.streamAiChat.mock.calls[0][0];
     expect(payload.record_scope).toEqual({ owner_id: 10, mode: "all_confirmed" });
     expect(payload.selected_record_ids).toBeUndefined();
-    expect(payload.consent).toBe(true);
+    expect(payload.consent).toBeUndefined();
     expect(store.selectedOwnerId).toBe(10);
     expect(store.activeRecordContext).toMatchObject({
       owner_id: 10,
@@ -160,7 +156,6 @@ describe("AI chat store", () => {
     expect(api.fetchAiRecords).toHaveBeenCalledOnce();
 
     store.setSelectedRecordIds([record.id]);
-    store.setConsentGiven(true);
     await store.confirmRecordPicker(true);
 
     expect(store.messages).toHaveLength(2);
@@ -169,7 +164,6 @@ describe("AI chat store", () => {
     expect(api.streamAiChat.mock.calls[1][0]).toMatchObject({
       message: "分析我的历史趋势",
       selected_record_ids: [record.id],
-      consent: true,
     });
   });
 
@@ -179,7 +173,6 @@ describe("AI chat store", () => {
     const store = useAiChatStore();
     store.initialize(10);
     expect(store.prepareRecordAnalysis([record])).toBe(true);
-    store.setConsentGiven(true);
 
     const assistant = await store.analyzePreparedRecords();
     expect(assistant.failed).toBe(true);
@@ -189,7 +182,6 @@ describe("AI chat store", () => {
     expect(store.retryAnalysis(assistant)).toBe(true);
     expect(store.preparedAnalysis).toMatchObject({ ownerId: 10 });
     expect(store.selectedRecordIds).toEqual([record.id]);
-    expect(store.consentGiven).toBe(true);
   });
 
   it("retries a failed record-aware chat with the same active context", async () => {
@@ -202,7 +194,6 @@ describe("AI chat store", () => {
     store.showRecordPicker({ mode: "manual" });
     await flushPromises();
     store.setSelectedRecordIds([record.id]);
-    store.setConsentGiven(true);
     await store.confirmRecordPicker(true);
 
     const failedAssistant = await store.sendMessage("这些指标是什么意思", true);
@@ -218,11 +209,10 @@ describe("AI chat store", () => {
       active_record_context: expect.objectContaining({
         anchor_record_ids: [record.id],
       }),
-      consent: true,
     });
   });
 
-  it("does not let an old generic retry consume analysis consent", async () => {
+  it("does not let an old generic retry consume a prepared analysis", async () => {
     const failure = Object.assign(new Error("连接中断"), { retryable: true });
     api.streamAiChat.mockRejectedValueOnce(failure);
     const store = useAiChatStore();
@@ -231,13 +221,11 @@ describe("AI chat store", () => {
     expect(failedAssistant.retryable).toBe(true);
 
     store.prepareRecordAnalysis([record]);
-    store.setConsentGiven(true);
     await store.retryMessage(failedAssistant.id, true);
 
     expect(api.streamAiChat).toHaveBeenCalledOnce();
     expect(store.preparedAnalysis).not.toBeNull();
     expect(store.selectedRecordIds).toEqual([record.id]);
-    expect(store.consentGiven).toBe(true);
   });
 
   it("does not let an old analysis retry replace an active stream context", async () => {
@@ -284,7 +272,6 @@ describe("AI chat store", () => {
     const store = useAiChatStore();
     store.initialize(10);
     store.prepareRecordAnalysis([record]);
-    store.setConsentGiven(true);
 
     const assistant = await store.analyzePreparedRecords();
 
@@ -307,7 +294,6 @@ describe("AI chat store", () => {
     const store = useAiChatStore();
     store.initialize(10);
     store.prepareRecordAnalysis([record]);
-    store.setConsentGiven(true);
     await store.analyzePreparedRecords();
 
     await store.sendMessage("如何修改系统主题？", true);
@@ -356,7 +342,6 @@ describe("AI chat store", () => {
 
     expect(store.prepareRecordFollowUp(store.messages[3])).toBe(true);
     await flushPromises();
-    store.setConsentGiven(true);
     await store.confirmRecordPicker(true);
     await store.sendMessage("请继续解释", true);
 
@@ -367,7 +352,7 @@ describe("AI chat store", () => {
     ]);
     expect(payload.history.some((item) => item.content.includes("亲友甲"))).toBe(false);
     expect(payload.selected_record_ids).toEqual([8]);
-    expect(payload.consent).toBe(true);
+    expect(payload.consent).toBeUndefined();
   });
 
   it("restores a failed analysis as an analysis retry after a tab reload", () => {
@@ -404,7 +389,6 @@ describe("AI chat store", () => {
     expect(restored.kind).toBe("analysis");
     expect(restored.retryRecords).toHaveLength(1);
     expect(restoredStore.retryAnalysis(restored)).toBe(true);
-    expect(restoredStore.consentGiven).toBe(false);
   });
 
   it("marks a persisted partial stream as interrupted and excludes it from history", async () => {

@@ -2,8 +2,6 @@ const CODE_MESSAGES = Object.freeze({
   INVALID_CAPTCHA: "验证码不正确，请重新输入",
   APPOINTMENT_DATE_CONFLICT: "当天已有预约，请先查看或取消原预约后再选择其他日期",
   APPOINTMENT_FULL: "当前日期剩余名额不足，请选择其他日期或开启空位提醒",
-  record_consent_required: "请先确认本次健康数据授权",
-  trend_consent_required: "请先确认本次页面的趋势分析授权",
   rate_limited: "请求过于频繁，请稍后再试",
   owner_access_denied: "当前没有查看该成员健康数据的授权",
 });

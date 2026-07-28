@@ -85,7 +85,6 @@ function normalizeMessages(rawMessages) {
         content: message.content,
         kind: message.kind || "chat",
         decision: message.decision || "answer",
-        supportPhone: message.supportPhone || "",
         source: message.source || "model",
         streaming: false,
         failed: message.failed === true || interrupted,
@@ -93,7 +92,7 @@ function normalizeMessages(rawMessages) {
         retryable: message.retryable === true || interrupted,
         errorMessage:
           message.errorMessage ||
-          (interrupted ? "页面刷新导致本次生成中断，可重新授权后重试。" : ""),
+          (interrupted ? "页面刷新导致本次生成中断，可直接重试。" : ""),
         action: message.action || "",
         errorCode: message.errorCode || (interrupted ? "PAGE_RELOADED" : ""),
         recordSensitive,
@@ -247,7 +246,6 @@ export const useAiChatStore = defineStore("ai-chat", {
     summary: "",
     activeRecordContext: null,
     selectedRecordIds: [],
-    consentGiven: false,
     autoSelectRecords: false,
     availableRecords: [],
     availableOwners: [],
@@ -368,11 +366,6 @@ export const useAiChatStore = defineStore("ai-chat", {
       if (this.selectedOwnerId !== null) this.selectedRecordIds = [];
     },
 
-    setConsentGiven(value) {
-      this.consentGiven = value === true;
-      if (this.consentGiven) this.lastError = "";
-    },
-
     setAutoSelectRecords(value) {
       this.autoSelectRecords = value === true;
     },
@@ -413,7 +406,6 @@ export const useAiChatStore = defineStore("ai-chat", {
       this.selectedRecordIds = [];
       this.selectedOwnerId = null;
       this.recordSelectionMode = "records";
-      this.consentGiven = false;
       this.preparedAnalysis = null;
       this.pendingSensitiveHistoryAssistantId = "";
       if (!keepPicker) this.pickerContext = null;
@@ -657,7 +649,6 @@ export const useAiChatStore = defineStore("ai-chat", {
         kind: "chat",
         streaming: true,
         decision: "answer",
-        supportPhone: "",
         source: "model",
         recordSensitive: hasRecordContext,
         contextRecordIds: [...selectedRecordIds],
@@ -695,7 +686,6 @@ export const useAiChatStore = defineStore("ai-chat", {
             includeLegacyContext && requestRecordContext?.scope_mode === "all_confirmed"
               ? { owner_id: selectedOwnerId, mode: "all_confirmed" }
               : undefined,
-          consent: true,
         },
       });
       return reactiveAssistantMessage;
@@ -770,7 +760,6 @@ export const useAiChatStore = defineStore("ai-chat", {
             includeLegacyContext && retryContext?.scope_mode === "all_confirmed"
               ? { owner_id: selectedOwnerId, mode: "all_confirmed" }
               : undefined,
-          consent: true,
         },
       });
       return assistantMessage;
@@ -806,7 +795,6 @@ export const useAiChatStore = defineStore("ai-chat", {
         kind: "analysis",
         streaming: true,
         decision: "answer",
-        supportPhone: "",
         source: "model",
         retryRecords: analysis.records,
         recordSensitive: true,
@@ -825,7 +813,7 @@ export const useAiChatStore = defineStore("ai-chat", {
         assistantMessage: reactiveAssistantMessage,
         userMessage: reactiveUserMessage,
         stream: streamAiAnalysis,
-        payload: { selected_record_ids: ids, consent: true },
+        payload: { selected_record_ids: ids },
       });
       return reactiveAssistantMessage;
     },
@@ -903,7 +891,6 @@ export const useAiChatStore = defineStore("ai-chat", {
                 assistantMessage.content = event.reply || event.content;
               }
               assistantMessage.decision = event.decision || assistantMessage.decision;
-              assistantMessage.supportPhone = event.support_phone || "";
               assistantMessage.source = event.source || assistantMessage.source;
               assistantMessage.contextSources = Array.isArray(event.context_sources) ? event.context_sources : [];
               assistantMessage.recordResolution = event.record_resolution || null;

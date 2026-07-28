@@ -7,7 +7,8 @@ vi.mock("vue-router",()=>({useRouter:()=>({push,replace}),useRoute:()=>({query:{
 const orgApi=vi.hoisted(()=>({
   fetchOrgPackages:vi.fn(),createOrgPackage:vi.fn(),updateOrgPackage:vi.fn(),deactivateOrgPackage:vi.fn(),reactivateOrgPackage:vi.fn(),
   fetchOrgReports:vi.fn(),createOrgReport:vi.fn(),fetchOrgReport:vi.fn(),addOrgReportIndicator:vi.fn(),deleteOrgReportIndicator:vi.fn(),addOrgTextResult:vi.fn(),deleteOrgTextResult:vi.fn(),uploadOrgHealthAsset:vi.fn(),deleteOrgHealthAsset:vi.fn(),lockOrgReport:vi.fn(),submitOrgReport:vi.fn(),uploadOrgReportOcr:vi.fn(),
-  fetchOrgAppointments:vi.fn(),attendOrgAppointment:vi.fn(),invalidateOrgAppointment:vi.fn(),fetchOrgAppointmentCapacity:vi.fn(),updateOrgAppointmentCapacity:vi.fn(),
+  fetchOrgReportAssetTypes:vi.fn(),fetchOrgReportAssetContent:vi.fn(),updateOrgHealthAsset:vi.fn(),
+  fetchOrgAppointments:vi.fn(),attendOrgAppointment:vi.fn(),closeOrgAppointment:vi.fn(),fetchOrgAppointmentCapacity:vi.fn(),updateOrgAppointmentCapacity:vi.fn(),
 }));
 const healthApi=vi.hoisted(()=>({fetchHealthDomains:vi.fn()}));
 const indicatorApi=vi.hoisted(()=>({fetchIndicatorDicts:vi.fn()}));
@@ -28,6 +29,7 @@ beforeEach(()=>{
   orgApi.fetchOrgAppointmentCapacity.mockResolvedValue({data:{unlimited:false,daily_appointment_limit:20}});
   orgApi.fetchOrgReports.mockResolvedValue({data:{items:[],total:0,filtered_total:0}});
   orgApi.fetchOrgAppointments.mockResolvedValue({data:{items:[]}});
+  orgApi.fetchOrgReportAssetTypes.mockResolvedValue({data:{items:[]}});
 });
 afterEach(()=>{wrappers.splice(0).forEach((wrapper)=>wrapper.unmount());document.body.innerHTML="";});
 
@@ -78,5 +80,30 @@ describe("institution platform views",()=>{
     const sharedTab=wrapper.findAll(".report-tabs button").find((item)=>item.text().includes("机构共享档案"));
     await sharedTab.trigger("click");await flushPromises();
     expect(orgApi.fetchOrgReports).toHaveBeenCalledWith(expect.objectContaining({scope:"organization",access:"cross_branch",subject:"test3"}));
+  });
+
+  it("shows conclusion coverage and prevents locking while a report domain is incomplete",async()=>{
+    orgApi.fetchOrgAppointments.mockResolvedValue({data:{items:[{
+      id:8,appointment_date:"2026-07-28",status:"awaiting_report",package_name:"年度综合体检",
+      user:{name:"林晓晨",health_id:"HID-8K3M2Q7A"},report_id:11,report_status:"draft",
+    }]}});
+    orgApi.fetchOrgReport.mockResolvedValue({data:{item:{
+      id:11,status:"draft",
+      package_version:{domains:[{id:1,name:"心脑血管"},{id:2,name:"代谢"}]},
+      indicators:[{id:1,display_domain_id:1,value:"4.2"}],
+      assets:[{id:2,domain_id:2,title:"检查附件"}],
+      text_results:[{id:3,domain_id:1,title:"心血管检查结论",body:"本次检查结果总体平稳。"}],
+    }}});
+    const wrapper=mountView(OrgReportsView);await flushPromises();
+    const archiveTab=wrapper.findAll(".report-tabs button").find((item)=>item.text().includes("待归档"));
+    await archiveTab.trigger("click");await flushPromises();
+    const detailButton=wrapper.findAll(".appointment-actions .el-button").find((item)=>item.text().includes("继续完善结果"));
+    await detailButton.trigger("click");await flushPromises();
+    expect(orgApi.fetchOrgReport).toHaveBeenCalledWith(11);
+    expect(wrapper.vm.detailVisible).toBe(true);
+    expect(wrapper.vm.conclusionDomainIds.has(1)).toBe(true);
+    expect(wrapper.vm.missingConclusionDomains.map((domain)=>domain.name)).toEqual(["代谢"]);
+    await wrapper.vm.lockReport(11);
+    expect(orgApi.lockOrgReport).not.toHaveBeenCalled();
   });
 });

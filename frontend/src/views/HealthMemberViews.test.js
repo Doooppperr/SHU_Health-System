@@ -4,15 +4,18 @@ import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import HealthDataView from "./HealthDataView.vue";
+import HealthDataDetailView from "./HealthDataDetailView.vue";
 import HealthTimelineView from "./HealthTimelineView.vue";
 import TrendView from "./TrendView.vue";
 import { useAuthStore } from "../stores/auth";
 
 const mocks = vi.hoisted(() => ({
-  route: { query: {} },
+  route: { query: {}, params: {} },
   router: { push: vi.fn(), replace: vi.fn().mockResolvedValue() },
   fetchFriends: vi.fn(),
   fetchHealthData: vi.fn(),
+  fetchHealthDataDetail: vi.fn(),
+  fetchHealthAssetContent: vi.fn(),
   fetchHealthDomains: vi.fn(),
   fetchHealthTrends: vi.fn(),
   fetchTimeline: vi.fn(),
@@ -24,6 +27,8 @@ vi.mock("vue-router", () => ({ useRoute: () => mocks.route, useRouter: () => moc
 vi.mock("../api/friends", () => ({ fetchFriends: mocks.fetchFriends }));
 vi.mock("../api/health", () => ({
   fetchHealthData: mocks.fetchHealthData,
+  fetchHealthDataDetail: mocks.fetchHealthDataDetail,
+  fetchHealthAssetContent: mocks.fetchHealthAssetContent,
   fetchHealthDomains: mocks.fetchHealthDomains,
   fetchHealthTrends: mocks.fetchHealthTrends,
   fetchTimeline: mocks.fetchTimeline,
@@ -40,6 +45,7 @@ const wrappers = [];
 
 function mountView(component, query = {}) {
   mocks.route.query = query;
+  mocks.route.params = component === HealthDataDetailView ? { id: "hd-i-42" } : {};
   const pinia = createPinia();
   setActivePinia(pinia);
   useAuthStore(pinia).user = { id: 1, username: "本人账号", role: "user" };
@@ -60,6 +66,30 @@ beforeEach(() => {
   mocks.fetchHealthDomains.mockResolvedValue({ data: domainPayload });
   mocks.fetchInstitutions.mockResolvedValue({ data: { items: [] } });
   mocks.fetchHealthData.mockResolvedValue({ data: { owner: { id: 12 }, items: [], pagination: { page: 1, page_size: 15, total: 0 } } });
+  mocks.fetchHealthDataDetail.mockResolvedValue({
+    data: {
+      item: {
+        source_type: "institution",
+        business_date: "2026-07-24",
+        package: { name: "年度综合体检" },
+        source: { name: "澄心健康管理中心", branch_name: "徐汇综合院区" },
+        sections: [
+          {
+            domain: { id: 1, name: "基础体征与体格" },
+            indicators: [{ id: 1, value: "26.3", result_status: "high", is_abnormal: true, indicator: { name: "体重指数", unit: "kg/m²" } }],
+            text_results: [{ id: 1, title: "体格检查结论", body: "体重指数偏高。" }],
+            assets: [],
+          },
+          {
+            domain: { id: 2, name: "心脑血管" },
+            indicators: [{ id: 2, value: "120", result_status: "normal", is_abnormal: false, indicator: { name: "收缩压", unit: "mmHg" } }],
+            text_results: [{ id: 2, title: "心血管检查结论", body: "血压平稳。" }],
+            assets: [{ id: 2, title: "十二导联心电图", modality: "ecg", annotation: "窦性心律。" }],
+          },
+        ],
+      },
+    },
+  });
   mocks.fetchTimeline.mockResolvedValue({ data: { owner: { id: 12 }, items: [], pagination: { page: 1, page_size: 15, total: 0 } } });
   mocks.fetchHealthTrends.mockResolvedValue({
     data: {
@@ -153,5 +183,32 @@ describe("健康成员筛选请求", () => {
     expect(note.text()).not.toContain("机构报告参考范围");
     expect(note.text()).not.toContain("优先采用机构报告提供的参考范围");
     expect(note.find("a").exists()).toBe(false);
+  });
+
+  it("体检详情支持按一个或多个健康方向同步筛选指标、结论和附件", async () => {
+    const wrapper = mountView(HealthDataDetailView);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("已显示 2/2 个方向");
+    expect(wrapper.text()).toContain("体格检查结论");
+    expect(wrapper.text()).toContain("十二导联心电图");
+    expect(wrapper.text()).toContain("2");
+
+    wrapper.vm.handleDomainSelection([2]);
+    await flushPromises();
+    expect(wrapper.text()).toContain("已显示 1/2 个方向");
+    expect(wrapper.text()).not.toContain("体格检查结论");
+    expect(wrapper.text()).toContain("心血管检查结论");
+    expect(wrapper.text()).toContain("十二导联心电图");
+    expect(wrapper.find(".health-detail-hero__summary").text()).toContain("1");
+
+    wrapper.vm.handleDomainSelection([]);
+    await flushPromises();
+    expect(wrapper.text()).toContain("心血管检查结论");
+
+    wrapper.vm.selectAllDomains();
+    await flushPromises();
+    expect(wrapper.text()).toContain("已显示 2/2 个方向");
+    expect(wrapper.text()).toContain("体格检查结论");
   });
 });

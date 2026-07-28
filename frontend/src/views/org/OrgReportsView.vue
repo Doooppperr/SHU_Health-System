@@ -89,7 +89,7 @@
       <template #footer><el-button @click="closeVisible=false">返回</el-button><el-button type="danger" @click="submitClose">确认处理</el-button></template>
     </el-dialog>
 
-    <el-drawer v-model="subjectVisible" title="本次预约资料快照" size="min(480px,94vw)">
+    <el-drawer v-model="subjectVisible" title="受检者资料" size="min(480px,94vw)">
       <el-descriptions v-if="subjectAppointment?.user" :column="1" border>
         <el-descriptions-item label="真实姓名">{{subjectAppointment.user.name}}</el-descriptions-item>
         <el-descriptions-item label="健康身份码">{{subjectAppointment.user.health_id}}</el-descriptions-item>
@@ -102,7 +102,6 @@
         <el-descriptions-item label="过敏史">{{subjectAppointment.user.allergy_history||"无/未填写"}}</el-descriptions-item>
         <el-descriptions-item label="既往史">{{subjectAppointment.user.medical_history||"无/未填写"}}</el-descriptions-item>
       </el-descriptions>
-      <el-alert title="以上为预约创建时的隐私快照，不会随用户后续资料修改而变化。" type="info" :closable="false" style="margin-top:16px"/>
     </el-drawer>
 
     <el-drawer v-model="detailVisible" title="健康数据生产" size="min(960px,98vw)" class="report-detail-drawer">
@@ -119,7 +118,23 @@
         </section>
 
         <section class="production-section">
-          <header><div><span>02</span><h3>专业文字结论</h3></div><small>{{current.text_results?.length||0}} 条</small></header>
+          <header><div><span>02</span><h3>专业文字结论</h3></div><small>已完成 {{ conclusionDomainIds.size }}/{{ representedDomains.length }} 个方向</small></header>
+          <div v-if="representedDomains.length" class="conclusion-coverage">
+            <el-tag
+              v-for="domain in representedDomains"
+              :key="domain.id"
+              :type="conclusionDomainIds.has(domain.id) ? 'success' : 'warning'"
+              effect="light"
+            >
+              {{ domain.name }} · {{ conclusionDomainIds.has(domain.id) ? "已完成" : "待完善" }}
+            </el-tag>
+          </div>
+          <el-alert
+            v-if="missingConclusionDomains.length"
+            :title="`还需完善：${missingConclusionDomains.map((domain) => domain.name).join('、')}`"
+            type="warning"
+            :closable="false"
+          />
           <div v-if="current.status==='draft'" class="text-entry"><el-select v-model="textForm.health_domain_id" placeholder="健康领域"><el-option v-for="d in allowedDomains" :key="d.id" :label="d.name" :value="d.id"/></el-select><el-input v-model="textForm.title" placeholder="结论标题"/><el-input v-model="textForm.body" type="textarea" :rows="2" placeholder="填写检查所见或专业结论"/><el-button @click="addText">添加结论</el-button></div>
           <article v-for="item in current.text_results||[]" :key="item.id" class="text-result"><div><strong>{{item.title}}</strong><p>{{item.body}}</p></div><el-button v-if="current.status==='draft'" link type="danger" @click="removeText(item)">删除</el-button></article>
         </section>
@@ -136,7 +151,7 @@
           <article v-for="item in current.assets||[]" :key="item.id" class="asset-result"><span><strong>{{item.asset_type?.name||item.title}} · {{item.title}}</strong><small>{{item.annotation||'暂无机构批注'}}</small></span><div class="asset-actions"><el-button link type="primary" @click="viewAsset(item)">查看附件</el-button><el-button v-if="current.status==='draft'" link @click="editAsset(item)">修改标题/批注</el-button><el-button v-if="current.status==='draft'" link type="danger" @click="removeAsset(item)">删除</el-button></div></article>
         </section>
 
-        <section class="production-final"><div><h3>复核与正式归档</h3><p>{{ finalGuidance }}</p></div><el-button v-if="current.status==='draft'" type="success" @click="lockReport(current.id)">完成复核并锁定</el-button><el-button v-else-if="current.status==='locked'" type="primary" @click="submitReport(current.id)">提交并交付给用户</el-button><el-tag v-else type="success">已正式交付</el-tag></section>
+        <section class="production-final"><div><h3>复核与正式归档</h3><p>{{ finalGuidance }}</p></div><el-button v-if="current.status==='draft'" type="success" :disabled="missingConclusionDomains.length>0" @click="lockReport(current.id)">完成复核并锁定</el-button><el-button v-else-if="current.status==='locked'" type="primary" @click="submitReport(current.id)">提交并交付给用户</el-button><el-tag v-else type="success">已正式交付</el-tag></section>
       </template>
     </el-drawer>
 
@@ -151,7 +166,7 @@
           @click="assetZoomed = !assetZoomed"
         />
         <iframe v-else :src="previewUrl" title="PDF 检查附件" />
-        <p>{{ previewAsset?.annotation || "开放授权真实医学样例，仅用于功能展示，不作为诊断依据。" }}</p>
+        <p>{{ previewAsset?.annotation || "机构检查附件" }}</p>
       </div>
     </el-dialog>
   </div>
@@ -180,6 +195,10 @@ const subjectVisible=ref(false),subjectAppointment=ref(null);
 const assetPreviewVisible=ref(false),previewAsset=ref(null),previewUrl=ref(""),assetZoomed=ref(false);
 const allowedDomains=computed(()=>current.value?.package_version?.domains||[]);
 const allowedIndicators=computed(()=>{const ids=new Set(allowedDomains.value.map((x)=>x.id));return indicators.value.filter((x)=>(x.domains||[]).some((domain)=>ids.has(domain.id)));});
+const representedDomainIds=computed(()=>new Set([...(current.value?.indicators||[]).map((item)=>item.display_domain_id),...(current.value?.assets||[]).map((item)=>item.domain_id)].filter(Boolean)));
+const representedDomains=computed(()=>allowedDomains.value.filter((domain)=>representedDomainIds.value.has(domain.id)));
+const conclusionDomainIds=computed(()=>new Set((current.value?.text_results||[]).map((item)=>item.domain_id)));
+const missingConclusionDomains=computed(()=>representedDomains.value.filter((domain)=>!conclusionDomainIds.value.has(domain.id)));
 const visibleAppointments=computed(()=>items.value);
 const tabs=computed(()=>[{value:"today",label:"今日接待",count:tabCounts.today},{value:"archive",label:"待归档",count:tabCounts.archive},{value:"all",label:"全部预约",count:tabCounts.all},{value:"history",label:"本院归档",count:archiveTotals.history},{value:"shared",label:"机构共享档案",count:archiveTotals.shared}]);
 const displayedReports=computed(()=>view.value==="shared"?sharedReports.value:archivedReports.value);
@@ -209,10 +228,10 @@ async function submitClose(){if(closeForm.reason_type==="institution_cancelled"&
 async function createManual(item){try{const{data}=await createOrgReport({appointment_id:item.id});ElMessage.success("已建立待完善健康数据");await load();await openDetailById(data.item.id);}catch(error){ElMessage.error(error?.response?.data?.message||"建立失败");}}
 function openOcr(item){selectedAppointment.value=item;ocrFile.value=null;ocrVisible.value=true;}
 async function runOcr(){if(!ocrFile.value){ElMessage.error("请选择体检报告文件");return;}ocrLoading.value=true;try{const{data}=await uploadOrgReportOcr(ocrFile.value,{appointment_id:selectedAppointment.value.id});ocrVisible.value=false;ElMessage.success(`已建立待复核健康数据，识别到 ${data.item.indicator_count} 项结果`);await load();await openDetailById(data.item.id);}catch(error){ElMessage.error(error?.response?.data?.message||"报告识别失败");}finally{ocrLoading.value=false;}}
-async function openDetailById(id){current.value=(await fetchOrgReport(id)).data.item;const first=current.value?.package_version?.domains?.[0]?.id;textForm.health_domain_id=first||null;assetForm.health_domain_id=first||null;indicatorForm.indicator_dict_id=allowedIndicators.value[0]?.id||null;assetTypes.value=(await fetchOrgReportAssetTypes(id)).data.items||[];assetForm.asset_type_id=assetTypes.value[0]?.id||null;assetTypeChanged(assetForm.asset_type_id);detailVisible.value=true;}
+async function openDetailById(id){current.value=(await fetchOrgReport(id)).data.item;const firstMissing=missingConclusionDomains.value[0]?.id;const first=current.value?.package_version?.domains?.[0]?.id;textForm.health_domain_id=firstMissing||first||null;assetForm.health_domain_id=first||null;indicatorForm.indicator_dict_id=allowedIndicators.value[0]?.id||null;assetTypes.value=(await fetchOrgReportAssetTypes(id)).data.items||[];assetForm.asset_type_id=assetTypes.value[0]?.id||null;assetTypeChanged(assetForm.asset_type_id);detailVisible.value=true;}
 async function addIndicator(){if(!indicatorForm.indicator_dict_id||!String(indicatorForm.value).trim())return ElMessage.error("请选择指标并填写检查结果");try{await addOrgReportIndicator(current.value.id,indicatorForm);indicatorForm.value="";await openDetailById(current.value.id);}catch(error){ElMessage.error(error?.response?.data?.message||"添加失败");}}
 async function removeIndicator(item){try{await deleteOrgReportIndicator(current.value.id,item.id);await openDetailById(current.value.id);}catch(error){ElMessage.error(error?.response?.data?.message||"删除失败");}}
-async function addText(){if(!textForm.health_domain_id||!textForm.title.trim()||!textForm.body.trim())return ElMessage.error("请完整填写结论所属领域、标题和内容");try{await addOrgTextResult(current.value.id,textForm);Object.assign(textForm,{health_domain_id:allowedDomains.value[0]?.id||null,title:"",body:""});await openDetailById(current.value.id);}catch(error){ElMessage.error(error?.response?.data?.message||"添加结论失败");}}
+async function addText(){if(!textForm.health_domain_id||!textForm.title.trim()||!textForm.body.trim())return ElMessage.error("请完整填写结论所属领域、标题和内容");try{await addOrgTextResult(current.value.id,textForm);Object.assign(textForm,{health_domain_id:null,title:"",body:""});await openDetailById(current.value.id);}catch(error){ElMessage.error(error?.response?.data?.message||"添加结论失败");}}
 async function removeText(item){try{await deleteOrgTextResult(current.value.id,item.id);await openDetailById(current.value.id);}catch(error){ElMessage.error(error?.response?.data?.message||"删除失败");}}
 function assetTypeChanged(id){const type=assetTypes.value.find((item)=>item.id===id);if(type){assetForm.health_domain_id=type.domain_id;assetForm.title=type.name;}}
 async function addAsset(){if(!assetFile.value)return ElMessage.error("请选择检查附件");if(!assetForm.asset_type_id)return ElMessage.error("请选择标准附件槽位");try{await uploadOrgHealthAsset(current.value.id,assetFile.value,{...assetForm,modality:assetFile.value.type==="application/pdf"?"pdf":"image"});assetFile.value=null;assetForm.annotation="";await openDetailById(current.value.id);}catch(error){ElMessage.error(error?.response?.data?.message||"附件上传失败");}}
@@ -220,7 +239,7 @@ async function editAsset(item){try{const{value}=await ElMessageBox.prompt("格�
 async function viewAsset(item){try{const response=await fetchOrgReportAssetContent(current.value.id,item.id);closeAssetPreview();previewAsset.value=item;previewUrl.value=URL.createObjectURL(response.data);assetPreviewVisible.value=true;}catch(error){ElMessage.error(error?.response?.data?.message||"检查影像读取失败");}}
 function closeAssetPreview(){if(previewUrl.value)URL.revokeObjectURL(previewUrl.value);previewUrl.value="";previewAsset.value=null;assetZoomed.value=false;}
 async function removeAsset(item){try{await deleteOrgHealthAsset(current.value.id,item.id);await openDetailById(current.value.id);}catch(error){ElMessage.error(error?.response?.data?.message||"删除失败");}}
-async function lockReport(id){try{await ElMessageBox.confirm("请再次核对本次检查结果。锁定后将不能继续修改。","完成复核并锁定",{type:"warning",confirmButtonText:"确认锁定"});await lockOrgReport(id);ElMessage.success("内容已锁定，等待正式提交");await load();await openDetailById(id);}catch(error){if(error!=="cancel"&&error!=="close")ElMessage.error(error?.response?.data?.message||"锁定失败");}}
+async function lockReport(id){if(missingConclusionDomains.value.length){textForm.health_domain_id=missingConclusionDomains.value[0].id;ElMessage.warning(`请先完善${missingConclusionDomains.value.map((domain)=>domain.name).join("、")}的机构结论`);return;}try{await ElMessageBox.confirm("请再次核对本次检查结果。锁定后将不能继续修改。","完成复核并锁定",{type:"warning",confirmButtonText:"确认锁定"});await lockOrgReport(id);ElMessage.success("内容已锁定，等待正式提交");await load();await openDetailById(id);}catch(error){if(error!=="cancel"&&error!=="close")ElMessage.error(error?.response?.data?.message||"锁定失败");}}
 async function submitReport(id){try{await ElMessageBox.confirm("提交后健康数据将永久归档并向用户交付，不能修改或撤下。","提交正式归档",{type:"warning",confirmButtonText:"确认提交并交付"});await submitOrgReport(id);ElMessage.success("健康数据已正式交付");detailVisible.value=false;await load();}catch(error){if(error!=="cancel"&&error!=="close")ElMessage.error(error?.response?.data?.message||"提交失败");}}
 onMounted(async()=>{try{const response=await fetchIndicatorDicts();indicators.value=response.data.items||[];indicatorForm.indicator_dict_id=indicators.value[0]?.id||null;}catch{ElMessage.error("标准指标加载失败");}await Promise.all([load(),loadCapacity()]);});
 onBeforeUnmount(closeAssetPreview);
@@ -232,6 +251,7 @@ onBeforeUnmount(closeAssetPreview);
 .org-asset-preview img.zoomed{width:auto;max-width:none;max-height:none;margin:auto;cursor:zoom-out}
 .org-asset-preview iframe{width:100%;height:66vh;border:0;border-radius:8px;background:#fff}
 .org-asset-preview p{margin:0;color:#d5e8e4;font-size:12px;line-height:1.6}
+.conclusion-coverage{display:flex;flex-wrap:wrap;gap:8px}
 </style>
 
 <style scoped>
