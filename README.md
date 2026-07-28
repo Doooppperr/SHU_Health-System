@@ -241,7 +241,7 @@ npm run build
 npm audit --omit=dev
 ```
 
-当前验收基线：后端 96 项、前端 133 项测试通过，Vite production build 通过，Python 生产依赖清单与前端生产依赖审计均无已知漏洞；SQLite schema v10、v9→v10 原子升级、openGauss v10 迁移、预置业务数据预检与覆盖流程均已验证。
+当前验收基线：后端 96 项、前端 134 项测试通过，Vite production build 通过，Python 生产依赖清单与前端生产依赖审计均无已知漏洞；SQLite schema v10、v9→v10 原子升级、openGauss v10 迁移、预置业务数据预检与覆盖流程均已验证。
 
 ## 备份
 

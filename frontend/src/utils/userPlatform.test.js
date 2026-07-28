@@ -21,6 +21,14 @@ describe("user platform presentation helpers", () => {
     expect(platformCss).toMatch(/\.health-data-filter-grid[\s\S]*?\.el-range-input[\s\S]*?min-width:\s*0/);
   });
 
+  it("keeps the desktop trend AI interpretation in its own scroll container", () => {
+    const platformCss = readFileSync(resolve(process.cwd(), "src/user-platform.css"), "utf8");
+    expect(platformCss).toMatch(/\.trend-ai-panel\s*\{[\s\S]*?position:\s*sticky/);
+    expect(platformCss).toMatch(/\.trend-ai-panel\s*\{[\s\S]*?max-height:\s*calc\(100dvh\s*-\s*120px\)/);
+    expect(platformCss).toMatch(/\.trend-ai-panel\s*\{[\s\S]*?overflow-y:\s*auto/);
+    expect(platformCss).toMatch(/@media\s*\(max-width:\s*900px\)[\s\S]*?\.trend-ai-panel\s*\{[\s\S]*?position:\s*static[\s\S]*?overflow:\s*visible/);
+  });
+
   it("normalizes the unified exam timeline read model", () => {
     const result = normalizeTimelineEntry({
       record_type: "exam",
