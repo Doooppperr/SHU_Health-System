@@ -385,7 +385,7 @@ def main():
         })
         if leaks:
             raise RuntimeError(f"business copy contains banned fragments: {leaks}")
-        upload_root = BACKEND_DIR / "uploads"
+        upload_root = Path(app.config["UPLOAD_DIR"]).resolve()
         for asset in ReportAsset.query.all():
             path = (upload_root / asset.storage_key).resolve()
             if not path.is_file():
@@ -426,3 +426,4 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
