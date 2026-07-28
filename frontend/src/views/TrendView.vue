@@ -24,7 +24,27 @@
         </label>
         <label class="filter-field">
           <span class="filter-field-label">日期范围</span>
-          <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" />
+          <div class="health-date-filter">
+            <el-select v-model="datePreset" aria-label="日期范围快捷选择" @change="applyDatePreset">
+              <el-option label="全部记录" value="all" />
+              <el-option label="近一周" value="week" />
+              <el-option label="近一个月" value="month" />
+              <el-option label="近半年" value="half_year" />
+              <el-option label="自定义范围" value="custom" />
+            </el-select>
+            <el-date-picker
+              v-if="datePreset === 'custom'"
+              v-model="dateRange"
+              type="daterange"
+              unlink-panels
+              clearable
+              value-format="YYYY-MM-DD"
+              range-separator="至"
+              start-placeholder="开始日期"
+              end-placeholder="结束日期"
+              @change="applyCustomDateRange"
+            />
+          </div>
         </label>
         <label class="filter-field">
           <span class="filter-field-label">数据来源</span>
@@ -121,6 +141,8 @@ const series = computed(() => rawSeries.value.filter((entry) => selectedIndicato
 const loading = ref(false);
 const error = ref("");
 const dateRange = ref([]);
+const DATE_PRESETS = new Set(["all", "week", "month", "half_year", "custom"]);
+const datePreset = ref(DATE_PRESETS.has(String(route.query.date_preset)) ? String(route.query.date_preset) : "all");
 const aiLoading = ref(false);
 const aiAnswer = ref("");
 const aiError = ref("");
@@ -134,7 +156,10 @@ const filters = reactive({
   source: typeof route.query.source === "string" ? route.query.source : "all",
 });
 const selectedSourceLabel = computed(() => sourceOptions.value.find((item) => item.value === filters.source)?.label || "全部来源");
-if (route.query.start_date && route.query.end_date) dateRange.value = [route.query.start_date, route.query.end_date];
+if (route.query.start_date && route.query.end_date) {
+  dateRange.value = [route.query.start_date, route.query.end_date];
+  if (!DATE_PRESETS.has(String(route.query.date_preset))) datePreset.value = "custom";
+}
 
 function sourceName(source) {
   return source?.type === "self" ? "本人记录" : [source?.name, source?.branch_name].filter(Boolean).join(" · ") || "体检机构";
@@ -178,6 +203,32 @@ function cleanParams(value) {
   return result;
 }
 
+function localDate(value = new Date()) {
+  return [
+    value.getFullYear(),
+    String(value.getMonth() + 1).padStart(2, "0"),
+    String(value.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function dateOffset(days) {
+  const value = new Date();
+  value.setHours(0, 0, 0, 0);
+  value.setDate(value.getDate() - days);
+  return localDate(value);
+}
+
+function dateFilterParams() {
+  const offsets = { week: 7, month: 30, half_year: 183 };
+  if (offsets[datePreset.value]) {
+    return { start_date: dateOffset(offsets[datePreset.value]), end_date: localDate() };
+  }
+  if (datePreset.value === "custom" && dateRange.value?.length === 2) {
+    return { start_date: dateRange.value[0], end_date: dateRange.value[1] };
+  }
+  return {};
+}
+
 async function load() {
   if (!filters.domain_id) return;
   loading.value = true;
@@ -186,8 +237,7 @@ async function load() {
     const params = cleanParams(withOwnerRequestParams({
       source_type: filters.source.startsWith("institution") ? "institution" : filters.source,
       institution_id: filters.source.startsWith("institution:") ? Number(filters.source.split(":")[1]) : undefined,
-      start_date: dateRange.value?.[0],
-      end_date: dateRange.value?.[1],
+      ...dateFilterParams(),
     }, filters.owner_id));
     const { data } = await fetchHealthTrends(filters.domain_id, params);
     rawSeries.value = data.series_by_indicator || [];
@@ -212,7 +262,7 @@ function analysisPayload() {
   return cleanParams(withOwnerRequestParams({ domain_id: filters.domain_id,
     source_type: filters.source.startsWith("institution") ? "institution" : filters.source,
     institution_id: filters.source.startsWith("institution:") ? Number(filters.source.split(":")[1]) : undefined,
-    start_date: dateRange.value?.[0], end_date: dateRange.value?.[1],
+    ...dateFilterParams(),
     indicator_ids: [...selectedIndicatorIds.value] }, filters.owner_id));
 }
 
@@ -250,11 +300,20 @@ async function apply() {
   const query = cleanParams({
     ...filters,
     owner_id: filters.owner_id === SELF_OWNER_VALUE ? undefined : filters.owner_id,
-    start_date: dateRange.value?.[0],
-    end_date: dateRange.value?.[1],
+    date_preset: datePreset.value === "all" ? undefined : datePreset.value,
+    ...dateFilterParams(),
   });
   await router.replace({ query });
   await load();
+}
+
+async function applyDatePreset() {
+  if (datePreset.value !== "custom") dateRange.value = [];
+  await apply();
+}
+
+async function applyCustomDateRange() {
+  await apply();
 }
 
 onMounted(async () => {

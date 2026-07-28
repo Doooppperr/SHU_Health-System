@@ -19,7 +19,7 @@
         </label>
         <label class="filter-field">
           <span class="filter-field-label">日期范围</span>
-          <div class="health-data-date-filter">
+          <div class="health-date-filter">
             <el-select v-model="datePreset" aria-label="日期范围快捷选择" @change="applyDatePreset">
               <el-option label="全部记录" value="all" />
               <el-option label="近一周" value="week" />

@@ -159,6 +159,32 @@ describe("健康成员筛选请求", () => {
     expect(mocks.fetchHealthTrends).toHaveBeenCalledWith(1, expect.objectContaining({ owner_id: 12, source_type: "all" }));
   });
 
+  it("健康趋势支持快捷日期和跨年自定义范围", async () => {
+    const wrapper = mountView(TrendView, { domain_id: "1" });
+    await flushPromises();
+    mocks.fetchHealthTrends.mockClear();
+
+    wrapper.vm.datePreset = "month";
+    await wrapper.vm.applyDatePreset();
+    await flushPromises();
+    expect(mocks.fetchHealthTrends).toHaveBeenCalledWith(1, expect.objectContaining({
+      start_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+      end_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+    }));
+
+    wrapper.vm.datePreset = "custom";
+    wrapper.vm.dateRange = ["2022-01-01", "2026-07-31"];
+    await wrapper.vm.applyCustomDateRange();
+    await flushPromises();
+    expect(mocks.fetchHealthTrends).toHaveBeenLastCalledWith(1, expect.objectContaining({
+      start_date: "2022-01-01",
+      end_date: "2026-07-31",
+    }));
+    expect(mocks.router.replace).toHaveBeenLastCalledWith({
+      query: expect.objectContaining({ date_preset: "custom" }),
+    });
+  });
+
   it("时间线和趋势页不再残留测量入口", async () => {
     const timeline = mountView(HealthTimelineView);
     const trend = mountView(TrendView, { domain_id: "1" });
