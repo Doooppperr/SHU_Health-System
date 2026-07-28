@@ -257,7 +257,7 @@ npm audit --omit=dev
 
 ## 服务器状态
 
-仓库包含 Apache、Waitress、API/通知 worker 双 systemd 服务、openGauss 和带回滚的发布脚本。普通发布执行 v10 增量迁移并保留服务器数据；`-SyncDemoMedia` 只刷新清单素材；仅显式 `-SyncDemoDatabase` 才会在完整备份后导入新版验收快照。本轮发布保留服务器 root-only SMTP 配置，不从本机同步 `.env`。详见[服务器部署与同步](项目文档/服务器部署与同步.md)。
+仓库包含 Apache、Waitress、API/通知 worker 双 systemd 服务、openGauss 和带回滚的发布脚本。普通发布执行 v10 增量迁移并保留服务器数据；`-SyncDemoMedia` 只刷新清单素材；仅显式 `-SyncDemoDatabase` 才会在完整备份后导入新版验收快照。本轮版本已于 2026-07-28 发布至服务器目录 `20260728T041436Z`，API、通知 worker 与 Apache 均处于健康状态；发布过程保留服务器 root-only SMTP 配置，不从本机同步 `.env`。详见[服务器部署与同步](项目文档/服务器部署与同步.md)。
 
 ## 文档
 
