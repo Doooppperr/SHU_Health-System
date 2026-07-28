@@ -1,8 +1,14 @@
+from datetime import date, datetime, timezone
+
 import pytest
 
 from app.demo_v7 import (
     ACCOUNT_IDENTITY_FIELDS,
     DemoResetSafetyError,
+    TEST1_STORY_PLAN,
+    _expand_v10_test1,
+    _normalize_report_business_records,
+    _package_key,
     account_identity_snapshot,
     ensure_v7_demo_accounts,
     rebuild_v7_demo_data,
@@ -10,7 +16,7 @@ from app.demo_v7 import (
 )
 from app.extensions import db
 from app.models import (
-    Appointment, BookingGroup, HealthDomain, Institution, InstitutionReport, Organization,
+    Appointment, BookingGroup, HealthDomain, IndicatorDict, Institution, InstitutionReport, Organization,
     NotificationOutbox, Package, PackageVersion, ReportAccessLog, ReportAsset, ReportTextResult,
     User, WaitlistSubscription,
 )
@@ -19,6 +25,7 @@ from app.models import (
 EXPECTED_CATALOG = {
     "澄心健康管理中心": {
         "都市年度基础体检": ({"basic", "cardio", "metabolic", "digestive", "renal"}, 699.0),
+        "都市年度综合体检": ({"basic", "cardio", "metabolic", "digestive", "renal", "hematology", "respiratory", "other"}, 1699.0),
         "心脑血管风险筛查": ({"cardio"}, 899.0),
         "家庭长辈健康评估": ({"basic", "cardio", "metabolic", "renal"}, 1299.0),
     },
@@ -39,8 +46,8 @@ def test_v8_demo_catalog_and_platform_scenarios_are_visible(app):
     with app.app_context():
         assert Organization.query.count() == 5
         assert Institution.query.count() == 15
-        assert Package.query.count() == 25
-        assert PackageVersion.query.count() == 26
+        assert Package.query.count() == 26
+        assert PackageVersion.query.count() == 27
         assert {item.name: len(item.branches) for item in Organization.query.all()} == {
             "澄心健康管理中心": 5,
             "衡康代谢与慢病管理中心": 4,
@@ -52,7 +59,7 @@ def test_v8_demo_catalog_and_platform_scenarios_are_visible(app):
             item.name: Package.query.join(Institution).filter(Institution.organization_id == item.id).count()
             for item in Organization.query.all()
         } == {
-            "澄心健康管理中心": 8,
+            "澄心健康管理中心": 9,
             "衡康代谢与慢病管理中心": 6,
             "云川影像与呼吸体检中心": 5,
             "安沐女性与家庭健康中心": 4,
@@ -101,6 +108,92 @@ def test_published_demo_results_stay_inside_booking_package_domains(app):
                 assert report.ocr_diagnostics["import_kind"] == "historical_paper_archive"
 
 
+def test_full_scale_story_reports_exactly_match_their_packages(app, tmp_path):
+    with app.app_context():
+        users = {row.username: row for row in User.query.all()}
+        institutions = Institution.query.order_by(Institution.id).limit(3).all()
+        packages = {
+            _package_key(index, package.name): package
+            for index, institution in enumerate(institutions, start=1)
+            for package in institution.packages
+        }
+        indicators = {row.code: row for row in IndicatorDict.query.all()}
+        domains = {row.code: row for row in HealthDomain.query.all()}
+        previous_testing = app.config["TESTING"]
+        previous_upload_dir = app.config["UPLOAD_DIR"]
+        app.config["TESTING"] = False
+        app.config["UPLOAD_DIR"] = str(tmp_path)
+        try:
+            _expand_v10_test1(
+                users, institutions, packages, indicators, domains,
+                date.today(), datetime.now(timezone.utc),
+            )
+            db.session.flush()
+            _normalize_report_business_records()
+            db.session.flush()
+        finally:
+            app.config["TESTING"] = previous_testing
+            app.config["UPLOAD_DIR"] = previous_upload_dir
+
+        reports = [
+            report
+            for report in InstitutionReport.query.filter_by(
+                matched_user_id=users["test1"].id,
+                status="published",
+            ).all()
+            if (report.ocr_diagnostics or {}).get("import_kind")
+            in {"comprehensive_exam", "targeted_follow_up"}
+        ]
+        assert len(reports) == len(TEST1_STORY_PLAN) == 29
+        assert sum(
+            (report.ocr_diagnostics or {}).get("import_kind") == "comprehensive_exam"
+            for report in reports
+        ) == 9
+        for report in reports:
+            allowed = {row.health_domain_id for row in report.package_version.domains}
+            actual = {row.display_domain_id for row in report.indicators}
+            actual.update(row.health_domain_id for row in report.assets)
+            assert actual == allowed
+            for indicator in report.indicators:
+                assert indicator.display_domain_id in {
+                    row.health_domain_id for row in indicator.indicator_dict.domain_links
+                }
+        respiratory_reports = [
+            report for report in reports
+            if report.package.name == "呼吸与肺功能专项"
+        ]
+        assert len(respiratory_reports) == 3
+        respiratory_domain = HealthDomain.query.filter_by(code="respiratory").one()
+        assert all(
+            {row.display_domain_id for row in report.indicators}
+            | {row.health_domain_id for row in report.assets}
+            == {respiratory_domain.id}
+            for report in respiratory_reports
+        )
+        positive_rows = [
+            row
+            for report in reports
+            for row in report.indicators
+            if row.result_status == "positive"
+        ]
+        assert sorted(row.indicator_dict.code for row in positive_rows) == ["FOBT", "U_PRO"]
+        hearing_rows = [
+            row
+            for report in reports
+            for row in report.indicators
+            if row.indicator_dict.code == "HEARING"
+        ]
+        assert hearing_rows
+        assert all(
+            row.value == "未见明显异常" and row.result_status == "normal"
+            for row in hearing_rows
+        )
+        u_pro_report = next(row.report for row in positive_rows if row.indicator_dict.code == "U_PRO")
+        fobt_report = next(row.report for row in positive_rows if row.indicator_dict.code == "FOBT")
+        assert any("清洁晨尿复查" in row.body for row in u_pro_report.text_results)
+        assert any("复查粪便隐血" in row.body for row in fobt_report.text_results)
+
+
 def test_v8_demo_rebuild_preserves_every_account_identity_field(app):
     with app.app_context():
         before = account_identity_snapshot()
@@ -110,8 +203,8 @@ def test_v8_demo_rebuild_preserves_every_account_identity_field(app):
         assert after == before
         assert result["organizations"] == 5
         assert result["institutions"] == 15
-        assert result["packages"] == 25
-        assert result["package_versions"] == 26
+        assert result["packages"] == 26
+        assert result["package_versions"] == 27
         assert result["report_assets"] >= 3
         assert all(len(values) == len(ACCOUNT_IDENTITY_FIELDS) for values in after.values())
 

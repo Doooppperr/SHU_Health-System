@@ -207,30 +207,22 @@ def apply(database_url: str, items: list[dict]) -> None:
                     "annotation": item["annotation_text"],
                 })
                 matched += result.rowcount
-                connection.execute(text("""
-                    INSERT INTO package_version_domains (
-                        package_version_id, health_domain_id, sort_order
+                aligned = connection.execute(text("""
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM report_assets AS a
+                        JOIN institution_reports AS r ON r.id = a.report_id
+                        JOIN report_asset_types AS t ON t.id = a.asset_type_id
+                        JOIN package_version_domains AS permitted
+                          ON permitted.package_version_id = r.package_version_id
+                         AND permitted.health_domain_id = t.health_domain_id
+                        WHERE a.storage_key = :storage_key
                     )
-                    SELECT
-                        r.package_version_id,
-                        t.health_domain_id,
-                        COALESCE((
-                            SELECT MAX(existing.sort_order)
-                            FROM package_version_domains AS existing
-                            WHERE existing.package_version_id = r.package_version_id
-                        ), -1) + 1
-                    FROM report_assets AS a
-                    JOIN institution_reports AS r ON r.id = a.report_id
-                    JOIN report_asset_types AS t ON t.id = a.asset_type_id
-                    WHERE a.storage_key = :storage_key
-                      AND r.package_version_id IS NOT NULL
-                      AND NOT EXISTS (
-                          SELECT 1
-                          FROM package_version_domains AS existing
-                          WHERE existing.package_version_id = r.package_version_id
-                            AND existing.health_domain_id = t.health_domain_id
-                      )
-                """), {"storage_key": item["storage_key"]})
+                """), {"storage_key": item["storage_key"]}).scalar_one()
+                if not aligned:
+                    raise RuntimeError(
+                        f"附件所属方向不在报告套餐内，已取消刷新：{item['storage_key']}"
+                    )
             if matched != len(report_items):
                 raise RuntimeError(f"数据库中只找到 {matched}/{len(report_items)} 个目标附件，已取消刷新")
             after = {

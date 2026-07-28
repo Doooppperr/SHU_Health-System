@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 from sqlalchemy import String, inspect, text
@@ -23,7 +23,11 @@ from app.models import (  # noqa: E402
     IndicatorDict, InstitutionReport, ReportAsset, ReportIndicator,
     ReportTextResult, User,
 )
-from app.services.report_conclusions import missing_conclusion_domains  # noqa: E402
+from app.services.report_conclusions import (  # noqa: E402
+    build_domain_conclusion,
+    missing_conclusion_domains,
+    represented_domains,
+)
 
 
 STORY_REPORT_KINDS = {"comprehensive_exam", "targeted_follow_up"}
@@ -81,6 +85,123 @@ def validate_product_copy() -> int:
     return len(paths)
 
 
+def validate_report_package_alignment(reports) -> int:
+    errors = []
+    for report in reports:
+        if report.package is None or report.package_version is None:
+            errors.append(f"report {report.id}: missing package or package version")
+            continue
+        if report.package_version.package_id != report.package_id:
+            errors.append(f"report {report.id}: package version belongs to another package")
+        if report.package.institution_id != report.institution_id:
+            errors.append(f"report {report.id}: package belongs to another institution")
+        if report.appointment is not None:
+            if report.appointment.institution_id != report.institution_id:
+                errors.append(f"report {report.id}: appointment institution mismatch")
+            if report.appointment.package_id != report.package_id:
+                errors.append(f"report {report.id}: appointment package mismatch")
+            if report.appointment.package_version_id != report.package_version_id:
+                errors.append(f"report {report.id}: appointment package version mismatch")
+
+        allowed = {row.health_domain_id for row in report.package_version.domains}
+        indicator_domains = {
+            item.display_domain_id
+            for item in report.indicators
+            if item.display_domain_id
+        }
+        asset_domains = {
+            item.health_domain_id
+            for item in report.assets
+            if item.health_domain_id
+        }
+        data_domains = indicator_domains | asset_domains
+        conclusion_domains = [item.health_domain_id for item in report.text_results]
+        conclusion_domain_set = set(conclusion_domains)
+
+        if not allowed:
+            errors.append(f"report {report.id}: package version has no health domain")
+        if not data_domains:
+            errors.append(f"report {report.id}: report has no indicator or attachment domain")
+        if data_domains - allowed:
+            errors.append(
+                f"report {report.id}: data domains outside package {sorted(data_domains - allowed)}"
+            )
+        if conclusion_domain_set != data_domains:
+            errors.append(
+                f"report {report.id}: conclusions {sorted(conclusion_domain_set)} "
+                f"do not match data {sorted(data_domains)}"
+            )
+        if len(conclusion_domains) != len(conclusion_domain_set):
+            errors.append(f"report {report.id}: duplicate domain conclusions")
+
+        import_kind = (report.ocr_diagnostics or {}).get("import_kind")
+        if import_kind in STORY_REPORT_KINDS and data_domains != allowed:
+            errors.append(
+                f"report {report.id}: story report covers {sorted(data_domains)}, "
+                f"package requires {sorted(allowed)}"
+            )
+
+        for item in report.indicators:
+            linked = {
+                row.health_domain_id
+                for row in item.indicator_dict.domain_links
+            } if item.indicator_dict else set()
+            if item.display_domain_id not in allowed:
+                errors.append(
+                    f"report {report.id}: indicator {item.id} outside package domain"
+                )
+            if item.display_domain_id not in linked:
+                errors.append(
+                    f"report {report.id}: indicator {item.id} display domain is not configured"
+                )
+        for asset in report.assets:
+            if asset.health_domain_id not in allowed:
+                errors.append(
+                    f"report {report.id}: attachment {asset.id} outside package domain"
+                )
+            if asset.asset_type and asset.asset_type.health_domain_id != asset.health_domain_id:
+                errors.append(
+                    f"report {report.id}: attachment {asset.id} slot domain mismatch"
+                )
+    if errors:
+        preview = "; ".join(errors[:20])
+        suffix = f"; ... {len(errors) - 20} more" if len(errors) > 20 else ""
+        raise RuntimeError(f"report/package alignment failed: {preview}{suffix}")
+    return len(reports)
+
+
+def validate_conclusion_facts(reports) -> int:
+    history = defaultdict(dict)
+    checked = 0
+    for report in sorted(
+        reports,
+        key=lambda row: (row.matched_user_id or 0, row.exam_date, row.id),
+    ):
+        owner_history = history[report.matched_user_id or 0]
+        conclusions = {
+            row.health_domain_id: row
+            for row in report.text_results
+        }
+        for domain in represented_domains(report):
+            expected_title, expected_body = build_domain_conclusion(
+                report, domain, owner_history,
+            )
+            actual = conclusions.get(domain.id)
+            if actual is None:
+                raise RuntimeError(
+                    f"report {report.id} is missing conclusion for domain {domain.id}"
+                )
+            if actual.title != expected_title or actual.body != expected_body:
+                raise RuntimeError(
+                    f"report {report.id} conclusion facts do not match domain {domain.id}"
+                )
+            checked += 1
+        for item in report.indicators:
+            if item.indicator_dict:
+                owner_history[item.indicator_dict.code] = item
+    return checked
+
+
 def main():
     app = create_app("development")
     with app.app_context():
@@ -121,8 +242,8 @@ def main():
             for report in story_reports
         )
         if story_kinds != {
-            "comprehensive_exam": 5,
-            "targeted_follow_up": 11,
+            "comprehensive_exam": 9,
+            "targeted_follow_up": 20,
         }:
             raise RuntimeError(f"unexpected test1 four-year story: {dict(story_kinds)}")
         story_dates = sorted(report.exam_date for report in story_reports)
@@ -140,6 +261,27 @@ def main():
         }
         if not {"manual", "ocr"} <= story_sources:
             raise RuntimeError(f"test1 story input sources are incomplete: {sorted(story_sources)}")
+        positive_codes = Counter(
+            row.indicator_dict.code
+            for row in ReportIndicator.query.filter(
+                ReportIndicator.report_id.in_(story_ids),
+                ReportIndicator.result_status == "positive",
+            ).all()
+            if row.indicator_dict is not None
+        )
+        if positive_codes != {"U_PRO": 1, "FOBT": 1}:
+            raise RuntimeError(
+                f"qualitative abnormalities are not sparse and realistic: {dict(positive_codes)}"
+            )
+        hearing_rows = ReportIndicator.query.join(IndicatorDict).filter(
+            ReportIndicator.report_id.in_(story_ids),
+            IndicatorDict.code == "HEARING",
+        ).all()
+        if not hearing_rows or any(
+            row.value != "未见明显异常" or row.result_status != "normal"
+            for row in hearing_rows
+        ):
+            raise RuntimeError("hearing findings must use a clinical finding instead of polarity")
 
         descriptive_codes = {"HEIGHT", "WEIGHT", "HIP"}
         leaked_descriptive_statuses = ReportIndicator.query.join(IndicatorDict).filter(
@@ -166,6 +308,8 @@ def main():
         if untyped_assets:
             raise RuntimeError(f"{untyped_assets} report assets have no standard slot")
         reports = InstitutionReport.query.filter_by(status="published").all()
+        aligned_reports = validate_report_package_alignment(reports)
+        conclusion_facts = validate_conclusion_facts(reports)
         missing_conclusions = {
             report.id: [domain.name for domain in missing_conclusion_domains(report)]
             for report in reports
@@ -228,6 +372,8 @@ def main():
             "story_input_sources": sorted(story_sources),
             "typed_assets": ReportAsset.query.count(),
             "report_domain_conclusions": represented_pairs,
+            "fact_aligned_conclusions": conclusion_facts,
+            "package_aligned_reports": aligned_reports,
             "product_copy_files_scanned": validate_product_copy(),
         }
         print(json.dumps(summary, ensure_ascii=False, indent=2))

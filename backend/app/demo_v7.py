@@ -108,6 +108,18 @@ INSTITUTION_SCENARIOS = (
                 "historical_v1": {"price": "659.00", "booking_notice": "请空腹到检，具体检查结果以机构实际完成内容为准。"},
             },
             {
+                "name": "都市年度综合体检",
+                "focus_area": "成年人多系统年度综合评估",
+                "price": "1699.00",
+                "audience": "希望一次完成体格、生化、血液、呼吸及常见专科检查的成年人",
+                "description": "覆盖基础体征、循环、代谢、肝胆胰、肾脏尿检、血液、呼吸及常见专科项目，形成完整年度健康档案。",
+                "booking_notice": "需空腹8—10小时；当天请携带有效证件、既往报告和用药清单，并按现场流程完成各项检查。",
+                "domains": (
+                    "basic", "cardio", "metabolic", "digestive",
+                    "renal", "hematology", "respiratory", "other",
+                ),
+            },
+            {
                 "name": "心脑血管风险筛查",
                 "focus_area": "心脑血管与循环专项",
                 "price": "899.00",
@@ -1245,10 +1257,17 @@ def _expand_v8_demo_data(users, institutions, packages, indicators, domains, tod
             ))
 
 
-def _demo_indicator_value(definition, sequence):
+def _demo_indicator_value(definition, sequence, *, value_sequence=None):
+    value_sequence = sequence if value_sequence is None else value_sequence
     if definition.value_type == "text":
-        return ("阳性", "positive") if sequence in {2, 10} else ("阴性", "negative")
-    realistic_value = demo_realistic_value(definition.code, sequence)
+        if definition.code == "HEARING":
+            return ("未见明显异常", "normal")
+        if definition.code == "U_PRO" and sequence == 3:
+            return ("弱阳性", "positive")
+        if definition.code == "FOBT" and sequence == 19:
+            return ("阳性", "positive")
+        return ("阴性", "negative")
+    realistic_value = demo_realistic_value(definition.code, value_sequence)
     if realistic_value is not None:
         return (realistic_value, None)
     low = Decimal(str(definition.reference_low)) if definition.reference_low is not None else None
@@ -1258,7 +1277,7 @@ def _demo_indicator_value(definition, sequence):
         Decimal("0.54"), Decimal("0.52"), Decimal("0.50"), Decimal("0.48"),
         Decimal("0.46"), Decimal("0.45"), Decimal("0.50"), Decimal("0.59"),
         Decimal("0.55"), Decimal("0.51"), Decimal("0.48"), Decimal("0.46"),
-    )[sequence % 16]
+    )[value_sequence % 16]
     if low is not None and high is not None:
         value = low + (high - low) * story_phase
     elif low is not None:
@@ -1271,8 +1290,42 @@ def _demo_indicator_value(definition, sequence):
     return (format(normalized, "f").rstrip("0").rstrip("."), None)
 
 
+TEST1_STORY_PLAN = (
+    # days ago, institution index, package name, report kind
+    (1460, 1, "都市年度综合体检", "comprehensive_exam"),
+    (1390, 1, "家庭长辈健康评估", "targeted_follow_up"),
+    (1320, 2, "肝胆代谢联合评估", "targeted_follow_up"),
+    (1280, 1, "都市年度综合体检", "comprehensive_exam"),
+    (1210, 1, "家庭长辈健康评估", "targeted_follow_up"),
+    (1140, 2, "肝胆代谢联合评估", "targeted_follow_up"),
+    (1100, 1, "都市年度综合体检", "comprehensive_exam"),
+    (1030, 1, "家庭长辈健康评估", "targeted_follow_up"),
+    (960, 2, "肝胆代谢联合评估", "targeted_follow_up"),
+    (920, 1, "都市年度综合体检", "comprehensive_exam"),
+    (840, 1, "家庭长辈健康评估", "targeted_follow_up"),
+    (780, 2, "肝胆代谢联合评估", "targeted_follow_up"),
+    (740, 1, "都市年度综合体检", "comprehensive_exam"),
+    (700, 3, "呼吸与肺功能专项", "targeted_follow_up"),
+    (650, 1, "家庭长辈健康评估", "targeted_follow_up"),
+    (620, 3, "心电与循环影像专项", "targeted_follow_up"),
+    (590, 2, "肝胆代谢联合评估", "targeted_follow_up"),
+    (560, 1, "都市年度综合体检", "comprehensive_exam"),
+    (470, 1, "家庭长辈健康评估", "targeted_follow_up"),
+    (410, 2, "肝胆代谢联合评估", "targeted_follow_up"),
+    (380, 1, "都市年度综合体检", "comprehensive_exam"),
+    (280, 1, "家庭长辈健康评估", "targeted_follow_up"),
+    (240, 3, "呼吸与肺功能专项", "targeted_follow_up"),
+    (190, 1, "都市年度综合体检", "comprehensive_exam"),
+    (160, 3, "心电与循环影像专项", "targeted_follow_up"),
+    (120, 2, "肝胆代谢联合评估", "targeted_follow_up"),
+    (35, 3, "心电与循环影像专项", "targeted_follow_up"),
+    (14, 3, "呼吸与肺功能专项", "targeted_follow_up"),
+    (2, 1, "都市年度综合体检", "comprehensive_exam"),
+)
+
+
 def _expand_v10_test1(users, institutions, packages, indicators, domains, today, now):
-    """Build test1's coherent four-year, sixteen-exam adult health story."""
+    """Build test1's coherent four-year package-aligned adult health story."""
     if current_app.config.get("TESTING", False):
         return
     user = users["test1"]
@@ -1285,37 +1338,20 @@ def _expand_v10_test1(users, institutions, packages, indicators, domains, today,
             asset.asset_type_id = matched_type.id
             asset.modality = matched_type.modality
             asset.title = matched_type.name
-    dates = [
-        today - timedelta(days=days)
-        for days in (1460, 1320, 1180, 1040, 900, 760, 620, 500,
-                     380, 280, 190, 120, 70, 35, 14, 2)
-    ]
-    comprehensive_sequences = {0, 4, 8, 12, 15}
-    targeted_domains = {
-        1: {"cardio", "basic", "metabolic"},
-        2: {"digestive", "renal", "hematology"},
-        3: {"respiratory", "other", "cardio"},
-        5: {"basic", "metabolic", "digestive"},
-        6: {"renal", "hematology", "respiratory"},
-        7: {"other", "cardio", "basic"},
-        9: {"metabolic", "digestive", "renal"},
-        10: {"hematology", "respiratory", "other"},
-        11: {"cardio", "metabolic", "hematology"},
-        13: {"basic", "digestive", "respiratory"},
-        14: {"renal", "other", "metabolic"},
-    }
-    core_trend_codes = {
-        "BMI", "WEIGHT", "WAIST", "SBP", "DBP", "FBG", "HBA1C",
-        "TC", "TG", "HDL", "LDL", "ALT", "AST", "GGT", "UA", "CREA",
-    }
-    ocr_sequences = {2, 6, 10, 14}
+    ocr_sequences = {2, 6, 10, 14, 18, 22, 26}
     reports = []
-    for sequence, exam_date in enumerate(dates):
-        institution = institutions[sequence % 3]
-        branch_index = institutions.index(institution) + 1
-        package = sorted(institution.packages, key=lambda item: item.id)[0]
+    final_sequence = len(TEST1_STORY_PLAN) - 1
+    for sequence, (days_ago, branch_index, package_name, report_kind) in enumerate(TEST1_STORY_PLAN):
+        exam_date = today - timedelta(days=days_ago)
+        institution = institutions[branch_index - 1]
+        package = packages[_package_key(branch_index, package_name)]
         staff = users[f"institution{branch_index}_staff1"]
         version = _package_version(package)
+        allowed_domain_codes = {
+            link.domain.code
+            for link in version.domains
+            if link.domain is not None
+        }
         published_at = _utc(exam_date + timedelta(days=2), 16)
         report = InstitutionReport(
             institution_id=institution.id,
@@ -1329,11 +1365,7 @@ def _expand_v10_test1(users, institutions, packages, indicators, domains, today,
             matched_user_id=user.id,
             status="published",
             ocr_diagnostics={
-                "import_kind": (
-                    "comprehensive_exam"
-                    if sequence in comprehensive_sequences
-                    else "targeted_follow_up"
-                ),
+                "import_kind": report_kind,
                 "sequence": sequence + 1,
                 "contains_ocr_rows": sequence in ocr_sequences,
             },
@@ -1344,20 +1376,19 @@ def _expand_v10_test1(users, institutions, packages, indicators, domains, today,
         )
         db.session.add(report)
         db.session.flush()
-        definitions = sorted(indicators.values(), key=lambda item: item.id)
-        if sequence not in comprehensive_sequences:
-            selected_domains = targeted_domains[sequence]
-            definitions = [
-                definition
-                for definition in definitions
-                if definition.code in core_trend_codes
-                or any(
-                    link.domain and link.domain.code in selected_domains
-                    for link in definition.domain_links
-                )
-            ]
+        definitions = [
+            definition
+            for definition in sorted(indicators.values(), key=lambda item: item.id)
+            if any(
+                link.domain and link.domain.code in allowed_domain_codes
+                for link in definition.domain_links
+            )
+        ]
+        story_phase = (sequence * 15 + final_sequence // 2) // final_sequence
         for definition in definitions:
-            value, explicit_status = _demo_indicator_value(definition, sequence)
+            value, explicit_status = _demo_indicator_value(
+                definition, sequence, value_sequence=story_phase,
+            )
             status = explicit_status or evaluate_result_status(
                 definition,
                 value,
@@ -1365,9 +1396,20 @@ def _expand_v10_test1(users, institutions, packages, indicators, domains, today,
                 on_date=exam_date,
             )
             domain = next(
-                (link.domain for link in sorted(definition.domain_links, key=lambda link: (not link.is_primary, link.sort_order, link.id)) if link.domain),
-                domains["other"],
+                (
+                    link.domain
+                    for link in sorted(
+                        definition.domain_links,
+                        key=lambda link: (not link.is_primary, link.sort_order, link.id),
+                    )
+                    if link.domain and link.domain.code in allowed_domain_codes
+                ),
+                None,
             )
+            if domain is None:
+                raise RuntimeError(
+                    f"套餐 {package.name} 未给指标 {definition.code} 提供可用健康方向"
+                )
             report.indicators.append(ReportIndicator(
                 indicator_dict_id=definition.id,
                 value=value,
@@ -1388,15 +1430,24 @@ def _expand_v10_test1(users, institutions, packages, indicators, domains, today,
         reports.append((report, staff))
 
     asset_types = {row.code: row for row in ReportAssetType.query.all()}
-    v10_asset_slots = (
-        ("SPIROMETRY", "CHEST_IMAGE"),
-        ("ECG_12", "ECHO_HEART"),
+    attachment_reports = (
+        (
+            next(item for item in reversed(reports) if item[0].package.name == "呼吸与肺功能专项"),
+            ("SPIROMETRY", "CHEST_IMAGE"),
+        ),
+        (
+            next(item for item in reversed(reports) if item[0].package.name == "心电与循环影像专项"),
+            ("ECG_12", "ECHO_HEART"),
+        ),
     )
-    for sequence, (report, staff) in enumerate(reports[-2:]):
-        for order, code in enumerate(v10_asset_slots[sequence]):
+    for sequence, ((report, staff), slot_codes) in enumerate(attachment_reports):
+        allowed_domain_ids = {link.health_domain_id for link in report.package_version.domains}
+        for order, code in enumerate(slot_codes):
             asset_type = asset_types.get(code)
             if asset_type is None:
                 continue
+            if asset_type.health_domain_id not in allowed_domain_ids:
+                raise RuntimeError(f"附件槽位 {code} 不属于套餐 {report.package.name}")
             key = f"health-assets/demo-v10/report-{report.id}-{code.lower()}.png"
             raw, width, height = _load_curated_media(
                 code, Path(current_app.config["UPLOAD_DIR"]) / key, sequence,
@@ -1670,8 +1721,8 @@ def seed_v7_demo_experience(*, commit: bool = True) -> bool:
     if any(model.query.first() is not None for model in (Appointment, InstitutionReport, SelfMeasurement)):
         return False
     institutions = Institution.query.order_by(Institution.id).all()
-    if len(institutions) != 15 or Package.query.count() != 25:
-        raise RuntimeError("the five-organization, fifteen-branch, twenty-five-package v8 catalog is required")
+    if len(institutions) != 15 or Package.query.count() != 26:
+        raise RuntimeError("the five-organization, fifteen-branch, twenty-six-package catalog is required")
     users = {item.username: item for item in User.query.filter(User.username.in_(REQUIRED_DEMO_USERNAMES)).all()}
     if set(users) != REQUIRED_DEMO_USERNAMES:
         raise RuntimeError("all fixed v8 demo accounts are required")

@@ -124,8 +124,8 @@ def test_demo_seed_has_rich_timelines_and_complete_role_matrix(app):
         assert User.query.filter_by(role="institution_admin").count() == 18
         assert User.query.filter_by(username="demo_admin", role="admin").count() == 1
         assert Institution.query.count() == 15
-        assert Package.query.count() == 25
-        assert PackageVersion.query.count() == 26
+        assert Package.query.count() == 26
+        assert PackageVersion.query.count() == 27
         assert SelfMeasurement.query.count() >= 50
         assert InstitutionReport.query.filter_by(status="published").count() >= 6
         assert ReportIndicator.query.count() >= 20

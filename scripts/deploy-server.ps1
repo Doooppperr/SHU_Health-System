@@ -100,6 +100,9 @@ try {
     $remoteDatabaseArgument = " ''"
     $remoteAssetsArgument = " ''"
     if ($SyncDemoDatabase) {
+        & (Join-Path $projectRoot "backend\.venv\Scripts\python.exe") `
+            (Join-Path $projectRoot "backend\scripts\validate_v10_demo.py")
+        Assert-LastExitCode "Business dataset alignment validation"
         $sourceDatabase = Join-Path $projectRoot "backend\instance\health_system.db"
         if (-not (Test-Path -LiteralPath $sourceDatabase -PathType Leaf)) {
             throw "Demo database not found: $sourceDatabase"

@@ -1,39 +1,9 @@
 {
   "version": 12,
-  "generated_at": "2026-07-28T11:34:10.424079+08:00",
+  "generated_at": "2026-07-28T12:53:04.545123+08:00",
   "items": [
     {
-      "storage_key": "health-assets/demo-v10/report-65-chest_image.png",
-      "kind": "report_attachment",
-      "title": "胸片",
-      "mime_type": "image/png",
-      "width": 1398,
-      "height": 1600,
-      "format": "PNG",
-      "byte_size": 1193572,
-      "sha256": "12b5561885901833b8b5547fbfc60741f5d95907e40bdcaa788163e6c77c9294",
-      "asset_type_code": "CHEST_IMAGE",
-      "health_domain_id": 5,
-      "modality": "xray",
-      "annotation_text": "胸部影像示双肺纹理清晰，未见明显活动性病灶，心影大小正常。"
-    },
-    {
-      "storage_key": "health-assets/demo-v10/report-65-spirometry.png",
-      "kind": "report_attachment",
-      "title": "肺功能图",
-      "mime_type": "image/png",
-      "width": 1600,
-      "height": 1099,
-      "format": "PNG",
-      "byte_size": 167212,
-      "sha256": "9498c7f49272c012d7ee46bac6d88ea051ca6d8eeb5d5ea98a64c389b5d9eaba",
-      "asset_type_code": "SPIROMETRY",
-      "health_domain_id": 5,
-      "modality": "spirometry",
-      "annotation_text": "肺功能曲线形态正常，未见明显阻塞性或限制性通气障碍。"
-    },
-    {
-      "storage_key": "health-assets/demo-v10/report-66-ecg_12.png",
+      "storage_key": "health-assets/demo-v10/report-77-ecg_12.png",
       "kind": "report_attachment",
       "title": "十二导联心电图",
       "mime_type": "image/png",
@@ -48,7 +18,7 @@
       "annotation_text": "十二导联心电图示窦性心律，节律规则，未见明显 ST-T 异常。"
     },
     {
-      "storage_key": "health-assets/demo-v10/report-66-echo_heart.png",
+      "storage_key": "health-assets/demo-v10/report-77-echo_heart.png",
       "kind": "report_attachment",
       "title": "心脏彩超",
       "mime_type": "image/png",
@@ -61,6 +31,36 @@
       "health_domain_id": 2,
       "modality": "ultrasound",
       "annotation_text": "心脏超声示各心腔大小未见明显异常，室壁运动协调，左心室收缩功能正常。"
+    },
+    {
+      "storage_key": "health-assets/demo-v10/report-78-chest_image.png",
+      "kind": "report_attachment",
+      "title": "胸片",
+      "mime_type": "image/png",
+      "width": 1398,
+      "height": 1600,
+      "format": "PNG",
+      "byte_size": 1193572,
+      "sha256": "12b5561885901833b8b5547fbfc60741f5d95907e40bdcaa788163e6c77c9294",
+      "asset_type_code": "CHEST_IMAGE",
+      "health_domain_id": 5,
+      "modality": "xray",
+      "annotation_text": "胸部影像示双肺纹理清晰，未见明显活动性病灶，心影大小正常。"
+    },
+    {
+      "storage_key": "health-assets/demo-v10/report-78-spirometry.png",
+      "kind": "report_attachment",
+      "title": "肺功能图",
+      "mime_type": "image/png",
+      "width": 1600,
+      "height": 1099,
+      "format": "PNG",
+      "byte_size": 167212,
+      "sha256": "9498c7f49272c012d7ee46bac6d88ea051ca6d8eeb5d5ea98a64c389b5d9eaba",
+      "asset_type_code": "SPIROMETRY",
+      "health_domain_id": 5,
+      "modality": "spirometry",
+      "annotation_text": "肺功能曲线形态正常，未见明显阻塞性或限制性通气障碍。"
     },
     {
       "storage_key": "health-assets/demo-v8/report-10-basic.png",

@@ -110,6 +110,35 @@ def _comparison_text(item, previous):
     return f"，较上次{direction}"
 
 
+def _recommendation(domain, attention):
+    codes = {
+        item.indicator_dict.code
+        for item in attention
+        if item.indicator_dict is not None
+    }
+    if "FOBT" in codes:
+        return "建议排除饮食及痔出血等影响后复查粪便隐血；如持续阳性，建议至消化专科进一步评估。"
+    if codes & {"U_PRO", "U_BLD", "U_LEU", "U_NIT"}:
+        return "建议避开剧烈运动后留取清洁晨尿复查尿常规；如结果持续异常，结合肾功能至相关专科评估。"
+    if codes & {"FBG", "HBA1C", "INS"}:
+        return "建议调整精制糖和总能量摄入、保持规律运动，并按计划复查空腹血糖及糖化血红蛋白。"
+    if codes & {"TC", "TG", "HDL", "LDL", "NON_HDL", "APOA1", "APOB", "LPA"}:
+        return "建议减少高脂饮食、增加规律有氧运动，并按计划复查血脂；结合血压及其他风险因素综合评估。"
+    if codes & {"SBP", "DBP"}:
+        return "建议连续监测安静状态下血压，减少高盐饮食；如多次测量仍偏高，至相关专科进一步评估。"
+    if codes & {"ALT", "AST", "GGT", "ALP", "TBIL", "DBIL"}:
+        return "建议近期避免饮酒和熬夜，复查肝功能；如持续异常，结合腹部超声进一步评估。"
+    if "UA" in codes:
+        return "建议保证合理饮水、减少高嘌呤饮食，并按计划复查尿酸和肾功能。"
+    if codes & {"BMI", "WAIST", "BODY_FAT"}:
+        return "建议通过饮食结构调整和规律运动控制体重与腰围，并持续观察相关代谢指标。"
+    if codes & {"SPO2", "FEV1", "FEV1_FVC", "FVC", "PEF", "MVV"}:
+        return "建议减少烟尘暴露并按计划复查肺功能；如出现持续咳嗽、气促等情况，至呼吸专科评估。"
+    if codes & {"BMD_T"}:
+        return "建议结合饮食、日照和运动情况关注骨健康，并按计划复查骨密度。"
+    return DOMAIN_RECOMMENDATIONS.get(domain.code, DOMAIN_RECOMMENDATIONS["other"])
+
+
 def build_domain_conclusion(report, domain, previous_by_code=None):
     """Build a concise conclusion from the report's persisted facts."""
     previous_by_code = previous_by_code or {}
@@ -158,7 +187,7 @@ def build_domain_conclusion(report, domain, previous_by_code=None):
         sentences.extend(dict.fromkeys(asset_findings))
     if not sentences:
         sentences.append("本次该方向检查未见明显异常。")
-    sentences.append(DOMAIN_RECOMMENDATIONS.get(domain.code, DOMAIN_RECOMMENDATIONS["other"]))
+    sentences.append(_recommendation(domain, attention))
     return DOMAIN_TITLES.get(domain.code, f"{domain.name}检查结论"), "".join(sentences)
 
 
