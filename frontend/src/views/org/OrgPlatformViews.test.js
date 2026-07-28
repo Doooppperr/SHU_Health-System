@@ -46,6 +46,7 @@ describe("institution platform views",()=>{
     const wrapper=mountView(OrgPackagesView);await flushPromises();
     const card=wrapper.get(".package-card");expect(card.text()).toContain("组合服务");expect(card.text()).toContain("关注慢病风险的成年人");expect(card.text()).not.toContain("female_all");
     await wrapper.get(".package-hero .el-button").trigger("click");await flushPromises();expect(wrapper.vm.dialogVisible).toBe(true);expect(wrapper.vm.step).toBe(0);
+    expect(wrapper.vm.genderOptions.map((item)=>item.label)).toEqual(["不限人群","男性","女性"]);
   });
 
   it("organizes appointments by real service tasks and removes OCR jargon",async()=>{
@@ -82,13 +83,43 @@ describe("institution platform views",()=>{
     expect(orgApi.fetchOrgReports).toHaveBeenCalledWith(expect.objectContaining({scope:"organization",access:"cross_branch",subject:"test3"}));
   });
 
+  it("opens a sibling-branch archive without requesting an editable attachment slot",async()=>{
+    orgApi.fetchOrgReports.mockImplementation((params)=>Promise.resolve({data:{
+      pagination:{page:1,page_size:15,total:1,pages:1},
+      items:params.scope==="organization"?[{
+        id:31,subject_name_snapshot:"陈雨桐",subject_display_name:"陈雨桐",
+        exam_date:"2024-06-19",indicator_count:15,
+        access_mode:"cross_branch_read_only",
+        source_branch:{name:"澄心健康管理中心",branch_name:"浦东陆家嘴院区"},
+      }]:[],
+    }}));
+    orgApi.fetchOrgReport.mockResolvedValue({data:{item:{
+      id:31,status:"published",access_mode:"cross_branch_read_only",can_edit:false,
+      subject_name_snapshot:"陈雨桐",subject_health_id:"HID-001",exam_date:"2024-06-19",
+      package_version:{domains:[{id:1,name:"基础体征与体格"},{id:2,name:"内分泌与代谢"}]},
+      indicators:[{id:1,display_domain_id:1,value:"22.5",indicator:{name:"体重指数",unit:"kg/m²"}}],
+      text_results:[{id:2,domain_id:1,title:"体格检查结论",body:"本次体格检查结果总体平稳。"}],
+      assets:[],
+    }}});
+    const wrapper=mountView(OrgReportsView);await flushPromises();
+    const sharedTab=wrapper.findAll(".report-tabs button").find((item)=>item.text().includes("机构共享档案"));
+    await sharedTab.trigger("click");await flushPromises();
+    const detailButton=wrapper.findAll(".archive-card .el-button").find((item)=>item.text().includes("查看完整内容"));
+    await detailButton.trigger("click");await flushPromises();
+    expect(orgApi.fetchOrgReport).toHaveBeenCalledWith(31);
+    expect(orgApi.fetchOrgReportAssetTypes).not.toHaveBeenCalled();
+    expect(wrapper.vm.detailVisible).toBe(true);
+    expect(wrapper.vm.current.text_results[0].title).toBe("体格检查结论");
+    expect(wrapper.vm.current.indicators[0].indicator.name).toBe("体重指数");
+  });
+
   it("shows conclusion coverage and prevents locking while a report domain is incomplete",async()=>{
     orgApi.fetchOrgAppointments.mockResolvedValue({data:{items:[{
       id:8,appointment_date:"2026-07-28",status:"awaiting_report",package_name:"年度综合体检",
       user:{name:"林晓晨",health_id:"HID-8K3M2Q7A"},report_id:11,report_status:"draft",
     }]}});
     orgApi.fetchOrgReport.mockResolvedValue({data:{item:{
-      id:11,status:"draft",
+      id:11,status:"draft",can_edit:true,
       package_version:{domains:[{id:1,name:"心脑血管"},{id:2,name:"代谢"}]},
       indicators:[{id:1,display_domain_id:1,value:"4.2"}],
       assets:[{id:2,domain_id:2,title:"检查附件"}],

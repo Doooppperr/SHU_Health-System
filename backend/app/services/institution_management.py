@@ -24,7 +24,7 @@ INSTITUTION_FIELDS = {
 REQUIRED_INSTITUTION_FIELDS = {"branch_name", "address", "district"}
 PACKAGE_FIELDS = {"name", "focus_area", "gender_scope", "price", "description",
                   "package_type", "audience", "booking_notice"}
-VALID_GENDER_SCOPES = {"all", "male", "female", "female_all"}
+VALID_GENDER_SCOPES = {"all", "male", "female"}
 IMAGE_LIMIT = 8
 IMAGE_MAX_BYTES = 5 * 1024 * 1024
 IMAGE_MAX_SIDE = 6000

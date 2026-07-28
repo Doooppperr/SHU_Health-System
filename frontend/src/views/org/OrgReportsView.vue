@@ -104,7 +104,7 @@
       </el-descriptions>
     </el-drawer>
 
-    <el-drawer v-model="detailVisible" title="健康数据生产" size="min(960px,98vw)" class="report-detail-drawer">
+    <el-drawer v-model="detailVisible" :title="current?.access_mode==='cross_branch_read_only'?'健康档案详情':'健康数据生产'" size="min(960px,98vw)" class="report-detail-drawer">
       <template v-if="current">
         <el-alert v-if="current.access_mode==='cross_branch_read_only'" title="该报告由同机构其他分院归档，当前仅可查看，不能修改或重新提交。" type="info" show-icon :closable="false"/>
         <section class="report-subject"><div><small>受检者</small><h3>{{current.subject_name_snapshot}}</h3><p>{{current.subject_health_id}} · {{current.exam_date}}</p></div><el-tag :type="reportType(current.status)">{{reportLabel(current.status)}}</el-tag></section>
@@ -228,7 +228,31 @@ async function submitClose(){if(closeForm.reason_type==="institution_cancelled"&
 async function createManual(item){try{const{data}=await createOrgReport({appointment_id:item.id});ElMessage.success("已建立待完善健康数据");await load();await openDetailById(data.item.id);}catch(error){ElMessage.error(error?.response?.data?.message||"建立失败");}}
 function openOcr(item){selectedAppointment.value=item;ocrFile.value=null;ocrVisible.value=true;}
 async function runOcr(){if(!ocrFile.value){ElMessage.error("请选择体检报告文件");return;}ocrLoading.value=true;try{const{data}=await uploadOrgReportOcr(ocrFile.value,{appointment_id:selectedAppointment.value.id});ocrVisible.value=false;ElMessage.success(`已建立待复核健康数据，识别到 ${data.item.indicator_count} 项结果`);await load();await openDetailById(data.item.id);}catch(error){ElMessage.error(error?.response?.data?.message||"报告识别失败");}finally{ocrLoading.value=false;}}
-async function openDetailById(id){current.value=(await fetchOrgReport(id)).data.item;const firstMissing=missingConclusionDomains.value[0]?.id;const first=current.value?.package_version?.domains?.[0]?.id;textForm.health_domain_id=firstMissing||first||null;assetForm.health_domain_id=first||null;indicatorForm.indicator_dict_id=allowedIndicators.value[0]?.id||null;assetTypes.value=(await fetchOrgReportAssetTypes(id)).data.items||[];assetForm.asset_type_id=assetTypes.value[0]?.id||null;assetTypeChanged(assetForm.asset_type_id);detailVisible.value=true;}
+async function openDetailById(id){
+  try {
+    current.value=(await fetchOrgReport(id)).data.item;
+    const firstMissing=missingConclusionDomains.value[0]?.id;
+    const first=current.value?.package_version?.domains?.[0]?.id;
+    textForm.health_domain_id=firstMissing||first||null;
+    assetForm.health_domain_id=first||null;
+    indicatorForm.indicator_dict_id=allowedIndicators.value[0]?.id||null;
+    assetTypes.value=[];
+    assetForm.asset_type_id=null;
+    if(current.value?.can_edit){
+      try {
+        assetTypes.value=(await fetchOrgReportAssetTypes(id)).data.items||[];
+        assetForm.asset_type_id=assetTypes.value[0]?.id||null;
+        assetTypeChanged(assetForm.asset_type_id);
+      } catch {
+        ElMessage.warning("健康档案已打开，但附件槽位暂时加载失败");
+      }
+    }
+    detailVisible.value=true;
+  } catch(error) {
+    current.value=null;
+    ElMessage.error(error?.response?.data?.message||"健康档案读取失败");
+  }
+}
 async function addIndicator(){if(!indicatorForm.indicator_dict_id||!String(indicatorForm.value).trim())return ElMessage.error("请选择指标并填写检查结果");try{await addOrgReportIndicator(current.value.id,indicatorForm);indicatorForm.value="";await openDetailById(current.value.id);}catch(error){ElMessage.error(error?.response?.data?.message||"添加失败");}}
 async function removeIndicator(item){try{await deleteOrgReportIndicator(current.value.id,item.id);await openDetailById(current.value.id);}catch(error){ElMessage.error(error?.response?.data?.message||"删除失败");}}
 async function addText(){if(!textForm.health_domain_id||!textForm.title.trim()||!textForm.body.trim())return ElMessage.error("请完整填写结论所属领域、标题和内容");try{await addOrgTextResult(current.value.id,textForm);Object.assign(textForm,{health_domain_id:null,title:"",body:""});await openDetailById(current.value.id);}catch(error){ElMessage.error(error?.response?.data?.message||"添加结论失败");}}

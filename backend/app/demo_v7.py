@@ -1087,20 +1087,9 @@ def _add_demo_report_asset(report, staff, domain, sequence):
             package_version_id=report.package_version_id,
             health_domain_id=asset_type.health_domain_id,
         ).first():
-            max_order = max(
-                (
-                    row.sort_order
-                    for row in PackageVersionDomain.query.filter_by(
-                        package_version_id=report.package_version_id,
-                    ).all()
-                ),
-                default=-1,
+            raise DemoResetSafetyError(
+                f"附件槽位 {asset_code} 不属于报告 {report.id} 的套餐版本"
             )
-            db.session.add(PackageVersionDomain(
-                package_version_id=report.package_version_id,
-                health_domain_id=asset_type.health_domain_id,
-                sort_order=max_order + 1,
-            ))
         key = (
             f"health-assets/demo-v8/report-{report.id}-{domain.code}.png"
             if asset_order == 0
@@ -1135,6 +1124,66 @@ def _add_demo_report_asset(report, staff, domain, sequence):
         ))
 
 
+SHARED_ARCHIVE_DOMAIN_PROFILES = {
+    "basic": (
+        ("HEIGHT", "168", None, False),
+        ("WEIGHT", "63.5", "69.7", False),
+        ("BMI", "22.5", "24.7", True),
+        ("WAIST", "78", "89", False),
+        ("TEMP", "36.6", None, False),
+    ),
+    "cardio": (
+        ("HR", "76", None, False),
+        ("SBP", "128", None, False),
+        ("DBP", "82", None, False),
+        ("TC", "4.7", None, False),
+        ("LDL", "2.8", "3.65", True),
+    ),
+    "metabolic": (
+        ("FBG", "5.2", "6.2", True),
+        ("HBA1C", "5.5", None, False),
+        ("INS", "8.5", None, False),
+        ("TSH", "2.4", None, False),
+        ("FT4", "16.2", None, False),
+    ),
+    "digestive": (
+        ("ALT", "28", "48", True),
+        ("AST", "24", None, False),
+        ("GGT", "27", None, False),
+        ("TBIL", "13", None, False),
+        ("ALB", "44", None, False),
+    ),
+    "respiratory": (
+        ("FENO", "18", "32", True),
+        ("SPO2", "97", None, False),
+        ("FVC", "3.8", None, False),
+        ("FEV1", "3.1", None, False),
+        ("FEV1_FVC", "82", None, False),
+    ),
+    "renal": (
+        ("UA", "345", "450", True),
+        ("CREA", "78", None, False),
+        ("BUN", "5.2", None, False),
+        ("EGFR", "96", None, False),
+        ("CYSC", "0.83", None, False),
+    ),
+    "hematology": (
+        ("CRP", "2.1", "12", True),
+        ("WBC", "6.4", None, False),
+        ("RBC", "4.7", None, False),
+        ("HGB", "145", None, False),
+        ("PLT", "235", None, False),
+    ),
+    "other": (
+        ("IOP_L", "16", "23", True),
+        ("IOP_R", "16", None, False),
+        ("VA_L", "1.0", None, False),
+        ("VA_R", "1.0", None, False),
+        ("BMD_T", "-0.5", None, False),
+    ),
+}
+
+
 def _expand_v8_demo_data(users, institutions, packages, indicators, domains, today, now):
     """Reach the fixed v8 demonstration scale with deterministic stories."""
     testing = current_app.config.get("TESTING", False)
@@ -1143,16 +1192,51 @@ def _expand_v8_demo_data(users, institutions, packages, indicators, domains, tod
     group_target = BookingGroup.query.count() if testing else 40
     appointment_target = Appointment.query.count() if testing else 56
     measurement_target = max(SelfMeasurement.query.count(), 70) if testing else 120
-    domain_indicator = {
-        "basic": ("WEIGHT", "72.0"),
-        "cardio": ("HR", "76"),
-        "metabolic": ("FBG", "5.4"),
-        "digestive": ("ALT", "25"),
-        "respiratory": ("SPO2", "97"),
-        "renal": ("CREA", "78"),
-        "hematology": ("HR", "74"),
-        "other": ("WEIGHT", "61.0"),
+    domain_profiles = SHARED_ARCHIVE_DOMAIN_PROFILES
+    indicator_domain_ids = {
+        definition.id: {
+            link.health_domain_id
+            for link in definition.domain_links
+        }
+        for definition in indicators.values()
     }
+
+    def report_values(version, sequence_number):
+        allowed_codes = [
+            row.domain.code
+            for row in sorted(version.domains, key=lambda item: item.sort_order)
+            if row.domain and row.domain.code in domain_profiles
+        ]
+        if not allowed_codes:
+            raise DemoResetSafetyError(f"套餐版本 {version.id} 没有可生成的健康方向")
+        abnormal_domain = (
+            allowed_codes[sequence_number % len(allowed_codes)]
+            if sequence_number % 3 == 0
+            else None
+        )
+        result = []
+        used_codes = set()
+        for domain_code in allowed_codes:
+            for indicator_code, normal_value, abnormal_value, determines_abnormal in domain_profiles[domain_code]:
+                if indicator_code in used_codes:
+                    continue
+                definition = indicators.get(indicator_code)
+                if definition is None:
+                    raise DemoResetSafetyError(f"缺少共享档案指标定义：{indicator_code}")
+                if domains[domain_code].id not in indicator_domain_ids[definition.id]:
+                    raise DemoResetSafetyError(
+                        f"指标 {indicator_code} 未配置到健康方向 {domain_code}"
+                    )
+                use_variant = domain_code == abnormal_domain and abnormal_value is not None
+                use_abnormal = use_variant and determines_abnormal
+                result.append((
+                    indicator_code,
+                    abnormal_value if use_variant else normal_value,
+                    domain_code,
+                    use_abnormal,
+                ))
+                used_codes.add(indicator_code)
+        return tuple(result)
     staff_by_branch = {
         index: users[f"institution{index}_staff1"]
         for index in range(1, len(institutions) + 1)
@@ -1187,11 +1271,10 @@ def _expand_v8_demo_data(users, institutions, packages, indicators, domains, tod
             package = package_by_branch[branch_index]
             version = _package_version(package)
             domain = sorted(version.domains, key=lambda item: item.sort_order)[0].domain
-            indicator_code, value = domain_indicator[domain.code]
             report = _create_imported_historical_report(
                 user=user, institution=branch, package=package, staff=staff_by_branch[branch_index],
                 exam_date=today - timedelta(days=760 + sequence * 9), indicators=indicators, domains=domains,
-                values=((indicator_code, value, domain.code, sequence % 9 == 0),),
+                values=report_values(version, sequence),
                 title=f"{branch.branch_name}历史体检摘要",
                 body="该报告由源分院完成复核与归档，同机构其他分院可按权限查阅。",
             )
@@ -1530,6 +1613,109 @@ def _normalize_report_business_records():
         text_result_factory=text_result_factory,
         asset_annotation_factory=synchronize_asset_annotation,
     )
+
+
+def enrich_institution1_shared_archives() -> dict:
+    """Replace sparse sibling-branch archives with package-aligned report facts."""
+    staff = User.query.filter_by(username="institution1_staff1").one()
+    current = staff.managed_institution
+    reports = (
+        InstitutionReport.query
+        .join(Institution)
+        .filter(
+            Institution.organization_id == current.organization_id,
+            InstitutionReport.institution_id != current.id,
+            InstitutionReport.status == "published",
+        )
+        .order_by(InstitutionReport.exam_date, InstitutionReport.id)
+        .all()
+    )
+    if len(reports) < 10:
+        raise DemoResetSafetyError(
+            f"institution1 共享档案数量不足：{len(reports)}"
+        )
+    indicators = {row.code: row for row in IndicatorDict.query.all()}
+    domains = {row.code: row for row in HealthDomain.query.all()}
+    indicator_domain_ids = {
+        definition.id: {
+            link.health_domain_id
+            for link in definition.domain_links
+        }
+        for definition in indicators.values()
+    }
+
+    for sequence, report in enumerate(reports):
+        for item in list(report.indicators):
+            db.session.delete(item)
+        for item in list(report.text_results):
+            db.session.delete(item)
+        db.session.flush()
+        allowed_codes = [
+            row.domain.code
+            for row in sorted(report.package_version.domains, key=lambda item: item.sort_order)
+            if row.domain and row.domain.code in SHARED_ARCHIVE_DOMAIN_PROFILES
+        ]
+        if not allowed_codes:
+            raise DemoResetSafetyError(
+                f"共享档案 {report.id} 的套餐没有可用健康方向"
+            )
+        abnormal_domain = (
+            allowed_codes[sequence % len(allowed_codes)]
+            if sequence % 3 == 0
+            else None
+        )
+        used_codes = set()
+        for domain_code in allowed_codes:
+            for indicator_code, normal_value, abnormal_value, determines_abnormal in (
+                SHARED_ARCHIVE_DOMAIN_PROFILES[domain_code]
+            ):
+                if indicator_code in used_codes:
+                    continue
+                definition = indicators[indicator_code]
+                if domains[domain_code].id not in indicator_domain_ids[definition.id]:
+                    raise DemoResetSafetyError(
+                        f"指标 {indicator_code} 未配置到健康方向 {domain_code}"
+                    )
+                use_variant = domain_code == abnormal_domain and abnormal_value is not None
+                value = abnormal_value if use_variant else normal_value
+                abnormal_flag = "high" if use_variant and determines_abnormal else None
+                status = evaluate_result_status(
+                    definition,
+                    value,
+                    subject=report.owner,
+                    on_date=report.exam_date,
+                    abnormal_flag=abnormal_flag,
+                )
+                report.indicators.append(ReportIndicator(
+                    indicator_dict_id=definition.id,
+                    value=value,
+                    is_abnormal=status in {"high", "low", "positive", "abnormal"},
+                    result_status=status,
+                    input_source="manual",
+                    display_domain_id=domains[domain_code].id,
+                    original_name=definition.name,
+                    original_value=value,
+                    original_unit=definition.unit,
+                    normalized_unit=definition.unit,
+                    reference_text=_reference_text(definition),
+                    method_snapshot="机构常规检测",
+                    abnormal_flag={"high": "H", "low": "L", "positive": "+"}.get(status),
+                    mapping_confidence=Decimal("1.0000"),
+                    mapping_status="confirmed",
+                ))
+                used_codes.add(indicator_code)
+    db.session.flush()
+    _normalize_report_business_records()
+    db.session.commit()
+    return {
+        "shared_reports": len(reports),
+        "minimum_indicators": min(len(report.indicators) for report in reports),
+        "maximum_indicators": max(len(report.indicators) for report in reports),
+        "abnormal_reports": sum(
+            any(item.result_status in {"high", "low", "positive", "abnormal"} for item in report.indicators)
+            for report in reports
+        ),
+    }
 
 
 def _seed_waitlists(users, institutions, packages, today, now):

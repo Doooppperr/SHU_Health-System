@@ -20,8 +20,8 @@ from app import create_app  # noqa: E402
 from app.demo_indicator_values import DEMO_REALISTIC_SERIES  # noqa: E402
 from app.extensions import db  # noqa: E402
 from app.models import (  # noqa: E402
-    IndicatorDict, InstitutionReport, ReportAsset, ReportIndicator,
-    ReportTextResult, User,
+    IndicatorDict, Institution, InstitutionReport, Package, ReportAsset,
+    ReportIndicator, ReportTextResult, User,
 )
 from app.services.report_conclusions import (  # noqa: E402
     build_domain_conclusion,
@@ -202,6 +202,35 @@ def validate_conclusion_facts(reports) -> int:
     return checked
 
 
+def validate_institution1_shared_archives():
+    staff = User.query.filter_by(username="institution1_staff1").one()
+    current = staff.managed_institution
+    shared = (
+        InstitutionReport.query
+        .join(Institution)
+        .filter(
+            Institution.organization_id == current.organization_id,
+            InstitutionReport.institution_id != current.id,
+            InstitutionReport.status == "published",
+        )
+        .all()
+    )
+    if len(shared) < 10:
+        raise RuntimeError(
+            f"institution1 shared archive volume is too small: {len(shared)}"
+        )
+    sparse = {
+        report.id: len(report.indicators)
+        for report in shared
+        if len(report.indicators) < 12
+    }
+    if sparse:
+        raise RuntimeError(
+            f"institution1 shared archives are too sparse: {sparse}"
+        )
+    return len(shared), min(len(report.indicators) for report in shared)
+
+
 def main():
     app = create_app("development")
     with app.app_context():
@@ -310,6 +339,16 @@ def main():
         reports = InstitutionReport.query.filter_by(status="published").all()
         aligned_reports = validate_report_package_alignment(reports)
         conclusion_facts = validate_conclusion_facts(reports)
+        shared_count, minimum_shared_indicators = validate_institution1_shared_archives()
+        invalid_package_scopes = sorted({
+            package.gender_scope
+            for package in Package.query.all()
+            if package.gender_scope not in {"all", "male", "female"}
+        })
+        if invalid_package_scopes:
+            raise RuntimeError(
+                f"packages use redundant or invalid gender scopes: {invalid_package_scopes}"
+            )
         missing_conclusions = {
             report.id: [domain.name for domain in missing_conclusion_domains(report)]
             for report in reports
@@ -374,6 +413,11 @@ def main():
             "report_domain_conclusions": represented_pairs,
             "fact_aligned_conclusions": conclusion_facts,
             "package_aligned_reports": aligned_reports,
+            "institution1_shared_reports": shared_count,
+            "minimum_shared_report_indicators": minimum_shared_indicators,
+            "package_gender_scopes": sorted({
+                package.gender_scope for package in Package.query.all()
+            }),
             "product_copy_files_scanned": validate_product_copy(),
         }
         print(json.dumps(summary, ensure_ascii=False, indent=2))
