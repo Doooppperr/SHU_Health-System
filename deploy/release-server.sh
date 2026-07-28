@@ -42,7 +42,7 @@ if [[ -n "$mail_settings" ]]; then
     fi
 fi
 if [[ -n "$demo_database" && -z "$demo_assets" ]]; then
-    echo "Demo database sync requires the matching open-license asset archive." >&2
+    echo "Database sync requires the matching report media archive." >&2
     exit 2
 fi
 
@@ -55,9 +55,34 @@ env_backup=$(mktemp /tmp/healthdoc-env.XXXXXX)
 apache_backup=$(mktemp /tmp/healthdoc-apache.XXXXXX)
 apache_config_prepared=0
 apache_config_committed=0
+deployment_started=0
+release_activated=0
+recovery_complete=0
+expected_asset_count=0
 
 cleanup() {
     local status=$?
+    if [[ "$status" != 0 && "$deployment_started" == 1 && "$recovery_complete" == 0 ]]; then
+        echo "Unexpected release failure; restoring the previous server state." >&2
+        systemctl stop healthdoc.service 2>/dev/null || true
+        systemctl stop healthdoc-notifications.service 2>/dev/null || true
+        if [[ -n "${database_backup:-}" && -f "$database_backup" ]]; then
+            restore_database_backup || true
+        fi
+        restore_uploads_backup || true
+        cp -p "$env_backup" "$env_file" || true
+        cp -p "$apache_backup" "$apache_config" || true
+        if [[ "$release_activated" == 1 && -n "$previous" && -d "$previous" ]]; then
+            ln -sfn "$previous" /opt/healthdoc/current.rollback
+            mv -Tf /opt/healthdoc/current.rollback /opt/healthdoc/current
+            find /var/www/html -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+            cp -a "$previous/frontend/dist/." /var/www/html/
+            chown -R root:www-data /var/www/html
+        fi
+        start_current_services || true
+        systemctl restart apache2 || true
+        recovery_complete=1
+    fi
     if [[ "$status" != 0 && "$apache_config_prepared" == 1 && "$apache_config_committed" == 0 ]]; then
         cp -p "$apache_backup" "$apache_config"
     fi
@@ -101,6 +126,7 @@ start_current_services() {
         && [[ -f /opt/healthdoc/current/backend/scripts/notification_worker.py ]]; then
         systemctl start healthdoc-notifications.service
     fi
+    recovery_complete=1
 }
 
 if [[ -e "$release" ]]; then
@@ -113,6 +139,21 @@ tar -xzf "$archive" -C "$release"
 test -f "$release/backend/wsgi.py"
 test -f "$release/frontend/dist/index.html"
 test -f "$release/deploy/apache-healthdoc.conf"
+if [[ -n "$demo_assets" ]]; then
+    media_manifest="$release/backend/report_media_manifest.json"
+    test -f "$media_manifest"
+    expected_asset_count=$(
+        /opt/healthdoc/venv/bin/python -c \
+            'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))["items"]))' \
+            "$media_manifest"
+    )
+    unexpected_assets=$(tar -tzf "$demo_assets" | grep -Ev '^(institutions/demo-v8|health-assets/demo-v8|health-assets/demo-v10)(/|/[^/]+\.png)?$' || true)
+    asset_count=$(tar -tzf "$demo_assets" | grep -Ec '\.png$' || true)
+    if [[ -n "$unexpected_assets" || "$asset_count" != "$expected_asset_count" ]]; then
+        echo "Report media archive contains an unexpected path or file count." >&2
+        exit 1
+    fi
+fi
 
 /opt/healthdoc/venv/bin/python -m pip install -r "$release/backend/requirements.txt"
 /opt/healthdoc/venv/bin/python -m pip check
@@ -188,6 +229,7 @@ if [[ -n "$demo_database" ]]; then
         chmod 600 "$backup_root/uploads.tar.gz"
     fi
 
+    deployment_started=1
     systemctl stop healthdoc.service
     systemctl stop healthdoc-notifications.service 2>/dev/null || true
     docker stop healthdoc-gaussdb >/dev/null
@@ -227,16 +269,6 @@ if [[ -n "$demo_database" ]]; then
         exit 1
     fi
     unset TARGET_DATABASE_URL DATABASE_URL
-    unexpected_assets=$(tar -tzf "$demo_assets" | grep -Ev '^(institutions/demo-v8|health-assets/demo-v8|health-assets/demo-v10)(/|/[^/]+\.png)?$' || true)
-    asset_count=$(tar -tzf "$demo_assets" | grep -Ec '\.png$' || true)
-    expected_asset_count=$(/opt/healthdoc/venv/bin/python -c 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))["items"]))' "$release/backend/demo_media_manifest.json")
-    if [[ -n "$unexpected_assets" || "$asset_count" != "$expected_asset_count" ]]; then
-        echo "Demo asset archive contains an unexpected path; restoring the pre-release database." >&2
-        restore_database_backup
-        restore_uploads_backup
-        start_current_services
-        exit 1
-    fi
     rm -rf /var/lib/healthdoc/uploads
     install -d -o healthdoc -g www-data -m 750 /var/lib/healthdoc/uploads
     tar -xzf "$demo_assets" -C /var/lib/healthdoc/uploads
@@ -278,6 +310,7 @@ if [[ -z "$database_backup" ]]; then
         tar -C /var/lib/healthdoc -czf "$backup_root/uploads.tar.gz" uploads
         chmod 600 "$backup_root/uploads.tar.gz"
     fi
+    deployment_started=1
     systemctl stop healthdoc.service
     systemctl stop healthdoc-notifications.service 2>/dev/null || true
     docker stop healthdoc-gaussdb >/dev/null
@@ -315,16 +348,6 @@ unset DATABASE_URL
 # existing report-asset metadata. It never imports a local database or removes
 # any other upload. The full uploads/database backups above cover rollback.
 if [[ -n "$demo_assets" && -z "$demo_database" ]]; then
-    unexpected_assets=$(tar -tzf "$demo_assets" | grep -Ev '^(institutions/demo-v8|health-assets/demo-v8|health-assets/demo-v10)(/|/[^/]+\.png)?$' || true)
-    asset_count=$(tar -tzf "$demo_assets" | grep -Ec '\.png$' || true)
-    expected_asset_count=$(/opt/healthdoc/venv/bin/python -c 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))["items"]))' "$release/backend/demo_media_manifest.json")
-    if [[ -n "$unexpected_assets" || "$asset_count" != "$expected_asset_count" ]]; then
-        echo "Demo asset archive contains an unexpected path; restoring the previous release." >&2
-        restore_database_backup
-        restore_uploads_backup
-        start_current_services
-        exit 1
-    fi
     media_stage=$(mktemp -d /tmp/healthdoc-demo-media.XXXXXX)
     if ! tar -xzf "$demo_assets" -C "$media_stage"; then
         rm -rf "$media_stage"
@@ -413,6 +436,7 @@ fi
 
 ln -sfn "$release" /opt/healthdoc/current.new
 mv -Tf /opt/healthdoc/current.new /opt/healthdoc/current
+release_activated=1
 
 test "$(readlink -f /var/www/html)" = /var/www/html
 find /var/www/html -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
@@ -473,6 +497,7 @@ if [[ "$healthy" != 1 ]]; then
         fi
     fi
     systemctl restart apache2
+    recovery_complete=1
     echo "Health check failed; the previous release was restored." >&2
     exit 1
 fi
