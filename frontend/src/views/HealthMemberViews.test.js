@@ -111,6 +111,42 @@ describe("健康成员筛选请求", () => {
     expect(mocks.fetchHealthData).toHaveBeenCalledWith(expect.objectContaining({ owner_id: 12 }));
   });
 
+  it("体检数据支持近一周、近一个月和近半年快捷范围", async () => {
+    const wrapper = mountView(HealthDataView);
+    await flushPromises();
+    mocks.fetchHealthData.mockClear();
+
+    wrapper.vm.datePreset = "half_year";
+    await wrapper.vm.applyDatePreset();
+    await flushPromises();
+
+    expect(mocks.fetchHealthData).toHaveBeenCalledWith(expect.objectContaining({
+      page: 1,
+      start_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+      end_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+    }));
+    expect(mocks.router.replace).toHaveBeenLastCalledWith({
+      query: expect.objectContaining({ date_preset: "half_year" }),
+    });
+  });
+
+  it("体检数据自定义范围允许跨年查询", async () => {
+    const wrapper = mountView(HealthDataView);
+    await flushPromises();
+    mocks.fetchHealthData.mockClear();
+
+    wrapper.vm.datePreset = "custom";
+    wrapper.vm.dateRange = ["2024-01-01", "2026-07-31"];
+    await wrapper.vm.applyCustomDateRange();
+    await flushPromises();
+
+    expect(mocks.fetchHealthData).toHaveBeenCalledWith(expect.objectContaining({
+      page: 1,
+      start_date: "2024-01-01",
+      end_date: "2026-07-31",
+    }));
+  });
+
   it("健康时间线选择亲友时发送亲友编号", async () => {
     mountView(HealthTimelineView, { owner_id: "12" });
     await flushPromises();

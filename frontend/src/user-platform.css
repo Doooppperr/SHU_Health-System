@@ -451,6 +451,22 @@
   min-width: 0;
 }
 
+.health-data-date-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.health-data-date-filter > .el-select {
+  flex: 0 0 132px;
+  width: 132px !important;
+}
+
+.health-data-date-filter > .el-date-editor {
+  flex: 1 1 240px;
+}
+
 .health-journey {
   display: grid;
   gap: 16px;
@@ -1697,6 +1713,16 @@
   .health-data-filter-grid .filter-actions,
   .trend-filter-grid-platform .filter-actions {
     width: 100%;
+  }
+
+  .health-data-date-filter {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .health-data-date-filter > .el-select {
+    flex-basis: auto;
+    width: 100% !important;
   }
 
   .health-journey-card {

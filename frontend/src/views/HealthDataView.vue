@@ -19,7 +19,27 @@
         </label>
         <label class="filter-field">
           <span class="filter-field-label">日期范围</span>
-          <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" />
+          <div class="health-data-date-filter">
+            <el-select v-model="datePreset" aria-label="日期范围快捷选择" @change="applyDatePreset">
+              <el-option label="全部记录" value="all" />
+              <el-option label="近一周" value="week" />
+              <el-option label="近一个月" value="month" />
+              <el-option label="近半年" value="half_year" />
+              <el-option label="自定义范围" value="custom" />
+            </el-select>
+            <el-date-picker
+              v-if="datePreset === 'custom'"
+              v-model="dateRange"
+              type="daterange"
+              unlink-panels
+              clearable
+              value-format="YYYY-MM-DD"
+              range-separator="至"
+              start-placeholder="开始日期"
+              end-placeholder="结束日期"
+              @change="applyCustomDateRange"
+            />
+          </div>
         </label>
         <label class="filter-field">
           <span class="filter-field-label">资料来源</span>
@@ -109,6 +129,8 @@ const domains = ref([]);
 const institutions = ref([]);
 const owners = ref([]);
 const dateRange = ref([]);
+const DATE_PRESETS = new Set(["all", "week", "month", "half_year", "custom"]);
+const datePreset = ref(DATE_PRESETS.has(String(route.query.date_preset)) ? String(route.query.date_preset) : "all");
 const pagination = reactive({ page: 1, page_size: 15, total: 0 });
 const filters = reactive({
   owner_id: route.query.owner_id ? String(route.query.owner_id) : SELF_OWNER_VALUE,
@@ -116,7 +138,10 @@ const filters = reactive({
   domain_id: route.query.domain_id ? Number(route.query.domain_id) : null,
   page: Number(route.query.page) || 1,
 });
-if (route.query.start_date && route.query.end_date) dateRange.value = [route.query.start_date, route.query.end_date];
+if (route.query.start_date && route.query.end_date) {
+  dateRange.value = [route.query.start_date, route.query.end_date];
+  if (!DATE_PRESETS.has(String(route.query.date_preset))) datePreset.value = "custom";
+}
 
 function cleanParams(value) {
   const result = { ...value };
@@ -140,6 +165,32 @@ function cardTitle(item) {
   return item.package?.name || "体检健康数据";
 }
 
+function localDate(value = new Date()) {
+  return [
+    value.getFullYear(),
+    String(value.getMonth() + 1).padStart(2, "0"),
+    String(value.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function dateOffset(days) {
+  const value = new Date();
+  value.setHours(0, 0, 0, 0);
+  value.setDate(value.getDate() - days);
+  return localDate(value);
+}
+
+function dateFilterParams() {
+  const offsets = { week: 7, month: 30, half_year: 183 };
+  if (offsets[datePreset.value]) {
+    return { start_date: dateOffset(offsets[datePreset.value]), end_date: localDate() };
+  }
+  if (datePreset.value === "custom" && dateRange.value?.length === 2) {
+    return { start_date: dateRange.value[0], end_date: dateRange.value[1] };
+  }
+  return {};
+}
+
 function openDetail(item) {
   router.push({
     name: "health-data-detail",
@@ -154,8 +205,7 @@ async function load() {
   try {
     const params = cleanParams(withOwnerRequestParams({
       ...filters,
-      start_date: dateRange.value?.[0],
-      end_date: dateRange.value?.[1],
+      ...dateFilterParams(),
     }, filters.owner_id));
     const { data } = await fetchHealthData(params);
     items.value = data.items || [];
@@ -167,13 +217,22 @@ async function load() {
   }
 }
 
+async function applyDatePreset() {
+  if (datePreset.value !== "custom") dateRange.value = [];
+  await applyFilters(true);
+}
+
+async function applyCustomDateRange() {
+  await applyFilters(true);
+}
+
 async function applyFilters(resetPage = false) {
   if (resetPage) filters.page = 1;
   const query = cleanParams({
     ...filters,
     owner_id: filters.owner_id === SELF_OWNER_VALUE ? undefined : filters.owner_id,
-    start_date: dateRange.value?.[0],
-    end_date: dateRange.value?.[1],
+    date_preset: datePreset.value === "all" ? undefined : datePreset.value,
+    ...dateFilterParams(),
   });
   await router.replace({ query });
   await load();
