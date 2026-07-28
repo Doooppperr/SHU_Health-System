@@ -81,7 +81,7 @@ PACKAGE_TEMPLATE = [
     {
         "name": "E套餐-女性专项",
         "focus_area": "女性健康",
-        "gender_scope": "female_all",
+        "gender_scope": "female",
         "price": Decimal("1299.00"),
         "description": "增加妇科专项、乳腺与甲状腺针对性评估。",
     },

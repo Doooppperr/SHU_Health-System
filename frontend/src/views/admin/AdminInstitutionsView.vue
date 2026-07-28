@@ -86,7 +86,7 @@ const institutionForm=reactive({id:null,organization_id:null,branch_name:"",dist
 const filteredItems=items;
 const packageDrawerVisible=ref(false),selectedInstitution=ref(null),packages=ref([]),packagesLoading=ref(false),packageDialogVisible=ref(false),packageSaving=ref(false); const packageForm=reactive({id:null,name:"",focus_area:"",gender_scope:"all",price:0,description:""});
 const packagePagination=reactive({page:1,page_size:15,total:0,pages:0});
-const packageDetailVisible=ref(false),selectedPackageDetail=ref(null);const packageTypeLabel=(value)=>({special:"专项套餐",combined:"组合套餐"}[value]||"体检套餐");const genderScopeLabel=(value)=>({all:"不限性别",male:"男性",female:"女性",female_all:"女性人群"}[value]||"不限性别");function openPackageDetail(item){selectedPackageDetail.value=item;packageDetailVisible.value=true;}
+const packageDetailVisible=ref(false),selectedPackageDetail=ref(null);const packageTypeLabel=(value)=>({special:"专项套餐",combined:"组合套餐"}[value]||"体检套餐");const genderScopeLabel=(value)=>({all:"不限性别",male:"男性",female:"女性",female_all:"女性"}[value]||"不限性别");function openPackageDetail(item){selectedPackageDetail.value=item;packageDetailVisible.value=true;}
 const galleryDrawerVisible=ref(false),galleryInstitution=ref(null),adminImages=ref([]),galleryLoading=ref(false),galleryUploading=ref(false),galleryOrdering=ref(false),galleryOrderChanged=ref(false),galleryDragIndex=ref(null),galleryFileInput=ref(null);
 function resetInstitution(){Object.assign(institutionForm,{id:null,organization_id:organizations.value[0]?.id||null,branch_name:"",district:"",address:"",metro_info:"",consult_phone:"",ext:"",closed_day:"",description:""});}
 function openCreate(){resetInstitution();dialogVisible.value=true;}

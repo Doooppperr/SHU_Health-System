@@ -113,7 +113,7 @@ class Package(db.Model):
         db.UniqueConstraint("institution_id", "name", name="uq_package_institution_name"),
         db.CheckConstraint("length(trim(name)) > 0", name="ck_packages_name_not_blank"),
         db.CheckConstraint("length(trim(focus_area)) > 0", name="ck_packages_focus_area_not_blank"),
-        db.CheckConstraint("gender_scope in ('all', 'male', 'female', 'female_all')", name="ck_packages_gender_scope"),
+        db.CheckConstraint("gender_scope in ('all', 'male', 'female')", name="ck_packages_gender_scope"),
         db.CheckConstraint("price >= 0", name="ck_packages_price_non_negative"),
     )
 
@@ -309,7 +309,7 @@ class PackageChangeRequest(db.Model):
             by_id = {row.id: row.name for row in domains}
             value["health_domains"] = [by_id[item] for item in ids if item in by_id]
             value["package_type_label"] = {"special": "专项套餐", "combined": "组合套餐"}.get(value.get("package_type"), "体检套餐")
-            value["gender_scope_label"] = {"all": "不限性别", "male": "男性", "female": "女性", "female_all": "女性人群"}.get(value.get("gender_scope"), "不限性别")
+            value["gender_scope_label"] = {"all": "不限性别", "male": "男性", "female": "女性", "female_all": "女性"}.get(value.get("gender_scope"), "不限性别")
             value["status_label"] = "启用" if value.get("is_active", True) else "停用"
             return value
 

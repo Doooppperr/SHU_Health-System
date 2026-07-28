@@ -119,7 +119,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { createOrgPackage, deactivateOrgPackage, fetchOrgPackages, fetchOrgReportAssetTypes, reactivateOrgPackage, updateOrgPackage } from "../../api/org";
 import { fetchHealthDomains } from "../../api/health";
 
-const genderOptions = [{ value: "all", label: "不限人群" }, { value: "male", label: "男性" }, { value: "female", label: "女性" }, { value: "female_all", label: "女性全龄" }];
+const genderOptions = [{ value: "all", label: "不限人群" }, { value: "male", label: "男性" }, { value: "female", label: "女性" }];
 const genderLabel = (value) => genderOptions.find((item) => item.value === value)?.label || "不限人群";
 const packageTypeLabel = (value) => value === "combined" ? "组合服务" : "专项服务";
 const items = ref([]);

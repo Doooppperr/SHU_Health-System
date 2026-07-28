@@ -53,7 +53,7 @@ describe("user platform presentation helpers", () => {
 
   it("turns internal enums into user-facing language", () => {
     expect(appointmentMeta("awaiting_report").label).toBe("待出结果");
-    expect(genderLabel("female_all")).toBe("女性全龄");
+    expect(genderLabel("female_all")).toBe("女性");
     expect(packageTypeLabel("combined")).toBe("综合组合");
   });
 

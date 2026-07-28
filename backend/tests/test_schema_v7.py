@@ -104,7 +104,13 @@ def test_same_organization_published_reports_are_read_only_and_audited(app, clie
     assert shared["access_mode"] == "cross_branch_read_only" and shared["can_edit"] is False
     detail = client.get(f"/api/org/reports/{report_id}", headers=sibling)
     assert detail.status_code == 200
-    assert detail.get_json()["item"]["access_mode"] == "cross_branch_read_only"
+    detail_item = detail.get_json()["item"]
+    assert detail_item["access_mode"] == "cross_branch_read_only"
+    assert detail_item["can_edit"] is False
+    assert detail_item["indicators"]
+    assert detail_item["text_results"]
+    assert len(detail_item["indicators"]) == detail_item["indicator_count"]
+    assert len(detail_item["text_results"]) == detail_item["text_result_count"]
     assert client.put(f"/api/org/reports/{report_id}", headers=sibling, json={"subject_name": "禁止修改"}).status_code == 404
     assert client.get(f"/api/org/reports/{report_id}", headers=other_organization).status_code == 404
     with app.app_context():

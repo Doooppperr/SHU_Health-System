@@ -106,6 +106,15 @@ def test_institution_invalidation_is_final_and_visible_in_friend_timeline(app, c
 def test_package_changes_require_admin_review_and_support_withdrawal(app, client):
     org = login(client, "institution1_staff1")
     admin = login(client, "admin", "admin123")
+    redundant_scope = client.post("/api/org/packages", headers=org, json={
+        "name": "重复人群范围套餐",
+        "focus_area": "人群范围校验",
+        "gender_scope": "female_all",
+        "price": 299,
+    })
+    assert redundant_scope.status_code == 400
+    with app.app_context():
+        assert Package.query.filter_by(name="重复人群范围套餐").first() is None
     create_payload = {"name": "审核测试套餐", "focus_area": "预约审核联调", "gender_scope": "all", "price": 299, "description": "合成测试"}
     requested = client.post("/api/org/packages", headers=org, json=create_payload)
     assert requested.status_code == 201 and requested.get_json()["item"]["status"] == "pending"

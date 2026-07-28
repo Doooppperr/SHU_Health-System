@@ -33,7 +33,7 @@ export const GENDER_LABELS = {
   all: "不限人群",
   male: "男性",
   female: "女性",
-  female_all: "女性全龄",
+  female_all: "女性",
 };
 
 export const WAITLIST_STATUS = {
