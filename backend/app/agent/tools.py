@@ -365,12 +365,21 @@ def _draft_summary(name: str, args, *, normalized_payload=None) -> dict:
     if name == "create_booking_draft":
         institution = db.session.get(Institution, payload["institution_id"])
         package = db.session.get(Package, payload["package_id"])
+        intakes = payload["participant_intakes"]
+        intake_summary = "；".join(
+            (
+                f"{float(item['height_cm']):g} cm / "
+                f"{float(item['weight_kg']):g} kg"
+            )
+            for item in intakes
+        )
         return {
             "title": "确认提交体检预约",
             "体检机构": institution.name if institution else f"机构 {payload['institution_id']}",
             "体检套餐": package.name if package else f"套餐 {payload['package_id']}",
             "体检日期": payload["appointment_date"],
             "预约人数": len(payload["participant_user_ids"] or []),
+            "身高/体重": intake_summary,
         }
     if name == "create_cancellation_draft":
         return {"title": "确认取消整个预约组", "预约组编号": payload["group_id"]}
@@ -403,7 +412,27 @@ def _create_draft(name, args, *, user, thread_id, run_id):
         for intake in payload["participant_intakes"]:
             if intake.get("user_id") is None:
                 intake["user_id"] = user.id
-    expires_at = datetime.now(timezone.utc) + timedelta(
+        participant_ids = payload["participant_user_ids"]
+        intake_ids = [intake["user_id"] for intake in payload["participant_intakes"]]
+        if (
+            len(set(participant_ids)) != len(participant_ids)
+            or len(set(intake_ids)) != len(intake_ids)
+            or set(intake_ids) != set(participant_ids)
+        ):
+            raise ValueError(
+                "预约草稿必须包含每位受检者且仅包含一份身高体重资料"
+            )
+    now = datetime.now(timezone.utc)
+    AgentPendingAction.query.filter_by(
+        thread_id=thread_id,
+        user_id=user.id,
+        action_type=action_type,
+        status="pending",
+    ).update(
+        {"status": "expired", "decided_at": now},
+        synchronize_session=False,
+    )
+    expires_at = now + timedelta(
         seconds=int(current_app.config.get("AGENT_ACTION_TTL_SECONDS", 600))
     )
     action = AgentPendingAction(

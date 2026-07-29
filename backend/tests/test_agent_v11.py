@@ -3,6 +3,8 @@ import uuid
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from app.agent import runtime as agent_runtime
 from app.agent.runtime import _business_date_context, _plain_text_answer
 from app.agent.tools import execute_tool
@@ -365,6 +367,37 @@ def test_booking_action_reuses_domain_rules_and_commits_once(client, app):
         )
         db.session.add(run)
         db.session.flush()
+        with pytest.raises(ValueError, match="工具参数无效"):
+            execute_tool(
+                "create_booking_draft",
+                {
+                    "institution_id": institution.id,
+                    "package_id": package.id,
+                    "appointment_date": day.isoformat(),
+                    "participant_user_ids": [],
+                    "participant_intakes": [],
+                    "notice_confirmed": True,
+                },
+                user=user,
+                thread_id=thread_id,
+                run_id=run.id,
+            )
+        older_draft = execute_tool(
+            "create_booking_draft",
+            {
+                "institution_id": institution.id,
+                "package_id": package.id,
+                "appointment_date": day.isoformat(),
+                "participant_user_ids": [],
+                "participant_intakes": [
+                    {"user_id": None, "height_cm": 175, "weight_kg": 74.1}
+                ],
+                "notice_confirmed": True,
+            },
+            user=user,
+            thread_id=thread_id,
+            run_id=run.id,
+        )
         draft = execute_tool(
             "create_booking_draft",
             {
@@ -385,7 +418,11 @@ def test_booking_action_reuses_domain_rules_and_commits_once(client, app):
         action_id = draft["action_id"]
         assert "体检机构" in draft["summary"]
         assert "体检套餐" in draft["summary"]
+        assert draft["summary"]["身高/体重"] == "170 cm / 65 kg"
         assert "institution_id" not in draft["summary"]
+        assert db.session.get(
+            AgentPendingAction, older_draft["action_id"]
+        ).status == "expired"
 
     response = client.post(
         f"/api/agent/actions/{action_id}/decision/stream",

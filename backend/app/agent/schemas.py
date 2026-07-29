@@ -75,7 +75,11 @@ class BookingDraftArgs(StrictToolArgs):
         max_length=5,
         description="本人预约时传空数组；服务端会绑定当前登录用户。",
     )
-    participant_intakes: list[BookingIntake] = Field(default_factory=list, max_length=5)
+    participant_intakes: list[BookingIntake] = Field(
+        min_length=1,
+        max_length=5,
+        description="必须包含每位受检者的身高和体重；本人 user_id 可留空。",
+    )
     notice_confirmed: bool = False
 
 

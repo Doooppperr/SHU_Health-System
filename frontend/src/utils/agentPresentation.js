@@ -15,3 +15,13 @@ const TOOL_PROGRESS_LABELS = {
 export function agentToolProgressLabel(toolName) {
   return TOOL_PROGRESS_LABELS[toolName] || "正在核对相关信息";
 }
+
+export function replacePendingAgentAction(actions, nextAction) {
+  return [
+    ...(actions || []).filter(
+      (item) => item.action_id !== nextAction.action_id
+        && item.action_type !== nextAction.action_type
+    ),
+    nextAction,
+  ];
+}

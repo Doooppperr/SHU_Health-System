@@ -7,7 +7,10 @@ import {
   streamAgentDecision,
   streamAgentRun,
 } from "../api/agent";
-import { agentToolProgressLabel } from "../utils/agentPresentation";
+import {
+  agentToolProgressLabel,
+  replacePendingAgentAction,
+} from "../utils/agentPresentation";
 
 
 function threadStorageKey(userId) {
@@ -98,7 +101,10 @@ export const useAgentStore = defineStore("agent", {
                 if (!event.ok) this.statusText = "正在调整查询条件";
               }
               if (event.event === "approval_required") {
-                this.pendingActions.push(event);
+                this.pendingActions = replacePendingAgentAction(
+                  this.pendingActions,
+                  event
+                );
               }
             },
           }
