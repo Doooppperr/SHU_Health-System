@@ -1,0 +1,575 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>健康档案、趋势分析、HealthDoc Agent 与混合 RAG 展示讲稿</title>
+  <style>
+    @page { size: A4; margin: 0; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: #e9eef5; color: #172033; }
+    body {
+      font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+      font-size: 12.2px;
+      line-height: 1.56;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    .page {
+      position: relative;
+      width: 210mm;
+      min-height: 297mm;
+      margin: 0 auto 10px;
+      padding: 14mm 15mm 15mm;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 93% 5%, rgba(46, 112, 240, .12), transparent 22%),
+        linear-gradient(180deg, #fff 0%, #fbfcff 100%);
+      page-break-after: always;
+    }
+    .page:last-child { page-break-after: auto; }
+    .page::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 5px;
+      background: linear-gradient(90deg, #235ed5, #2e9d8f 70%, #f2b44a);
+    }
+    .page-number {
+      position: absolute;
+      right: 15mm;
+      bottom: 7mm;
+      color: #778198;
+      font-size: 10px;
+    }
+    .eyebrow {
+      margin: 0 0 5px;
+      color: #235ed5;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: 10px; font-size: 29px; line-height: 1.2; letter-spacing: -.03em; }
+    h2 { margin-bottom: 9px; font-size: 21px; line-height: 1.28; }
+    h3 { margin: 10px 0 5px; font-size: 14px; color: #1f3f78; }
+    p { margin-bottom: 7px; }
+    ul, ol { margin: 5px 0 8px; padding-left: 19px; }
+    li { margin: 3px 0; }
+    strong { color: #132b53; }
+    code {
+      padding: 1px 4px;
+      border-radius: 4px;
+      background: #edf3ff;
+      color: #174a9c;
+      font-family: "Cascadia Mono", Consolas, monospace;
+      font-size: .94em;
+    }
+    .cover {
+      display: flex;
+      min-height: 297mm;
+      flex-direction: column;
+      justify-content: center;
+      padding: 24mm 19mm;
+      color: white;
+      background:
+        radial-gradient(circle at 83% 19%, rgba(91, 220, 195, .32), transparent 27%),
+        radial-gradient(circle at 12% 86%, rgba(255, 197, 91, .22), transparent 25%),
+        linear-gradient(145deg, #102d60 0%, #1e5aca 54%, #168a82 100%);
+    }
+    .cover::before { display: none; }
+    .cover .eyebrow { color: #b9d8ff; }
+    .cover h1 { max-width: 165mm; font-size: 34px; color: white; }
+    .cover .subtitle { max-width: 150mm; color: #e8f2ff; font-size: 16px; }
+    .cover-grid {
+      display: grid;
+      margin-top: 18px;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+    .cover-card {
+      min-height: 80px;
+      padding: 12px;
+      border: 1px solid rgba(255,255,255,.22);
+      border-radius: 12px;
+      background: rgba(255,255,255,.1);
+      backdrop-filter: blur(6px);
+    }
+    .cover-card strong { display: block; margin-bottom: 4px; color: white; font-size: 15px; }
+    .meta { margin-top: 24px; color: #dceaff; font-size: 12px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
+    .card {
+      padding: 9px 10px;
+      border: 1px solid #dce4f1;
+      border-radius: 10px;
+      background: white;
+      box-shadow: 0 4px 14px rgba(30, 58, 110, .05);
+    }
+    .card h3 { margin-top: 0; }
+    .callout {
+      margin: 8px 0;
+      padding: 9px 11px;
+      border-left: 4px solid #2e70f0;
+      border-radius: 6px;
+      background: #eef4ff;
+    }
+    .callout.safe { border-left-color: #239482; background: #ecf8f5; }
+    .callout.warn { border-left-color: #e3a123; background: #fff7e7; }
+    .script {
+      margin: 7px 0;
+      padding: 9px 11px;
+      border: 1px dashed #a9b9d1;
+      border-radius: 8px;
+      background: #f8fafe;
+    }
+    .script::before {
+      content: "口语讲稿";
+      display: block;
+      margin-bottom: 4px;
+      color: #2e70f0;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .08em;
+    }
+    .prompt {
+      margin: 6px 0;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: #162b52;
+      color: #f5f8ff;
+      font-size: 12px;
+    }
+    .prompt::before { content: "固定提问　"; color: #7ed9c6; font-weight: 700; }
+    .flow {
+      display: flex;
+      margin: 9px 0;
+      align-items: stretch;
+      gap: 4px;
+    }
+    .flow span {
+      display: flex;
+      min-height: 44px;
+      flex: 1;
+      align-items: center;
+      justify-content: center;
+      padding: 6px;
+      border: 1px solid #cfdaeb;
+      border-radius: 7px;
+      background: #fff;
+      text-align: center;
+      font-size: 10.5px;
+      font-weight: 700;
+    }
+    .flow b { display: flex; align-items: center; color: #6590d5; }
+    table {
+      width: 100%;
+      margin: 7px 0;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 11.2px;
+    }
+    th, td { padding: 6px 7px; border: 1px solid #d8e0ed; vertical-align: top; }
+    th { background: #edf3fd; color: #173c78; text-align: left; }
+    .tag {
+      display: inline-block;
+      margin: 2px 3px 2px 0;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: #eaf1ff;
+      color: #2458b0;
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .tag.green { background: #e7f6f2; color: #197667; }
+    .tag.gold { background: #fff2d8; color: #956109; }
+    .compact { font-size: 11.3px; }
+    .small { font-size: 10.7px; color: #526078; }
+    .kpi {
+      font-size: 20px;
+      font-weight: 800;
+      color: #205ecb;
+    }
+    .footer-note {
+      position: absolute;
+      left: 15mm;
+      bottom: 7mm;
+      color: #778198;
+      font-size: 9px;
+    }
+    @media print {
+      html, body { background: white; }
+      .page { margin: 0; }
+    }
+  </style>
+</head>
+<body>
+  <section class="page cover">
+    <p class="eyebrow">HealthDoc · 项目答辩功能展示</p>
+    <h1>健康档案、趋势分析、<br>HealthDoc Agent 与混合 RAG</h1>
+    <p class="subtitle">详细操作流程、逐字口语讲稿、写操作确认演示、现场备用方案与答辩问答</p>
+    <div class="cover-grid">
+      <div class="cover-card"><strong>健康事实</strong>时间线、正式报告、长期趋势均可回溯到业务数据。</div>
+      <div class="cover-card"><strong>Agent 执行</strong>DeepSeek 选择类型化工具，展示计划、证据和任务轨迹。</div>
+      <div class="cover-card"><strong>安全确认</strong>预约、取消、候补和客服工单只生成草稿，确认后才执行。</div>
+    </div>
+    <p class="meta">推荐时长：11—13 分钟　·　主演示账号：test1（林晓晨）　·　更新日期：2026-07-29</p>
+  </section>
+
+  <section class="page">
+    <p class="eyebrow">01 · 展示定位</p>
+    <h2>从“查看数据”到“让 Agent 完成目标”</h2>
+    <div class="callout">
+      <strong>核心故事：</strong>机构归档形成可信健康事实，多次记录形成趋势；Agent 根据用户目标选择受控工具读取证据、比较方案或生成任务草稿；公共健康知识则由混合 RAG 提供受控补充。
+    </div>
+    <div class="grid-3">
+      <div class="card"><h3>1. 看得清</h3><p>时间线说明数据怎样产生，报告详情保留指标、结论和附件。</p></div>
+      <div class="card"><h3>2. 看得懂</h3><p>趋势计算由确定性代码完成，AI把结果解释成人能理解的语言。</p></div>
+      <div class="card"><h3>3. 做得到</h3><p>Agent 能搜索、比较、查询并生成操作草稿，但不能绕过用户确认。</p></div>
+    </div>
+    <table>
+      <tr><th style="width:21%">时间</th><th style="width:29%">展示内容</th><th>核心目的</th></tr>
+      <tr><td>0:00—0:40</td><td>开场</td><td>承接机构端归档，提出“可信数据如何进一步被使用”</td></tr>
+      <tr><td>0:40—3:30</td><td>时间线、报告详情</td><td>证明 Agent 的输入不是凭空生成，而是正式业务事实</td></tr>
+      <tr><td>3:30—5:20</td><td>健康趋势</td><td>展示跨日期、跨来源的确定性计算与可追溯性</td></tr>
+      <tr><td>5:20—9:50</td><td>HealthDoc Agent</td><td>演示只读分析、多工具任务、证据轨迹和写操作确认</td></tr>
+      <tr><td>9:50—11:10</td><td>混合 RAG、小模型分工</td><td>解释为何不是“所有事情都交给一个大模型”</td></tr>
+      <tr><td>11:10—12:30</td><td>安全、验证与总结</td><td>明确隐私、医疗边界、审计和上线结果</td></tr>
+    </table>
+    <div class="callout warn">
+      <strong>演示前：</strong>使用验收账号文档登录 test1；先点击助手中的“清空”；不要在讲稿或投屏中展示密码、访问令牌和健康身份码。
+    </div>
+    <span class="page-number">2 / 13</span>
+  </section>
+
+  <section class="page">
+    <p class="eyebrow">02 · 健康事实入口</p>
+    <h2>健康时间线：先证明数据从哪里来</h2>
+    <h3>现场操作</h3>
+    <ol>
+      <li>登录普通用户，点击左侧“健康时间线”，先停留在“全部记录”。</li>
+      <li>切换“个人记录”，指出机构和进度筛选会自动隐藏。</li>
+      <li>切换“体检记录”，找到“2026-07-24 糖脂代谢专项 · 已完成”。</li>
+      <li>依次指向“预约成功—机构确认到检—健康数据已归档”。</li>
+      <li>点击“查看本次健康数据”。</li>
+    </ol>
+    <div class="script">
+      前一位同学已经展示了机构怎样录入、复核并正式归档检查数据。接下来我从普通用户角度继续展示：这些数据归档后，怎样形成长期健康档案，以及 Agent 为什么可以在不直接访问任意数据库的前提下完成分析和任务。
+      <br><br>
+      时间线不是简单的数据列表，而是按照真实日期，把预约、到检、归档和个人测量组织成连续历程。只有报告正式归档后，才会出现“查看本次健康数据”；尚未复核的草稿不会被当作最终健康事实。
+    </div>
+    <div class="grid-2">
+      <div class="card">
+        <h3>同日个人测量</h3>
+        <p>当天多次测量在时间线上合并展示，但原始时间和值仍保留在详情中。</p>
+      </div>
+      <div class="card">
+        <h3>体检业务状态</h3>
+        <p>预约、到检和归档使用同一业务对象持续更新，用户知道结果如何产生。</p>
+      </div>
+    </div>
+    <div class="callout safe"><strong>本页总结句：</strong>Agent 处理的不是无法核对的聊天记忆，而是具有权限、状态和来源的正式健康事实。</div>
+    <span class="page-number">3 / 13</span>
+  </section>
+
+  <section class="page">
+    <p class="eyebrow">03 · 正式报告</p>
+    <h2>体检报告详情：结构化指标、机构结论与附件</h2>
+    <h3>现场操作 A：糖脂代谢专项</h3>
+    <p>展示体重 71.9kg、空腹血糖 5.2mmol/L、总胆固醇 4.8mmol/L、甘油三酯 1.4mmol/L；随后展示机构结论、甲状腺超声、机构批注和图片放大。</p>
+    <div class="script">
+      一份正式档案同时包含三类内容：结构化指标及参考范围、机构复核后的文字结论、超声或影像等检查附件。普通用户只能查看，不能修改机构结果，因此历史事实不会被后续聊天或 Agent 回答反向改写。
+    </div>
+    <h3>现场操作 B：都市年度综合体检</h3>
+    <ol>
+      <li>打开“2026-07-26 都市年度综合体检”。</li>
+      <li>指出 104 项指标、8 个健康方向、8 条机构结论和 1 项需关注。</li>
+      <li>仅保留“基础体征与体格”，找到 BMI 24.2kg/m²。</li>
+      <li>指向参考范围 18.5—23.9 和“超重”结果标签，再恢复全部方向。</li>
+    </ol>
+    <div class="script">
+      BMI 的结果状态来自报告数值、参考范围和机构结果，不是模型临时猜测。体重、身高等没有统一单项上下限的描述性数据不会被强行标记异常。这类计算和状态判断都由规则代码负责，模型只解释已经核验的证据。
+    </div>
+    <div class="callout"><strong>答辩重点：</strong>“AI 能解释什么”取决于“系统能提供什么可信事实”；报告权限和正式归档状态始终在模型之前。</div>
+    <span class="page-number">4 / 13</span>
+  </section>
+
+  <section class="page">
+    <p class="eyebrow">04 · 长期变化</p>
+    <h2>健康趋势：先计算，再解释</h2>
+    <h3>现场操作</h3>
+    <ol>
+      <li>点击“健康趋势”，选择本人和“基础体征与体格”。</li>
+      <li>日期与来源先保持默认，点击“查看变化”。</li>
+      <li>点击“清空”，只选择“体重”和“体重指数”。</li>
+      <li>悬停数据点，展示日期、来源、参考范围和结果判断。</li>
+      <li>指向右侧与筛选条件联动的“AI 图表解读”。</li>
+    </ol>
+    <div class="script">
+      单次报告回答“某一天是什么状态”，趋势回答“一段时间发生了什么变化”。当前数据中，体重从早期约 82kg 下降到近期 74.1kg，BMI 从 26.8 下降到 24.2；整体改善，但最新值仍略高于报告参考上限。
+      <br><br>
+      趋势起点、终点、变化方向和同日来源优先级都由服务端计算。AI图表解读只把这些已计算结果组织成自然语言，不负责重新计算，也不代替医疗诊断。
+    </div>
+    <table>
+      <tr><th>同一天出现多个来源</th><th>确定性处理规则</th></tr>
+      <tr><td>既有机构体检结果，也有个人测量</td><td>主趋势优先正式归档的机构结果</td></tr>
+      <tr><td>机构报告当天没有该指标</td><td>采用当天最后一次个人测量</td></tr>
+      <tr><td>用户切换为“个人日常测量”</td><td>仍可单独查看全部个人测量，原始记录不删除</td></tr>
+    </table>
+    <div class="callout safe"><strong>本页总结句：</strong>图表每个点都能回到原始记录；Agent 调用趋势工具时得到的也是同一套确定性结果。</div>
+    <span class="page-number">5 / 13</span>
+  </section>
+
+  <section class="page">
+    <p class="eyebrow">05 · 核心升级</p>
+    <h2>从 AI 问答升级为可审计 Agent</h2>
+    <div class="grid-2">
+      <div class="card">
+        <h3>旧 AI 问答</h3>
+        <p>用户提问，模型读取准备好的上下文并生成回答，重点是“解释内容”。</p>
+      </div>
+      <div class="card">
+        <h3>HealthDoc Agent</h3>
+        <p>用户描述目标，模型选择类型化工具完成查询、比较或草稿任务，重点是“完成目标”。</p>
+      </div>
+    </div>
+    <div class="flow">
+      <span>输入校验</span><b>→</b><span>紧急风险闸门</span><b>→</b><span>DeepSeek 规划</span><b>→</b><span>类型化工具</span><b>→</b><span>证据 / 草稿</span>
+    </div>
+    <div class="flow">
+      <span>用户确认</span><b>→</b><span>重新校验</span><b>→</b><span>领域服务提交</span><b>→</b><span>幂等回执</span>
+    </div>
+    <div class="script">
+      现在点击右上角“AI 健康助手”，打开后面板标题已经是“HealthDoc Agent”。它不再只有聊天气泡，还会展示任务轨迹、工具执行状态、证据、待确认操作和执行回执。
+      <br><br>
+      DeepSeek 负责理解目标和选择工具，但不能运行任意 SQL、访问任意网址或调用未注册接口。权限、数值计算、预约容量和写入都由后端领域服务负责。
+    </div>
+    <h3>当前类型化工具</h3>
+    <p>
+      <span class="tag">档案列表</span><span class="tag">报告事实</span><span class="tag">指标趋势</span>
+      <span class="tag green">机构搜索</span><span class="tag green">套餐比较</span><span class="tag green">名额查询</span>
+      <span class="tag gold">预约草稿</span><span class="tag gold">取消草稿</span><span class="tag gold">候补草稿</span><span class="tag gold">客服工单草稿</span>
+    </p>
+    <div class="callout warn"><strong>紧急风险：</strong>胸痛、呼吸困难、疑似卒中、严重过敏、意识丧失、自伤风险等先由确定性规则短路，直接提示紧急求助，不等待模型规划。</div>
+    <span class="page-number">6 / 13</span>
+  </section>
+
+  <section class="page">
+    <p class="eyebrow">06 · Agent 演示一</p>
+    <h2>只读任务：报告分析与趋势解释</h2>
+    <h3>第一问：分析最近报告</h3>
+    <div class="prompt">请分析我最近一份体检报告里的异常项目，并说明依据。</div>
+    <div class="script">
+      这一轮 Agent 会先列出当前账号有权读取的已归档报告，再读取最新报告的结构化事实。面板中的“任务轨迹”会显示工具开始、完成和证据，而不是直接给出一段无法核对的回答。
+      <br><br>
+      如果回答提到 BMI 24.2 或其他项目，可以回到报告详情核对数值、单位、参考范围和机构状态。模型只能围绕工具返回的证据解释。
+    </div>
+    <h3>第二问：解释长期趋势</h3>
+    <div class="prompt">解释我最近几年的 BMI 趋势，列出起点、终点和总体变化。</div>
+    <div class="script">
+      Agent 会调用趋势工具。起点、终点、变化方向和样本日期由 Python/SQL 确定性计算，DeepSeek 负责说明“这段变化意味着什么、还需要注意什么”。这避免模型自己做长序列数值运算。
+    </div>
+    <div class="grid-3">
+      <div class="card"><div class="kpi">计划</div><p>先说明准备完成什么。</p></div>
+      <div class="card"><div class="kpi">工具</div><p>展示实际调用与完成状态。</p></div>
+      <div class="card"><div class="kpi">证据</div><p>回答可以回到原始业务数据核对。</p></div>
+    </div>
+    <div class="callout safe"><strong>演示观察点：</strong>任务轨迹出现 `list_reports`、`get_report_facts` 或 `compute_indicator_trend`；最终状态必须为完成，不能只展示自然语言回答。</div>
+    <span class="page-number">7 / 13</span>
+  </section>
+
+  <section class="page">
+    <p class="eyebrow">07 · Agent 演示二</p>
+    <h2>多工具任务：机构、套餐、名额和预约状态</h2>
+    <h3>第三问：套餐比较</h3>
+    <div class="prompt">比较云川影像与呼吸体检中心的“呼吸与肺功能专项”和“心电与循环影像专项”，重点说明价格和检查方向。</div>
+    <div class="script">
+      这不是让模型凭记忆推荐套餐。Agent 先搜索机构和当前有效套餐，再读取套餐价格、适用人群和健康方向，最后形成对比。套餐若已下架或版本变化，工具会返回当前业务状态。
+    </div>
+    <h3>第四问：查询未来名额</h3>
+    <div class="prompt">查询云川影像与呼吸体检中心未来 7 天的可预约日期。</div>
+    <div class="script">
+      名额不是由模型估算，而是预约领域服务根据日期、每日容量、现有有效预约和机构状态计算。DeepSeek只负责选择查询工具和组织结果。
+    </div>
+    <h3>可替换的只读问题</h3>
+    <table>
+      <tr><th>目标</th><th>建议提问</th><th>预期工具</th></tr>
+      <tr><td>搜索机构</td><td>搜索提供呼吸系统检查的体检机构。</td><td><code>search_institutions</code></td></tr>
+      <tr><td>套餐比较</td><td>比较两项套餐的价格、方向和适用人群。</td><td><code>compare_packages</code></td></tr>
+      <tr><td>查询名额</td><td>查询指定机构未来 7 天名额。</td><td><code>check_availability</code></td></tr>
+      <tr><td>预约状态</td><td>查看我最近一笔预约的当前状态。</td><td><code>get_appointment_status</code></td></tr>
+    </table>
+    <div class="callout"><strong>本页总结句：</strong>Agent 的价值不是“回答得更像人”，而是把多个受控业务查询组合成一条可观察的任务链。</div>
+    <span class="page-number">8 / 13</span>
+  </section>
+
+  <section class="page">
+    <p class="eyebrow">08 · Agent 演示三</p>
+    <h2>写操作：只生成草稿，确认后才执行</h2>
+    <h3>最稳现场演示：客服工单草稿</h3>
+    <div class="prompt">请创建一个预约问题的人工客服工单，摘要写“现场 Agent 确认流程演示”，先生成草稿，不要直接执行。</div>
+    <h3>现场操作</h3>
+    <ol>
+      <li>等待任务轨迹出现客服工单草稿工具。</li>
+      <li>指向“需要确认操作”卡片，说明参数和 10 分钟有效期。</li>
+      <li>强调此时数据库中只有加密草稿，还没有正式客服工单。</li>
+      <li>现场点击“拒绝”，展示状态回执；不要为答辩创建真实工单。</li>
+    </ol>
+    <div class="script">
+      对预约、取消、候补和人工客服工单，Agent 永远不能直接提交。它只能生成一张待确认卡片。用户点击确认后，服务端还会重新检查账号、授权、套餐版本、名额、预约状态和草稿有效期，再调用与原业务页面相同的领域服务。
+      <br><br>
+      如果网络重试或用户重复点击，同一个 Action ID 作为幂等键，只返回原回执，不会生成第二个预约或第二张工单。
+    </div>
+    <div class="flow">
+      <span>草稿，无副作用</span><b>→</b><span>用户查看摘要</span><b>→</b><span>确认或拒绝</span><b>→</b><span>重新校验</span><b>→</b><span>一次性提交 / 回执</span>
+    </div>
+    <div class="grid-2">
+      <div class="card"><h3>可以由 Agent 决定</h3><p>选择哪个已注册工具、以什么顺序查询、怎样解释工具证据。</p></div>
+      <div class="card"><h3>必须由用户决定</h3><p>是否预约、取消、进入候补或创建人工客服工单。</p></div>
+    </div>
+    <span class="page-number">9 / 13</span>
+  </section>
+
+  <section class="page">
+    <p class="eyebrow">09 · 模型与知识</p>
+    <h2>为什么使用专项小模型，而不是再部署一个通用小 LLM</h2>
+    <table>
+      <tr><th style="width:27%">组件</th><th style="width:31%">负责什么</th><th>为什么这样分工</th></tr>
+      <tr><td>Python / SQL 领域服务</td><td>权限、趋势计算、容量、状态转换、幂等写入</td><td>结果可复现、可测试，不把精确计算交给概率模型</td></tr>
+      <tr><td>DeepSeek V4 Flash</td><td>目标理解、类型化工具选择、多步规划、证据解释</td><td>具备较强工具调用能力，服务器无需常驻大语言模型</td></tr>
+      <tr><td>BGE-small-zh</td><td>公共知识 Dense 语义召回</td><td>中文语义匹配能力好，资源占用远小于通用 LLM</td></tr>
+      <tr><td>BM25 + 中文词法</td><td>Sparse 关键词和专业术语召回</td><td>对指标名、疾病名和精确词语更稳定</td></tr>
+      <tr><td>RRF</td><td>融合 Dense 与 Sparse 候选</td><td>减少只依赖单一路径造成的漏召回</td></tr>
+    </table>
+    <div class="script">
+      当前生产机只有约 4GB 内存，因此没有常驻 0.6B 到 7B 的通用小语言模型。小模型被用在它真正擅长的检索环节，DeepSeek负责规划，确定性代码负责业务正确性。这比让多个语言模型重复分析同一份数据更稳定，也更容易审计。
+    </div>
+    <h3>Agent 与 RAG 的边界</h3>
+    <div class="grid-2">
+      <div class="card">
+        <h3>Agent</h3>
+        <p>处理私人档案、趋势、机构目录、套餐、名额和任务草稿；只调用类型化业务工具。</p>
+      </div>
+      <div class="card">
+        <h3>混合 RAG</h3>
+        <p>为健康 AI 分析模块提供提前审核的公共健康知识；不保存私人档案，也不是实时上网搜索。</p>
+      </div>
+    </div>
+    <div class="callout safe">线上混合索引已启用：7 个批准来源、665 个知识块；Dense 与 Sparse 各预取 24 个候选，RRF 合并 12 个，再按指标和来源进行确定性重排。</div>
+    <span class="page-number">10 / 13</span>
+  </section>
+
+  <section class="page">
+    <p class="eyebrow">10 · 安全、隐私与验证</p>
+    <h2>可审计、可恢复、可降级</h2>
+    <div class="grid-2 compact">
+      <div class="card">
+        <h3>数据与权限</h3>
+        <ul>
+          <li>只读取当前账号有权访问的正式档案。</li>
+          <li>亲友档案权与代预约权分别检查。</li>
+          <li>线程与草稿参数使用 AES-GCM 加密。</li>
+          <li>工具日志只保存字段名、结果键和状态。</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>生命周期</h3>
+        <ul>
+          <li>线程默认闲置 24 小时后覆盖清理。</li>
+          <li>操作草稿默认 10 分钟失效。</li>
+          <li>生产定时器每小时执行清理。</li>
+          <li>旧 AI 接口保留为紧急回退。</li>
+        </ul>
+      </div>
+    </div>
+    <h3>最终验收结果</h3>
+    <div class="grid-3">
+      <div class="card"><div class="kpi">103</div><p>后端自动化测试通过</p></div>
+      <div class="card"><div class="kpi">136</div><p>前端自动化测试通过</p></div>
+      <div class="card"><div class="kpi">200 / 200</div><p>真实 DeepSeek 工具路由场景通过</p></div>
+    </div>
+    <table>
+      <tr><th>生产验证</th><th>结果</th></tr>
+      <tr><td>Agent 能力接口</td><td><code>enabled=true</code>、<code>write_enabled=true</code>、DeepSeek live</td></tr>
+      <tr><td>混合检索</td><td>卫健委公共知识实测命中，7 个来源、665 个知识块</td></tr>
+      <tr><td>真实线上冒烟</td><td>档案分析、客服草稿、拒绝确认和线程清理通过</td></tr>
+      <tr><td>依赖与服务</td><td>无已知依赖漏洞；API、通知 worker、清理 timer、Apache active</td></tr>
+    </table>
+    <div class="callout warn">
+      当前公网入口仍是 HTTP，因此 OAuth/MCP 外部接入保持关闭。代码和服务单元已经具备，但必须在可信域名与 HTTPS 完成后才开放；现场不要声称 MCP 已公网启用。
+    </div>
+    <span class="page-number">11 / 13</span>
+  </section>
+
+  <section class="page">
+    <p class="eyebrow">11 · 现场保障与答辩</p>
+    <h2>失败备用方案与老师可能追问</h2>
+    <h3>现场超过 15 秒未返回</h3>
+    <div class="script">
+      HealthDoc Agent 使用流式事件展示计划、工具和证据。现在智能服务没有及时响应，为避免占用展示时间，我使用提前准备的成功画面说明。重点不是一句生成文本，而是任务轨迹、工具证据和写操作确认边界。
+    </div>
+    <div class="grid-2 compact">
+      <div class="card">
+        <h3>必须准备的备份画面</h3>
+        <ol>
+          <li>最近报告分析：包含任务轨迹与工具完成状态。</li>
+          <li>BMI 趋势：包含趋势工具和起止值。</li>
+          <li>套餐比较或名额查询：包含多工具证据。</li>
+          <li>客服草稿：包含确认卡片与拒绝回执。</li>
+        </ol>
+      </div>
+      <div class="card">
+        <h3>6 分钟压缩路线</h3>
+        <ol>
+          <li>30 秒说明健康事实来源。</li>
+          <li>1 分钟展示报告和趋势。</li>
+          <li>2 分钟演示报告分析与套餐比较。</li>
+          <li>1 分钟演示写操作确认并拒绝。</li>
+          <li>1 分钟说明小模型与安全边界。</li>
+        </ol>
+      </div>
+    </div>
+    <h3>高频追问</h3>
+    <table class="compact">
+      <tr><th style="width:34%">问题</th><th>回答要点</th></tr>
+      <tr><td>Agent 和普通 AI 问答有什么区别？</td><td>问答生成解释；Agent 选择受控工具完成多步目标，并展示轨迹、证据、确认和回执。</td></tr>
+      <tr><td>为什么不部署一个本地小 LLM？</td><td>4GB 服务器不适合常驻通用模型；专项检索小模型更省资源，业务正确性由确定性代码保证。</td></tr>
+      <tr><td>模型会不会直接修改预约？</td><td>不会。模型只生成草稿；第一方界面确认后，服务端重新校验并幂等提交。</td></tr>
+      <tr><td>RAG 会保存用户报告吗？</td><td>不会。公共 RAG 只存批准的公共知识，私人档案按请求权限读取。</td></tr>
+      <tr><td>Agent 是不是医疗诊断？</td><td>不是。它解释正式报告、趋势和公共知识，正式结论仍来自机构或医生。</td></tr>
+    </table>
+    <span class="page-number">12 / 13</span>
+  </section>
+
+  <section class="page">
+    <p class="eyebrow">12 · 最终检查</p>
+    <h2>现场措辞检查表与固定提问</h2>
+    <table class="compact">
+      <tr><th>不要这样说</th><th>应该这样说</th></tr>
+      <tr><td>Agent 可以直接访问数据库。</td><td>Agent 只能调用注册过的类型化工具，工具内部执行权限和字段约束。</td></tr>
+      <tr><td>DeepSeek 计算了 BMI 趋势。</td><td>趋势由后端确定性计算，DeepSeek 负责选择工具和解释结果。</td></tr>
+      <tr><td>Agent 会自动完成预约。</td><td>Agent 只生成草稿，用户确认后才由预约领域服务提交。</td></tr>
+      <tr><td>RAG 就是实时上网搜索。</td><td>RAG 检索提前审核并同步的公共健康知识。</td></tr>
+      <tr><td>小模型负责判断用户该买什么套餐。</td><td>小模型负责知识召回；套餐事实来自业务工具，选择权仍属于用户。</td></tr>
+      <tr><td>刚才回答一定用了 RAG。</td><td>只有检索状态和来源证据显示命中时，才能说明使用了公共知识。</td></tr>
+      <tr><td>MCP 已经对公网开放。</td><td>MCP 已实现，但当前等待可信 HTTPS，生产保持关闭。</td></tr>
+    </table>
+    <h3>四个固定 Agent 提问</h3>
+    <ol>
+      <li><strong>请分析我最近一份体检报告里的异常项目，并说明依据。</strong></li>
+      <li><strong>解释我最近几年的 BMI 趋势，列出起点、终点和总体变化。</strong></li>
+      <li><strong>比较云川影像与呼吸体检中心的两项专项套餐，说明价格和检查方向。</strong></li>
+      <li><strong>请创建一个预约问题的人工客服工单草稿，摘要写“现场 Agent 确认流程演示”，不要直接执行。</strong></li>
+    </ol>
+    <div class="callout safe">
+      <strong>最终记忆句：</strong><br>
+      单次报告是一张健康快照，趋势是一段长期变化；HealthDoc Agent 负责选择受控工具完成目标，混合 RAG 负责补充审核后的公共知识，所有写操作都必须经过用户确认。
+    </div>
+    <p class="small">正式展示前按以上顺序完整彩排一次；结束后点击 Agent 的“清空”，并确认没有遗留待确认操作。</p>
+    <span class="page-number">13 / 13</span>
+  </section>
+</body>
+</html>
