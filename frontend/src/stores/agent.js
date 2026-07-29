@@ -7,6 +7,7 @@ import {
   streamAgentDecision,
   streamAgentRun,
 } from "../api/agent";
+import { agentToolProgressLabel } from "../utils/agentPresentation";
 
 
 function threadStorageKey(userId) {
@@ -22,7 +23,6 @@ export const useAgentStore = defineStore("agent", {
     userId: null,
     threadId: "",
     messages: [],
-    activity: [],
     pendingActions: [],
     isSending: false,
     statusText: "",
@@ -60,7 +60,6 @@ export const useAgentStore = defineStore("agent", {
       const response = await createAgentThread();
       this.threadId = response.data.item.id;
       this.messages = [];
-      this.activity = [];
       this.pendingActions = [];
       sessionStorage.setItem(threadStorageKey(this.userId), this.threadId);
     },
@@ -79,7 +78,6 @@ export const useAgentStore = defineStore("agent", {
         { id: messageId("user"), role: "user", content },
         assistant
       );
-      this.activity = [];
       this.isSending = true;
       this.lastError = "";
       this.statusText = "正在规划任务";
@@ -94,25 +92,10 @@ export const useAgentStore = defineStore("agent", {
               if (event.event === "delta") assistant.content += event.content || "";
               if (event.event === "plan") this.statusText = event.message || "正在规划任务";
               if (event.event === "tool_started") {
-                this.statusText = `正在调用 ${event.name}`;
-                this.activity.push({
-                  id: event.tool_call_id,
-                  type: "tool",
-                  name: event.name,
-                  status: "running",
-                });
+                this.statusText = agentToolProgressLabel(event.name);
               }
               if (event.event === "tool_completed") {
-                const item = this.activity.find((row) => row.id === event.tool_call_id);
-                if (item) item.status = event.ok ? "completed" : "failed";
-              }
-              if (event.event === "evidence") {
-                this.activity.push({
-                  id: messageId("evidence"),
-                  type: "evidence",
-                  name: event.tool,
-                  result: event.result,
-                });
+                if (!event.ok) this.statusText = "正在调整查询条件";
               }
               if (event.event === "approval_required") {
                 this.pendingActions.push(event);
@@ -139,22 +122,18 @@ export const useAgentStore = defineStore("agent", {
       this.isSending = true;
       this.statusText = decision === "approve" ? "正在重新校验并执行" : "正在取消操作";
       try {
-        const result = await streamAgentDecision(actionId, decision, {
-          onEvent: (event) => {
-            if (event.event === "evidence") {
-              this.activity.push({
-                id: messageId("receipt"),
-                type: "receipt",
-                name: event.tool,
-                result: event.result,
-              });
-            }
-          },
-        });
+        const result = await streamAgentDecision(actionId, decision);
         action.status = result.status;
         this.pendingActions = this.pendingActions.filter(
           (item) => item.action_id !== actionId
         );
+        this.messages.push({
+          id: messageId("assistant"),
+          role: "assistant",
+          content: decision === "approve"
+            ? "操作已完成，请查看最新业务状态。"
+            : "已取消该操作，没有执行任何业务变更。",
+        });
       } catch (error) {
         this.lastError = error.message || "操作没有完成";
       } finally {
@@ -173,7 +152,6 @@ export const useAgentStore = defineStore("agent", {
       sessionStorage.removeItem(threadStorageKey(this.userId));
       this.threadId = "";
       this.messages = [];
-      this.activity = [];
       this.pendingActions = [];
       await this.newThread();
     },

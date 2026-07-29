@@ -129,7 +129,7 @@ npm ci
 
 - 应用启动读取 `/api/agent/capabilities`；服务端启用时自动使用 `AgentAssistant`，禁用或不可用时保留原 `AiAssistant`。
 - 浏览器只保存当前 thread ID；会话正文、活动轨迹和待确认 Action 从服务端恢复。
-- `meta/plan/tool_started/tool_completed/evidence/approval_required/delta/done/error` 事件驱动任务轨迹，不用文本猜测工具状态。
+- `meta/plan/tool_started/tool_completed/evidence/approval_required/delta/done/error` 事件驱动内部状态与审计；普通用户只看到业务化处理状态、回答、确认卡和回执，不展示原始工具名或任务轨迹。
 - 预约、取消、候补和人工工单以确认卡呈现；批准或拒绝都调用独立 SSE 决策接口，重复批准显示同一幂等回执。
 - 管理员 `/admin/agent-ops` 只看人工工单摘要和 OAuth 客户端元数据，不显示健康档案或 Agent 会话正文。
 - `VITE_AGENT_ENABLED=false` 是构建级紧急回退；默认由后端 capability 决定。
@@ -187,4 +187,4 @@ npm run build
 npm audit --omit=dev
 ```
 
-当前 136 项测试覆盖认证/角色映射、多标签页会话隔离、健康总览快捷测量、体检/自主记录时间线、同行体检安排与空位提醒、套餐版本展示、机构任务流、亲友健康对象筛选、AI/Agent 路由与流式交互、管理员 Agent 运营路由、关怀模式/响应式布局、日期范围控件、图表外观和 HTTP 行为。生产构建结果见 [`../项目文档/测试报告.md`](../项目文档/测试报告.md)。
+当前 138 项测试覆盖认证/角色映射、多标签页会话隔离、健康总览快捷测量、体检/自主记录时间线、同行体检安排与空位提醒、套餐版本展示、机构任务流、亲友健康对象筛选、AI/Agent 路由与流式交互、Agent 业务化进度文案、管理员 Agent 运营路由、关怀模式/响应式布局、日期范围控件、图表外观和 HTTP 行为。生产构建结果见 [`../项目文档/测试报告.md`](../项目文档/测试报告.md)。

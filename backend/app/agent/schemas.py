@@ -33,7 +33,17 @@ class SearchInstitutionsArgs(StrictToolArgs):
 
 
 class ComparePackagesArgs(StrictToolArgs):
-    package_ids: list[int] = Field(min_length=1, max_length=8)
+    package_ids: list[int] = Field(
+        default_factory=list,
+        max_length=8,
+        description="已知套餐 ID 时传入；按机构浏览套餐时可留空。",
+    )
+    institution_id: int | None = Field(
+        default=None,
+        description="按机构列出或选择套餐时传入机构 ID。",
+    )
+    sort_by: Literal["default", "price_asc", "price_desc"] = "default"
+    limit: int = Field(default=8, ge=1, le=20)
 
 
 class AvailabilityArgs(StrictToolArgs):

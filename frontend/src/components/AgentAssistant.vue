@@ -33,15 +33,6 @@
         <p>{{ message.content || (message.streaming ? "正在处理…" : "") }}</p>
       </article>
 
-      <section v-if="agent.activity.length" class="activity-card">
-        <h3>任务轨迹</h3>
-        <div v-for="item in agent.activity" :key="item.id" class="activity-row">
-          <span>{{ item.type === "tool" ? "工具" : item.type === "receipt" ? "回执" : "证据" }}</span>
-          <strong>{{ item.name }}</strong>
-          <em v-if="item.status">{{ item.status === "completed" ? "完成" : item.status === "failed" ? "失败" : "执行中" }}</em>
-        </div>
-      </section>
-
       <section
         v-for="action in agent.pendingActions"
         :key="action.action_id"
@@ -125,7 +116,7 @@ async function clearAgent() {
 
 onMounted(() => agent.initialize(auth.user?.id));
 watch(
-  () => [agent.messages.length, agent.messages.at(-1)?.content, agent.activity.length],
+  () => [agent.messages.length, agent.messages.at(-1)?.content, agent.pendingActions.length],
   scrollBottom
 );
 </script>
@@ -151,16 +142,14 @@ header h2 { font-size: 18px; }
 header p { margin-top: 4px; color: var(--color-text-secondary, #5f6368); font-size: 12px; }
 .header-actions { display: flex; gap: 6px; }
 main { flex: 1; min-height: 0; padding: 16px; overflow-y: auto; }
-.welcome, .activity-card, .approval-card { margin-bottom: 14px; padding: 14px; border: 1px solid var(--color-border, #d2d2d7); border-radius: 12px; background: #fff; }
+.welcome, .approval-card { margin-bottom: 14px; padding: 14px; border: 1px solid var(--color-border, #d2d2d7); border-radius: 12px; background: #fff; }
 .welcome p { margin-top: 8px; color: var(--color-text-secondary, #5f6368); line-height: 1.6; }
 .message { width: fit-content; max-width: 88%; margin: 12px 0; padding: 10px 12px; border: 1px solid var(--color-border, #d2d2d7); border-radius: 12px; background: #fff; }
 .message.user { margin-left: auto; border-color: var(--color-accent, #0b7a6b); background: var(--color-accent-soft, #e5f3f0); }
 .message > span { color: var(--color-accent-strong, #075e54); font-size: 12px; font-weight: 700; }
 .message p { margin-top: 5px; white-space: pre-wrap; line-height: 1.65; }
 .message.failed { border-color: var(--color-danger, #c9342f); }
-.activity-card h3, .approval-card h3 { margin-bottom: 10px; font-size: 14px; }
-.activity-row { display: grid; grid-template-columns: 48px 1fr auto; gap: 8px; padding: 7px 0; border-top: 1px solid #eee; font-size: 12px; }
-.activity-row em { color: var(--color-text-secondary, #5f6368); font-style: normal; }
+.approval-card h3 { margin-bottom: 10px; font-size: 14px; }
 .approval-card { border-color: #e6a23c; }
 .approval-card dl { display: grid; grid-template-columns: 110px 1fr; gap: 6px; font-size: 12px; }
 .approval-card dt { color: var(--color-text-secondary, #5f6368); }

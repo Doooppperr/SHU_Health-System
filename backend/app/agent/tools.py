@@ -63,7 +63,10 @@ TOOL_DESCRIPTIONS = {
     "get_report_facts": "读取已授权报告中的结构化指标事实。",
     "compute_indicator_trend": "用确定性计算返回某一指标的历次变化。",
     "search_institutions": "按名称、区域或地址搜索可用体检机构。",
-    "compare_packages": "比较指定体检套餐的价格、适用人群、领域和预约须知。",
+    "compare_packages": (
+        "比较指定体检套餐，或按 institution_id 列出机构套餐；"
+        "用户要求最便宜套餐时使用 sort_by=price_asc。"
+    ),
     "check_availability": "检查机构指定日期是否有足够预约名额。",
     "get_appointment_status": "查询当前用户创建的预约组状态。",
     "create_booking_draft": "生成预约草稿；不会直接预约，必须由用户确认。",
@@ -256,26 +259,47 @@ def _read_institutions(_user, args: SearchInstitutionsArgs):
 
 
 def _read_packages(_user, args: ComparePackagesArgs):
-    rows = Package.query.filter(
-        Package.id.in_(args.package_ids), Package.is_active.is_(True)
-    ).all()
+    if not args.package_ids and args.institution_id is None:
+        raise ValueError("package_ids 和 institution_id 至少提供一个")
+    query = Package.query.filter(Package.is_active.is_(True))
+    if args.package_ids:
+        query = query.filter(Package.id.in_(args.package_ids))
+    if args.institution_id is not None:
+        query = query.filter(Package.institution_id == args.institution_id)
+    rows = query.all()
+    if args.sort_by == "price_asc":
+        rows.sort(key=lambda item: (item.price, item.id))
+    elif args.sort_by == "price_desc":
+        rows.sort(key=lambda item: (-item.price, item.id))
+    elif args.package_ids:
+        positions = {package_id: index for index, package_id in enumerate(args.package_ids)}
+        rows.sort(key=lambda item: positions.get(item.id, len(positions)))
+    else:
+        rows.sort(key=lambda item: item.id)
+    rows = rows[: args.limit]
+    packages = [
+        {
+            "id": row.id,
+            "institution_id": row.institution_id,
+            "institution": row.institution.name if row.institution else None,
+            "name": row.name,
+            "price": float(row.price),
+            "focus_area": row.focus_area,
+            "gender_scope": row.gender_scope,
+            "audience": row.audience,
+            "description": row.description,
+            "booking_notice": row.booking_notice,
+            "domains": row.to_dict().get("domains", []),
+        }
+        for row in rows
+    ]
+    cheapest = min(packages, key=lambda item: (item["price"], item["id"])) if packages else None
     return {
-        "packages": [
-            {
-                "id": row.id,
-                "institution_id": row.institution_id,
-                "institution": row.institution.name if row.institution else None,
-                "name": row.name,
-                "price": float(row.price),
-                "focus_area": row.focus_area,
-                "gender_scope": row.gender_scope,
-                "audience": row.audience,
-                "description": row.description,
-                "booking_notice": row.booking_notice,
-                "domains": row.to_dict().get("domains", []),
-            }
-            for row in rows
-        ]
+        "packages": packages,
+        "selection_hints": {
+            "cheapest_package_id": cheapest["id"] if cheapest else None,
+            "cheapest_package_name": cheapest["name"] if cheapest else None,
+        },
     }
 
 
@@ -339,27 +363,31 @@ READ_HANDLERS = {
 def _draft_summary(name: str, args, *, normalized_payload=None) -> dict:
     payload = normalized_payload or args.model_dump(mode="json")
     if name == "create_booking_draft":
+        institution = db.session.get(Institution, payload["institution_id"])
+        package = db.session.get(Package, payload["package_id"])
         return {
             "title": "确认提交体检预约",
-            "institution_id": payload["institution_id"],
-            "package_id": payload["package_id"],
-            "appointment_date": payload["appointment_date"],
-            "participant_count": len(payload["participant_user_ids"] or []),
+            "体检机构": institution.name if institution else f"机构 {payload['institution_id']}",
+            "体检套餐": package.name if package else f"套餐 {payload['package_id']}",
+            "体检日期": payload["appointment_date"],
+            "预约人数": len(payload["participant_user_ids"] or []),
         }
     if name == "create_cancellation_draft":
-        return {"title": "确认取消整个预约组", "group_id": payload["group_id"]}
+        return {"title": "确认取消整个预约组", "预约组编号": payload["group_id"]}
     if name == "create_waitlist_draft":
+        institution = db.session.get(Institution, payload["institution_id"])
+        package = db.session.get(Package, payload["package_id"])
         return {
             "title": "确认订阅空位提醒",
-            "institution_id": payload["institution_id"],
-            "package_id": payload["package_id"],
-            "appointment_date": payload["appointment_date"],
+            "体检机构": institution.name if institution else f"机构 {payload['institution_id']}",
+            "体检套餐": package.name if package else f"套餐 {payload['package_id']}",
+            "体检日期": payload["appointment_date"],
         }
     return {
         "title": "确认创建人工客服工单",
-        "category": payload["category"],
-        "priority": payload["priority"],
-        "summary": payload["summary"],
+        "问题类型": payload["category"],
+        "优先级": payload["priority"],
+        "问题摘要": payload["summary"],
     }
 
 

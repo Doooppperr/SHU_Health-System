@@ -19,7 +19,7 @@
 
 `输入校验 → 紧急风险闸门 → DeepSeek 工具规划 → 动态工具白名单 → 类型化参数校验 → 权限检查 → 工具执行 → 证据包 → 回复或确认草稿 → 用户决定 → 重新校验 → 幂等提交 → 回执`
 
-每轮最多 6 次模型决策和 10 次工具调用。工具参数采用 Pydantic `extra=forbid`，DeepSeek 不能调用未注册工具、SQL、任意 URL 或内部文件。
+每轮最多 8 次模型决策和 10 次实际工具调用。相同参数的成功工具结果在本轮复用，不重复访问数据库；工具参数采用 Pydantic `extra=forbid`，DeepSeek 不能调用未注册工具、SQL、任意 URL 或内部文件。该上限是防止循环、控制成本和数据库压力的单轮安全预算，不是 API 余额限制。
 
 ### 2.1 SSE 事件
 
@@ -135,7 +135,7 @@ MCP 的写工具只返回第一方 `/agent-actions/{action_id}` 确认链接。
 
 前端启动后读取 `/api/agent/capabilities`：服务端 Agent 已启用时，普通用户顶栏入口打开新的 Agent 控制台；未启用或请求失败时继续使用旧 `AiAssistant`。`VITE_AGENT_ENABLED=false` 只作为紧急前端回退：
 
-- 展示计划、工具执行状态、证据、确认卡片和提交回执；
+- 普通用户只展示业务化处理状态、回答、确认卡片和提交回执；原始工具名、工具结果和任务轨迹仅保留在服务端审计与可观测性中；
 - 线程状态由服务端加密持久化，浏览器只保存当前 thread ID；
 - 刷新页面可恢复线程和待确认操作；
 - MCP 授权使用 `/oauth-consent`；
@@ -151,7 +151,7 @@ AGENT_DATA_ENCRYPTION_KEY=
 AGENT_THREAD_TTL_HOURS=24
 AGENT_ACTION_TTL_SECONDS=600
 AGENT_MAX_TOOL_CALLS=10
-AGENT_MAX_MODEL_CALLS=6
+AGENT_MAX_MODEL_CALLS=8
 
 RAG_HYBRID_ENABLED=0
 RAG_SPARSE_MODEL=Qdrant/bm25

@@ -58,7 +58,7 @@ class Config:
     AGENT_THREAD_TTL_HOURS = int(os.getenv("AGENT_THREAD_TTL_HOURS", "24"))
     AGENT_ACTION_TTL_SECONDS = int(os.getenv("AGENT_ACTION_TTL_SECONDS", "600"))
     AGENT_MAX_TOOL_CALLS = int(os.getenv("AGENT_MAX_TOOL_CALLS", "10"))
-    AGENT_MAX_MODEL_CALLS = int(os.getenv("AGENT_MAX_MODEL_CALLS", "6"))
+    AGENT_MAX_MODEL_CALLS = int(os.getenv("AGENT_MAX_MODEL_CALLS", "8"))
     AGENT_PROMPT_VERSION = os.getenv("AGENT_PROMPT_VERSION", "agent-v1")
 
     RAG_HYBRID_ENABLED = os.getenv("RAG_HYBRID_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}

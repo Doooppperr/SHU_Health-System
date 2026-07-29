@@ -245,7 +245,7 @@ npm run build
 npm audit --omit=dev
 ```
 
-当前验收基线：后端 103 项、前端 136 项测试通过，Vite production build 通过；SQLite schema v10→v11 原子升级、openGauss v11 迁移、预置业务数据强校验、Agent/OAuth/MCP 安全契约均已验证。真实 DeepSeek 200 场景结果和线上 release 记录见[测试报告](项目文档/测试报告.md)。
+当前验收基线：后端 106 项、前端 138 项测试通过，Vite production build 通过；SQLite schema v10→v11 原子升级、openGauss v11 迁移、预置业务数据强校验、Agent/OAuth/MCP 安全契约均已验证。真实 DeepSeek 200 场景结果和线上 release 记录见[测试报告](项目文档/测试报告.md)。
 
 ## 备份
 
