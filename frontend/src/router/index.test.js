@@ -10,6 +10,7 @@ describe("three-role route isolation", () => {
     ["/appointments", "user", "appointments"],
     ["/org/package-reviews", "institution_admin", "org-package-reviews"],
     ["/admin/package-reviews", "admin", "admin-package-reviews"],
+    ["/admin/agent-ops", "admin", "admin-agent-ops"],
   ])("resolves %s only for %s", (path, role, name) => {
     const route = router.resolve(path);
     expect(route.name).toBe(name);

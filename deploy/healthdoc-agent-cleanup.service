@@ -1,0 +1,17 @@
+[Unit]
+Description=HealthDoc Agent state expiry and encrypted-state cleanup
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=healthdoc
+Group=www-data
+WorkingDirectory=/opt/healthdoc/current/backend
+EnvironmentFile=/etc/healthdoc/healthdoc.env
+ExecStart=/opt/healthdoc/venv/bin/python /opt/healthdoc/current/backend/scripts/cleanup_agent_state.py
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/healthdoc/uploads /var/lib/healthdoc/rag

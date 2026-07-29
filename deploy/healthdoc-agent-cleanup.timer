@@ -1,0 +1,11 @@
+[Unit]
+Description=Expire HealthDoc Agent state hourly
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

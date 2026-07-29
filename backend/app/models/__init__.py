@@ -16,6 +16,18 @@ from .v7 import (
 )
 from .v8 import Organization, ReportAccessLog
 from .v10 import PackageVersionAssetRequirement, ReportAssetType, UserNotification
+from .v11 import (
+    AgentActionExecution,
+    AgentPendingAction,
+    AgentRun,
+    AgentThread,
+    AgentToolEvent,
+    OAuthAccessToken,
+    OAuthAuthorizationCode,
+    OAuthClient,
+    OAuthRefreshToken,
+    SupportHandoff,
+)
 
 # Internal compatibility names for the existing AI reasoning layer only.  The
 # old health_records/health_indicators tables and public CRUD routes are gone.
@@ -32,5 +44,9 @@ __all__ = [
     "AvailabilityNotificationEvent", "NotificationOutbox", "NotificationDelivery",
     "ReportTextResult", "ReportAsset", "ReportAssetAnnotation", "ReportAccessLog",
     "UserNotification", "ReportAssetType", "PackageVersionAssetRequirement",
+    "AgentThread", "AgentRun", "AgentToolEvent", "AgentPendingAction",
+    "AgentActionExecution", "SupportHandoff",
+    "OAuthClient", "OAuthAuthorizationCode", "OAuthAccessToken",
+    "OAuthRefreshToken",
     "HealthRecord", "HealthIndicator",
 ]

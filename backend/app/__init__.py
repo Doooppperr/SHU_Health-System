@@ -8,6 +8,7 @@ from .admin import admin_bp
 from .appointments import appointments_bp
 from .booking_v7 import booking_v7_bp
 from .ai import ai_bp
+from .agent import agent_bp
 from .auth import auth_bp
 from .comments import comments_bp
 from .config import config_by_name
@@ -20,8 +21,10 @@ from .institutions import institutions_bp
 from .exam_reports import exam_reports_bp
 from .models import InstitutionImage
 from .notifications import notifications_bp
+from .observability import init_observability
 from .org import org_bp
 from .organizations import organizations_bp
+from .oauth import oauth_bp
 from .profile import profile_bp
 from .schema import initialize_or_validate_schema
 from .seed import seed_core_data
@@ -37,6 +40,23 @@ def _validate_runtime_security(app: Flask, config_name: str) -> None:
             "Production startup requires an explicit JWT_SECRET_KEY of at least 32 characters. "
             "Set it in backend/.env before starting Waitress."
         )
+    if app.config.get("AGENT_ENABLED"):
+        encryption_key = str(app.config.get("AGENT_DATA_ENCRYPTION_KEY") or "")
+        if len(encryption_key) < 32:
+            raise RuntimeError(
+                "Production Agent startup requires AGENT_DATA_ENCRYPTION_KEY "
+                "with at least 32 characters."
+            )
+    if app.config.get("OAUTH_ENABLED"):
+        issuer = str(app.config.get("OAUTH_ISSUER") or "")
+        if not issuer.startswith("https://"):
+            raise RuntimeError("Production OAuth requires an explicit HTTPS OAUTH_ISSUER.")
+    if app.config.get("MCP_ENABLED"):
+        internal_key = str(app.config.get("MCP_INTERNAL_KEY") or "")
+        if not app.config.get("OAUTH_ENABLED") or len(internal_key) < 32:
+            raise RuntimeError(
+                "Production MCP requires OAuth and MCP_INTERNAL_KEY of at least 32 characters."
+            )
 
 
 def create_app(config_name="development"):
@@ -45,12 +65,14 @@ def create_app(config_name="development"):
     _validate_runtime_security(app, config_name)
 
     init_extensions(app)
+    init_observability(app)
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(admin_bp, url_prefix="/api/admin")
     app.register_blueprint(appointments_bp, url_prefix="/api/appointments")
     app.register_blueprint(booking_v7_bp, url_prefix="/api")
     app.register_blueprint(ai_bp, url_prefix="/api/ai")
+    app.register_blueprint(agent_bp, url_prefix="/api/agent")
     app.register_blueprint(users_bp, url_prefix="/api/users")
     app.register_blueprint(profile_bp, url_prefix="/api/profile")
     app.register_blueprint(health_bp, url_prefix="/api")
@@ -63,6 +85,7 @@ def create_app(config_name="development"):
     app.register_blueprint(indicators_bp, url_prefix="/api/indicators")
     app.register_blueprint(comments_bp, url_prefix="/api/comments")
     app.register_blueprint(notifications_bp, url_prefix="/api/notifications")
+    app.register_blueprint(oauth_bp)
 
     @app.get("/api/health")
     def health_check():

@@ -18,3 +18,12 @@ waitress==3.0.2
 qdrant-client==1.18.0
 fastembed==0.8.0
 rapidocr==3.9.1
+pydantic==2.13.4
+cryptography==48.0.1
+langgraph==1.2.10
+opentelemetry-api==1.44.0
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.44.0
+opentelemetry-instrumentation-flask==0.65b0
+opentelemetry-instrumentation-requests==0.65b0
+mcp==2.0.0

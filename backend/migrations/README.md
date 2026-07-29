@@ -1,4 +1,4 @@
-# HealthDoc 1.0—5.0 database migrations
+# HealthDoc 1.0—6.0 database migrations
 
 HealthDoc 1.0 established the initial account, institution, appointment and
 health-record schema. The 2.0 work evolved that model into schema v6 with
@@ -11,21 +11,23 @@ challenges and moderated institution comment replies.
 HealthDoc 5.0 adds schema v10 appointment intake/privacy snapshots, explicit
 termination responsibility, in-app notifications, structured report-asset
 slots, reference rules and directional indicator results.
+HealthDoc 6.0 adds schema v11 encrypted Agent threads/actions, redacted tool
+events, idempotent executions, support handoffs and OAuth client/token state.
 
-The current production baseline is schema v10. Production openGauss/GaussDB
+The current production baseline is schema v11. Production openGauss/GaussDB
 deployments use Flask-Migrate/Alembic and must be upgraded during a maintenance
 window after backing up the database, permanent uploads and environment file:
 
 ```powershell
 $env:FLASK_APP = "wsgi:app"
 $env:HEALTHDOC_SCHEMA_MIGRATION = "1"
-flask db upgrade 20260726_schema_v10
+flask db upgrade 20260729_schema_v11
 ```
 
-The v10 revision depends on the v9 revision, so Alembic applies every missing revision when an
+The v11 revision depends on the v10 revision, so Alembic applies every missing revision when an
 older production database requires them. Never use `db.create_all()` as a
 replacement for production migration.
 
-SQLite uses `scripts/upgrade_local_database.py` and `PRAGMA user_version=10`;
+SQLite uses `scripts/upgrade_local_database.py` and `PRAGMA user_version=11`;
 do not run the Alembic revision against the local SQLite file. The synthetic
 demo reset is also not a migration tool and must never target production.

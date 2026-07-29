@@ -51,6 +51,32 @@ class Config:
     AI_GUEST_RATE_LIMIT_PER_MINUTE = int(os.getenv("AI_GUEST_RATE_LIMIT_PER_MINUTE", "10"))
     AI_AUTH_RATE_LIMIT_PER_MINUTE = int(os.getenv("AI_AUTH_RATE_LIMIT_PER_MINUTE", "30"))
 
+    AGENT_ENABLED = os.getenv("AGENT_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+    AGENT_WRITE_ENABLED = os.getenv("AGENT_WRITE_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+    AGENT_ROUTER_ENABLED = os.getenv("AGENT_ROUTER_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+    AGENT_DATA_ENCRYPTION_KEY = os.getenv("AGENT_DATA_ENCRYPTION_KEY", "").strip()
+    AGENT_THREAD_TTL_HOURS = int(os.getenv("AGENT_THREAD_TTL_HOURS", "24"))
+    AGENT_ACTION_TTL_SECONDS = int(os.getenv("AGENT_ACTION_TTL_SECONDS", "600"))
+    AGENT_MAX_TOOL_CALLS = int(os.getenv("AGENT_MAX_TOOL_CALLS", "10"))
+    AGENT_MAX_MODEL_CALLS = int(os.getenv("AGENT_MAX_MODEL_CALLS", "6"))
+    AGENT_PROMPT_VERSION = os.getenv("AGENT_PROMPT_VERSION", "agent-v1")
+
+    RAG_HYBRID_ENABLED = os.getenv("RAG_HYBRID_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+    RAG_SPARSE_MODEL = os.getenv("RAG_SPARSE_MODEL", "Qdrant/bm25")
+    RAG_DENSE_PREFETCH_K = int(os.getenv("RAG_DENSE_PREFETCH_K", "24"))
+    RAG_SPARSE_PREFETCH_K = int(os.getenv("RAG_SPARSE_PREFETCH_K", "24"))
+    RAG_FUSION_K = int(os.getenv("RAG_FUSION_K", "12"))
+    OAUTH_ENABLED = os.getenv("OAUTH_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+    MCP_ENABLED = os.getenv("MCP_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+    OTEL_ENABLED = os.getenv("OTEL_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+    OTEL_EXPORTER_OTLP_ENDPOINT = os.getenv(
+        "OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318/v1/traces"
+    )
+    OTEL_SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "healthdoc-backend")
+    OAUTH_ISSUER = os.getenv("OAUTH_ISSUER", "").strip()
+    MCP_RESOURCE_URL = os.getenv("MCP_RESOURCE_URL", "").strip()
+    MCP_INTERNAL_KEY = os.getenv("MCP_INTERNAL_KEY", "").strip()
+
     RAG_ENABLED = os.getenv("RAG_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
     RAG_USE_MOCK = os.getenv("RAG_USE_MOCK", "0").strip().lower() in {"1", "true", "yes", "on"}
     RAG_EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
@@ -117,6 +143,12 @@ class TestingConfig(Config):
     AI_GUEST_RATE_LIMIT_PER_MINUTE = 1000
     AI_AUTH_RATE_LIMIT_PER_MINUTE = 1000
     RAG_USE_MOCK = True
+    AGENT_ENABLED = True
+    AGENT_WRITE_ENABLED = True
+    AGENT_DATA_ENCRYPTION_KEY = "test-agent-encryption-key-not-for-production"
+    OAUTH_ENABLED = True
+    MCP_ENABLED = True
+    MCP_INTERNAL_KEY = "test-mcp-internal-key"
 
 
 class ProductionConfig(Config):

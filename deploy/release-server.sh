@@ -66,6 +66,8 @@ cleanup() {
         echo "Unexpected release failure; restoring the previous server state." >&2
         systemctl stop healthdoc.service 2>/dev/null || true
         systemctl stop healthdoc-notifications.service 2>/dev/null || true
+        systemctl stop healthdoc-mcp.service 2>/dev/null || true
+        systemctl stop healthdoc-agent-cleanup.timer 2>/dev/null || true
         if [[ -n "${database_backup:-}" && -f "$database_backup" ]]; then
             restore_database_backup || true
         fi
@@ -125,6 +127,13 @@ start_current_services() {
     if systemctl cat healthdoc-notifications.service >/dev/null 2>&1 \
         && [[ -f /opt/healthdoc/current/backend/scripts/notification_worker.py ]]; then
         systemctl start healthdoc-notifications.service
+    fi
+    if systemctl cat healthdoc-agent-cleanup.timer >/dev/null 2>&1; then
+        systemctl start healthdoc-agent-cleanup.timer
+    fi
+    if grep -Eq '^MCP_ENABLED=(1|true|yes|on)$' "$env_file" \
+        && systemctl cat healthdoc-mcp.service >/dev/null 2>&1; then
+        systemctl start healthdoc-mcp.service
     fi
     recovery_complete=1
 }
@@ -232,6 +241,8 @@ if [[ -n "$demo_database" ]]; then
     deployment_started=1
     systemctl stop healthdoc.service
     systemctl stop healthdoc-notifications.service 2>/dev/null || true
+    systemctl stop healthdoc-mcp.service 2>/dev/null || true
+    systemctl stop healthdoc-agent-cleanup.timer 2>/dev/null || true
     docker stop healthdoc-gaussdb >/dev/null
     database_backup="$backup_root/opengauss.tar.gz"
     tar -C /var/lib/healthdoc -czf "$database_backup" opengauss
@@ -313,6 +324,8 @@ if [[ -z "$database_backup" ]]; then
     deployment_started=1
     systemctl stop healthdoc.service
     systemctl stop healthdoc-notifications.service 2>/dev/null || true
+    systemctl stop healthdoc-mcp.service 2>/dev/null || true
+    systemctl stop healthdoc-agent-cleanup.timer 2>/dev/null || true
     docker stop healthdoc-gaussdb >/dev/null
     database_backup="$backup_root/opengauss.tar.gz"
     tar -C /var/lib/healthdoc -czf "$database_backup" opengauss
@@ -333,9 +346,9 @@ if [[ -z "${DATABASE_URL:-}" ]]; then
 fi
 if ! wait_for_database_connection || ! (
     cd "$release/backend"
-    /opt/healthdoc/venv/bin/python scripts/migrate_schema_v10.py
+    /opt/healthdoc/venv/bin/python scripts/migrate_schema_v11.py
 ); then
-    echo "Schema v10 migration failed; restoring database and previous services." >&2
+    echo "Schema v11 migration failed; restoring database and previous services." >&2
     unset DATABASE_URL
     restore_database_backup
     restore_uploads_backup
@@ -449,10 +462,23 @@ install -o root -g root -m 644 \
     "$release/deploy/healthdoc.service" /etc/systemd/system/healthdoc.service
 install -o root -g root -m 644 \
     "$release/deploy/healthdoc-notifications.service" /etc/systemd/system/healthdoc-notifications.service
+install -o root -g root -m 644 \
+    "$release/deploy/healthdoc-mcp.service" /etc/systemd/system/healthdoc-mcp.service
+install -o root -g root -m 644 \
+    "$release/deploy/healthdoc-agent-cleanup.service" /etc/systemd/system/healthdoc-agent-cleanup.service
+install -o root -g root -m 644 \
+    "$release/deploy/healthdoc-agent-cleanup.timer" /etc/systemd/system/healthdoc-agent-cleanup.timer
 systemctl daemon-reload
 systemctl enable healthdoc-notifications.service >/dev/null
+systemctl enable --now healthdoc-agent-cleanup.timer >/dev/null
 systemctl restart healthdoc.service
 systemctl restart healthdoc-notifications.service
+if grep -Eq '^MCP_ENABLED=(1|true|yes|on)$' /etc/healthdoc/healthdoc.env; then
+    systemctl enable healthdoc-mcp.service >/dev/null
+    systemctl restart healthdoc-mcp.service
+else
+    systemctl disable --now healthdoc-mcp.service >/dev/null 2>&1 || true
+fi
 systemctl restart apache2
 healthy=0
 for _ in $(seq 1 30); do
@@ -472,11 +498,22 @@ if ! systemctl is-active --quiet healthdoc-notifications.service; then
     journalctl -u healthdoc-notifications.service -n 80 --no-pager >&2 || true
     healthy=0
 fi
+if ! systemctl is-active --quiet healthdoc-agent-cleanup.timer; then
+    systemctl status healthdoc-agent-cleanup.timer --no-pager >&2 || true
+    healthy=0
+fi
+if grep -Eq '^MCP_ENABLED=(1|true|yes|on)$' /etc/healthdoc/healthdoc.env \
+    && ! systemctl is-active --quiet healthdoc-mcp.service; then
+    journalctl -u healthdoc-mcp.service -n 80 --no-pager >&2 || true
+    healthy=0
+fi
 
 if [[ "$healthy" != 1 ]]; then
     journalctl -u healthdoc.service -n 80 --no-pager >&2 || true
     systemctl stop healthdoc.service || true
     systemctl stop healthdoc-notifications.service || true
+    systemctl stop healthdoc-mcp.service 2>/dev/null || true
+    systemctl stop healthdoc-agent-cleanup.timer 2>/dev/null || true
     if [[ -n "$database_backup" && -f "$database_backup" ]]; then
         restore_database_backup
         restore_uploads_backup
@@ -496,6 +533,7 @@ if [[ "$healthy" != 1 ]]; then
             systemctl disable healthdoc-notifications.service >/dev/null 2>&1 || true
         fi
     fi
+    start_current_services
     systemctl restart apache2
     recovery_complete=1
     echo "Health check failed; the previous release was restored." >&2

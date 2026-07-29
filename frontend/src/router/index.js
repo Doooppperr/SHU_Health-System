@@ -13,6 +13,8 @@ const routes = [
   { path: "/login", name: "login", component: () => import("../views/LoginView.vue"), meta: { guestOnly: true, title: "登录" } },
   { path: "/forgot-password", name: "forgot-password", component: () => import("../views/ForgotPasswordView.vue"), meta: { guestOnly: true, title: "找回密码" } },
   { path: "/register", name: "register", component: () => import("../views/RegisterView.vue"), meta: { guestOnly: true, title: "注册" } },
+  { path: "/oauth-consent", name: "oauth-consent", component: () => import("../views/OAuthConsentView.vue"), meta: { requiresAuth: true, roles: ["user"], title: "外部 Agent 授权" } },
+  { path: "/agent-actions/:id", name: "agent-action", component: () => import("../views/AgentActionView.vue"), meta: { requiresAuth: true, roles: ["user"], title: "Agent 操作确认" } },
   { path: "/workspace", component: WorkspaceLayout, meta: userMeta, children: [
     { path: "/dashboard", name: "dashboard", component: () => import("../views/UserDashboardView.vue"), meta: { title: "健康总览" } },
     { path: "/timeline", name: "timeline", component: () => import("../views/HealthTimelineView.vue"), meta: { title: "健康时间线" } },
@@ -47,6 +49,7 @@ const routes = [
     { path: "users", name: "admin-users", component: () => import("../views/admin/AdminUsersView.vue"), meta: { title: "账号管理" } },
     { path: "comments", name: "admin-comments", component: () => import("../views/CommentModerationView.vue"), meta: { title: "评论审核" } },
     { path: "package-reviews", name: "admin-package-reviews", component: () => import("../views/admin/AdminPackageReviewsView.vue"), meta: { title: "机构审核记录" } },
+    { path: "agent-ops", name: "admin-agent-ops", component: () => import("../views/admin/AdminAgentOpsView.vue"), meta: { title: "Agent 安全运营" } },
   ] },
   { path: "/403", name: "forbidden", component: () => import("../views/ForbiddenView.vue"), meta: { title: "无权访问" } },
   { path: "/:pathMatch(.*)*", name: "not-found", component: () => import("../views/NotFoundView.vue"), meta: { title: "页面不存在" } },

@@ -106,6 +106,14 @@ class AiCompletion:
     usage: dict
 
 
+@dataclass
+class AiToolCompletion:
+    content: str
+    tool_calls: list[dict]
+    usage: dict
+    message: dict
+
+
 class DeepSeekClient:
     def __init__(self, config):
         self.api_key = (config.get("DEEPSEEK_API_KEY") or "").strip()
@@ -182,6 +190,66 @@ class DeepSeekClient:
                 retryable=False,
             )
         return AiCompletion(content=content.strip(), usage=data.get("usage") or {})
+
+    def complete_with_tools(
+        self, messages, tools, *, max_tokens=1200, tool_choice="auto"
+    ):
+        if not self.api_key:
+            raise AiConfigurationError("DeepSeek API key is not configured")
+        payload = self._payload(
+            messages, stream=False, json_output=False, max_tokens=max_tokens
+        )
+        payload["tools"] = tools
+        payload["tool_choice"] = tool_choice
+        try:
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=(self.connect_timeout, self.read_timeout),
+            )
+        except requests.Timeout as exc:
+            raise AiProviderError(
+                "DeepSeek request timed out",
+                code="provider_timeout",
+                retryable=True,
+            ) from exc
+        except requests.RequestException as exc:
+            raise AiProviderError("DeepSeek request failed") from exc
+        if response.status_code >= 400:
+            raise AiProviderError(
+                f"DeepSeek returned HTTP {response.status_code}",
+                code="provider_rate_limited" if response.status_code == 429 else "provider_http_error",
+                retryable=response.status_code in {408, 429, 500, 502, 503, 504},
+            )
+        try:
+            data = response.json()
+            message = data["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise AiProviderError(
+                "DeepSeek returned an invalid tool response",
+                code="provider_invalid_response",
+                retryable=False,
+            ) from exc
+        content = message.get("content")
+        tool_calls = message.get("tool_calls") or []
+        if not isinstance(tool_calls, list) or (
+            not tool_calls and not isinstance(content, str)
+        ):
+            raise AiProviderError(
+                "DeepSeek returned an empty tool response",
+                code="provider_empty_response",
+                retryable=False,
+            )
+        return AiToolCompletion(
+            content=(content or "").strip(),
+            tool_calls=tool_calls,
+            usage=data.get("usage") or {},
+            message=message,
+        )
 
     def stream(self, messages, *, json_output=False, max_tokens=1200):
         """Yield provider content deltas and a final (None, usage) marker.
@@ -354,6 +422,65 @@ class MockAiClient:
         yield completion.content[:midpoint], None
         yield completion.content[midpoint:], None
         yield None, completion.usage
+
+    def complete_with_tools(
+        self, messages, tools, *, max_tokens=1200, tool_choice="auto"
+    ):
+        del max_tokens
+        del tool_choice
+        if messages and messages[-1].get("role") == "tool":
+            return AiToolCompletion(
+                content="已根据系统工具返回的事实完成处理。请查看上方证据和结果。",
+                tool_calls=[],
+                usage={"total_tokens": 1},
+                message={"role": "assistant", "content": "已根据系统工具返回的事实完成处理。请查看上方证据和结果。"},
+            )
+        message = next(
+            (
+                str(item.get("content") or "")
+                for item in reversed(messages)
+                if item.get("role") == "user"
+            ),
+            "",
+        )
+        available = {item["function"]["name"] for item in tools}
+        selected = None
+        arguments = {}
+        if any(token in message for token in ("人工客服", "转人工", "客服工单")):
+            selected, arguments = "create_support_handoff_draft", {
+                "category": "other",
+                "summary": message[:500],
+                "priority": "normal",
+            }
+        elif any(token in message for token in ("趋势", "变化")):
+            selected, arguments = "list_reports", {"limit": 10}
+        elif any(token in message for token in ("档案", "报告", "指标")):
+            selected, arguments = "list_reports", {"limit": 10}
+        elif any(token in message for token in ("机构", "医院", "体检中心")):
+            selected, arguments = "search_institutions", {"keyword": "", "limit": 8}
+        elif any(token in message for token in ("预约状态", "我的预约")):
+            selected, arguments = "get_appointment_status", {"limit": 10}
+        if selected in available:
+            tool_call = {
+                "id": f"call_{int(time.time() * 1000)}",
+                "type": "function",
+                "function": {
+                    "name": selected,
+                    "arguments": json.dumps(arguments, ensure_ascii=False),
+                },
+            }
+            return AiToolCompletion(
+                content="",
+                tool_calls=[tool_call],
+                usage={"total_tokens": 1},
+                message={"role": "assistant", "content": None, "tool_calls": [tool_call]},
+            )
+        return AiToolCompletion(
+            content="我可以分析档案、解释趋势、比较机构与套餐，并协助预约。请告诉我具体目标。",
+            tool_calls=[],
+            usage={"total_tokens": 1},
+            message={"role": "assistant", "content": "我可以分析档案、解释趋势、比较机构与套餐，并协助预约。请告诉我具体目标。"},
+        )
 
 
 def get_ai_client(config):

@@ -82,6 +82,7 @@ try {
             backend/.env.example `
             backend/README.md `
             backend/requirements.txt `
+            backend/mcp_server.py `
             backend/run.py `
             backend/wsgi.py `
             deploy `

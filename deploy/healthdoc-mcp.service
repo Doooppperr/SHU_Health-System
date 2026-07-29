@@ -1,0 +1,23 @@
+[Unit]
+Description=HealthDoc MCP Streamable HTTP Server
+After=network-online.target healthdoc.service
+Wants=network-online.target
+Requires=healthdoc.service
+
+[Service]
+Type=simple
+User=healthdoc
+Group=www-data
+WorkingDirectory=/opt/healthdoc/current/backend
+EnvironmentFile=/etc/healthdoc/healthdoc.env
+ExecStart=/opt/healthdoc/venv/bin/python mcp_server.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+MemoryMax=384M
+
+[Install]
+WantedBy=multi-user.target

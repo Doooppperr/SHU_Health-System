@@ -14,7 +14,11 @@
     >
       <router-view />
     </div>
-    <AiAssistant v-if="showAi" :overlay-mode="overlayMode" />
+    <AgentAssistant
+      v-if="showAi && agentFrontendEnabled"
+      :overlay-mode="overlayMode"
+    />
+    <AiAssistant v-else-if="showAi" :overlay-mode="overlayMode" />
   </div>
 </template>
 
@@ -23,12 +27,15 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useRoute } from "vue-router";
 
 import AiAssistant from "./components/AiAssistant.vue";
+import AgentAssistant from "./components/AgentAssistant.vue";
+import { fetchAgentCapabilities } from "./api/agent";
 import { useAiChatStore } from "./stores/aiChat";
 import { useAuthStore } from "./stores/auth";
 
 const authStore = useAuthStore();
 const aiStore = useAiChatStore();
 const route = useRoute();
+const agentFrontendEnabled = ref(false);
 let tableObserver = null;
 let tableResizeObserver = null;
 let viewportResizeObserver = null;
@@ -114,9 +121,17 @@ function updateViewportSize() {
   viewportWidth.value = getViewportWidth();
 }
 
-onMounted(() => {
+onMounted(async () => {
   window.addEventListener("resize", updateViewportSize);
   updateViewportSize();
+  if (import.meta.env.VITE_AGENT_ENABLED !== "false") {
+    try {
+      const response = await fetchAgentCapabilities();
+      agentFrontendEnabled.value = Boolean(response.data?.enabled);
+    } catch {
+      agentFrontendEnabled.value = false;
+    }
+  }
   if (typeof ResizeObserver === "function") {
     viewportResizeObserver = new ResizeObserver(updateViewportSize);
     viewportResizeObserver.observe(document.documentElement);

@@ -1,4 +1,4 @@
-"""Upgrade the local SQLite database to HealthDoc schema v10.
+"""Upgrade the local SQLite database to HealthDoc schema v11.
 
 The v6-to-v7 path preserves all current business data while adding health
 domains, package versions, booking groups, waitlists and private assets. Older
@@ -25,7 +25,7 @@ from sqlalchemy import create_engine
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_DATABASE = BACKEND_DIR / "instance" / "health_system.db"
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 sys.path.insert(0, str(BACKEND_DIR))
 
 from app import models as _models  # noqa: E402,F401
@@ -46,7 +46,7 @@ class SchemaReport:
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Upgrade the local SQLite database to schema v10.")
+    parser = argparse.ArgumentParser(description="Upgrade the local SQLite database to schema v11.")
     parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE)
     parser.add_argument("--check-only", action="store_true")
     return parser.parse_args()
@@ -92,7 +92,7 @@ def validate(connection):
         raise RuntimeError(f"SQLite foreign_key_check found {len(violations)} violation(s)")
     report = inspect_schema(connection)
     if not report.is_current:
-        raise RuntimeError(f"schema v10 validation failed: {report}")
+        raise RuntimeError(f"schema v11 validation failed: {report}")
 
 
 def repair_result_statuses(connection):
@@ -140,27 +140,6 @@ def repair_result_statuses(connection):
                 indicator_id,
             ),
         )
-    connection.execute(
-        """
-        UPDATE report_indicators
-        SET result_status='unknown', is_abnormal=0
-        WHERE result_status='normal'
-          AND COALESCE(TRIM(reference_text),'')=''
-          AND COALESCE(LOWER(TRIM(abnormal_flag)),'') IN ('','normal','正常')
-          AND indicator_dict_id IN (
-              SELECT indicator.id
-              FROM indicator_dicts AS indicator
-              WHERE indicator.reference_low IS NULL
-                AND indicator.reference_high IS NULL
-                AND NOT EXISTS (
-                    SELECT 1
-                    FROM indicator_reference_rules AS rule
-                    WHERE rule.indicator_dict_id=indicator.id
-                      AND (rule.reference_low IS NOT NULL OR rule.reference_high IS NOT NULL)
-                )
-          )
-        """
-    )
     return connection.total_changes
 
 
@@ -180,7 +159,7 @@ def read_admin(connection):
 
 def backup_path(database):
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return database.with_name(f"{database.stem}.before-schema-v10-{stamp}-{uuid.uuid4().hex[:6]}.db")
+    return database.with_name(f"{database.stem}.before-schema-v11-{stamp}-{uuid.uuid4().hex[:6]}.db")
 
 
 def prepare_v8_source(database_path):
@@ -235,10 +214,10 @@ def rebuild_database(database_path):
         admin = read_admin(source)
         available_tables = table_names(source)
 
-    if report.version in {4, 5, 6, 7, 8, 9}:
+    if report.version in {4, 5, 6, 7, 8, 9, 10}:
         from scripts.migrate_sqlite_to_gaussdb import migrate
 
-        temporary = database_path.with_name(f".{database_path.stem}.v10-{uuid.uuid4().hex}.db")
+        temporary = database_path.with_name(f".{database_path.stem}.v11-{uuid.uuid4().hex}.db")
         prepared = prepare_v8_source(database_path)
         backup = backup_path(database_path)
         try:
@@ -263,7 +242,7 @@ def rebuild_database(database_path):
             prepared.unlink(missing_ok=True)
         return backup
 
-    temporary = database_path.with_name(f".{database_path.stem}.v10-{uuid.uuid4().hex}.db")
+    temporary = database_path.with_name(f".{database_path.stem}.v11-{uuid.uuid4().hex}.db")
     backup = backup_path(database_path)
     engine = create_engine(f"sqlite:///{temporary.as_posix()}")
     try:

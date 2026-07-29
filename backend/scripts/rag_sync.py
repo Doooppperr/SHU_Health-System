@@ -240,6 +240,13 @@ def _index(chunks, state):
         }
         for source, _url, chunk in chunks
     ]
+    fingerprint_payload.append(
+        {
+            "index_mode": "hybrid" if Config.RAG_HYBRID_ENABLED else "dense",
+            "dense_model": Config.RAG_EMBEDDING_MODEL,
+            "sparse_model": Config.RAG_SPARSE_MODEL if Config.RAG_HYBRID_ENABLED else None,
+        }
+    )
     fingerprint = hashlib.sha256(
         json.dumps(
             fingerprint_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -249,6 +256,7 @@ def _index(chunks, state):
     client = _qdrant_client()
     if not client.collection_exists(collection):
         from fastembed import TextEmbedding
+        from app.ai.rag import segment_search_text
 
         Path(Config.RAG_MODEL_CACHE_PATH).mkdir(parents=True, exist_ok=True)
         try:
@@ -269,18 +277,67 @@ def _index(chunks, state):
             )
         texts = [chunk.content for _source, _url, chunk in chunks]
         vectors = list(embedder.passage_embed(texts))
-        client.create_collection(
-            collection_name=collection,
-            vectors_config=models.VectorParams(
-                size=Config.RAG_VECTOR_SIZE, distance=models.Distance.COSINE
-            ),
-        )
+        sparse_vectors = None
+        if Config.RAG_HYBRID_ENABLED:
+            from fastembed import SparseTextEmbedding
+
+            try:
+                sparse_embedder = SparseTextEmbedding(
+                    model_name=Config.RAG_SPARSE_MODEL,
+                    cache_dir=Config.RAG_MODEL_CACHE_PATH,
+                    threads=Config.RAG_EMBEDDING_THREADS,
+                    local_files_only=True,
+                )
+            except Exception:
+                sparse_embedder = SparseTextEmbedding(
+                    model_name=Config.RAG_SPARSE_MODEL,
+                    cache_dir=Config.RAG_MODEL_CACHE_PATH,
+                    threads=Config.RAG_EMBEDDING_THREADS,
+                )
+            sparse_vectors = list(
+                sparse_embedder.passage_embed(
+                    [segment_search_text(text) for text in texts]
+                )
+            )
+            client.create_collection(
+                collection_name=collection,
+                vectors_config={
+                    "dense": models.VectorParams(
+                        size=Config.RAG_VECTOR_SIZE,
+                        distance=models.Distance.COSINE,
+                    )
+                },
+                sparse_vectors_config={
+                    "sparse": models.SparseVectorParams(
+                        modifier=models.Modifier.IDF
+                    )
+                },
+            )
+        else:
+            client.create_collection(
+                collection_name=collection,
+                vectors_config=models.VectorParams(
+                    size=Config.RAG_VECTOR_SIZE, distance=models.Distance.COSINE
+                ),
+            )
         batch = []
-        for (source, canonical_url, chunk), vector in zip(chunks, vectors):
+        for index, ((source, canonical_url, chunk), vector) in enumerate(
+            zip(chunks, vectors)
+        ):
+            point_vector = vector.tolist()
+            if sparse_vectors is not None:
+                sparse = sparse_vectors[index]
+                point_vector = {
+                    "dense": vector.tolist(),
+                    "sparse": models.SparseVector(
+                        indices=sparse.indices.tolist(),
+                        values=sparse.values.tolist(),
+                    ),
+                }
             batch.append(
                 models.PointStruct(
                     id=chunk.point_id,
-                    vector=vector.tolist(),
+                    vector=point_vector,
                     payload={
                         "source_id": source["source_id"],
                         "chunk_id": chunk.chunk_id,
@@ -325,6 +382,8 @@ def _index(chunks, state):
     state["chunk_count"] = len(chunks)
     state["indexed_at"] = int(time.time())
     state["embedding_model"] = Config.RAG_EMBEDDING_MODEL
+    state["index_mode"] = "hybrid" if Config.RAG_HYBRID_ENABLED else "dense"
+    state["sparse_model"] = Config.RAG_SPARSE_MODEL if Config.RAG_HYBRID_ENABLED else None
     client.close()
     return collection
 

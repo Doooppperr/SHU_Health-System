@@ -1,13 +1,13 @@
 # 康康健健 HealthDoc 后端
 
-Flask 后端负责认证与三角色授权、健康身份码亲友授权、预约预约资料副本、站内/邮件通知、规范附件、104 项成人体检指标、OCR 和系统数据优先的健康 AI。本地使用 SQLite schema v10；服务器通过 `DATABASE_URL` 连接 GaussDB/openGauss，并使用 Alembic 增量迁移。
+Flask 后端负责认证与三角色授权、健康身份码亲友授权、预约资料副本、站内/邮件通知、规范附件、104 项成人体检指标、OCR，以及受类型化工具、逐次确认和幂等执行保护的 HealthDoc Agent。本地使用 SQLite schema v11；服务器通过 `DATABASE_URL` 连接 GaussDB/openGauss，并使用 v11 保留式增量迁移。
 
 ## 1.0—3.0 后端演进
 
 - 1.0 建立 Flask API、JWT 三角色授权、机构/套餐、基础预约和健康记录。
 - 2.0 增加自主测量、报告草稿/锁定/归档、时间线、趋势、亲友授权和 AI/OCR 权限链。
 - 3.0 引入健康领域、套餐版本、预约组、容量候补、通知 outbox、图文报告；schema v8 进一步增加机构主体、分院和跨院访问审计。
-- 当前只维护 schema v10 的统一模型和接口；旧地址仅在有明确兼容价值时保留，旧数据库通过迁移脚本升级。
+- 当前只维护 schema v11 的统一模型和接口；旧地址仅在有明确兼容价值时保留，旧数据库通过迁移脚本升级。
 
 ## 环境与安装
 
@@ -29,9 +29,9 @@ if (-not (Test-Path .env)) {
 
 根目录的 `scripts/start-full-dev.ps1` 和 `scripts/start-full-prod.ps1` 会在后端就绪后自动启动隐藏的常驻 worker，每 5 秒处理一次 Outbox，并在前端命令退出时停止。单独运行可使用 `scripts/start-notification-worker.ps1`，或在后端目录执行 `python scripts/notification_worker.py --watch --interval-seconds 5`。条件更新保证误开两个 worker 时同一条通知只会被一个进程领取；发送前会把 Outbox 载荷转换为连续的中文业务文本，不会把 JSON 原文发给用户。
 
-## 数据库与 schema v10
+## 数据库与 schema v11
 
-默认数据库为 `instance/health_system.db`。SQLite 连接启用外键；`PRAGMA user_version=10` 标识当前结构。新空库直接创建 v10，v4–v9 使用升级脚本保留迁移；生产 openGauss/GaussDB 使用 `migrations/versions/20260726_schema_v10.py`，其下修订为 schema v9。
+默认数据库为 `instance/health_system.db`。SQLite 连接启用外键和 30 秒写锁等待；`PRAGMA user_version=11` 标识当前结构。新空库直接创建 v11，v4–v10 使用升级脚本保留迁移；生产 openGauss/GaussDB 使用 `migrations/versions/20260729_schema_v11.py`，其下修订为 schema v10。
 
 ```powershell
 .\.venv\Scripts\python.exe .\scripts\upgrade_local_database.py --check-only
@@ -54,6 +54,8 @@ if (-not (Test-Path .env)) {
 - 套餐与预约：`package_versions`、`package_version_domains`、`booking_groups`、`appointments`、`appointment_events`、`appointment_capacity_slots`、`waitlist_subscriptions`、`waitlist_subscription_participants`；
 - 规范附件：`report_asset_types`、`package_version_asset_requirements`、`report_assets`；
 - 通知可靠性：`availability_notification_events`、`notification_outbox`、`user_notifications`。
+- Agent：`agent_threads`、`agent_runs`、`agent_tool_events`、`agent_pending_actions`、`agent_action_executions`、`support_handoffs`；
+- OAuth/MCP：`oauth_clients`、`oauth_authorization_codes`、`oauth_access_tokens`、`oauth_refresh_tokens`。
 
 ## 角色与账号规则
 
@@ -91,6 +93,9 @@ if (-not (Test-Path .env)) {
 | `/api/admin` | 系统管理员 | 平台统计、机构、套餐变更审批、相册和邀请码 |
 | `/api/users` | 系统管理员 | 账号列表、停用、恢复和删除 |
 | `/api/ai` | 访客/普通用户 | FAQ、流式对话、报告列表和分析 |
+| `/api/agent` | 普通用户/管理员 | Agent 线程、SSE 运行、第一方确认、人工工单运营 |
+| `/oauth`、`/.well-known` | 外部客户端/普通用户 | 动态注册、PKCE 授权、token 轮换与撤销 |
+| `/api/admin/oauth-clients` | 系统管理员 | 外部客户端审批、拒绝与撤销 |
 
 所有受限接口都在服务端逐请求查询账号、角色、启用状态和机构绑定。前端隐藏菜单不是安全边界。
 
@@ -152,6 +157,12 @@ RAG 仅索引 `rag_sources/manifest.json` 批准的公共知识，不索引用�
 
 可分析对象为本人或已授权亲友的 `published` 机构报告。精确 `selected_record_ids` 与 `record_scope: {"owner_id": 2, "mode": "all_confirmed"}` 互斥，后者在 schema v8 中解析为该归属人的全部已发布报告；两种方式都必须逐请求同意并重新鉴权。
 
+## HealthDoc Agent
+
+`POST /api/agent/threads/{id}/runs/stream` 由 LangGraph 驱动。DeepSeek 只负责规划和解释，Pydantic 类型化工具负责读取档案、确定性计算趋势、比较机构/套餐、查询容量和预约状态。预约、取消、候补、人工客服工具只创建 AES-GCM 加密草稿；用户通过 `/api/agent/actions/{id}/decision/stream` 确认后，服务端重新校验并调用原预约领域函数，Action ID 保证重复确认不重复写入。
+
+`python scripts/cleanup_agent_state.py` 负责使过期草稿失效并覆盖闲置线程密文；服务器由 `healthdoc-agent-cleanup.timer` 每小时触发。外部 MCP 进程只监听 loopback 5051，通过 OAuth access token 和内部共享密钥调用同一工具网关，不直连数据库或 Qdrant。
+
 ## 报告识别导入（OCR）
 
 - 当前入口：`POST /api/org/reports/ocr`，仅机构账号。
@@ -196,7 +207,7 @@ Waitress 本机验收推荐从项目根目录运行：
 .\.venv\Scripts\python.exe -m pip check
 ```
 
-后端测试使用独立内存 SQLite，不修改 `instance/health_system.db`；覆盖 schema v10、SQLite/openGauss 结构校验、保留式升级、健康身份码授权、预约快照、取消责任、站内/邮件通知、标准附件、104 项指标、OCR 异常方向、管理员改密、AI 数据选择、权限隔离和全量验收快照。完整结论见 [`../项目文档/测试报告.md`](../项目文档/测试报告.md)。
+后端测试使用独立内存 SQLite，不修改 `instance/health_system.db`；覆盖 schema v11、SQLite/openGauss 结构校验、保留式升级、原有健康业务、Agent 密文与权限、工具审计、确认幂等、人工工单、OAuth PKCE/轮换/重放和 MCP 内部验签。完整结论见 [`../项目文档/测试报告.md`](../项目文档/测试报告.md)。
 
 ## 生产数据库同步
 

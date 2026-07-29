@@ -1,6 +1,6 @@
 # 康康健健 HealthDoc 前端
 
-Vue 3 + Vite 6 前端采用“公开门户 + 三角色工作台”的页面结构，完整提供公开认证、个人健康中心、机构服务、亲友、评论、AI、关怀模式和响应式交互。
+Vue 3 + Vite 6 前端采用“公开门户 + 三角色工作台”的页面结构，完整提供公开认证、个人健康中心、机构服务、亲友、评论、HealthDoc Agent、旧 AI 回退、关怀模式和响应式交互。
 
 ## 1.0—3.0 前端演进
 
@@ -48,6 +48,8 @@ npm ci
 | `/appointments` | 独立体检预约、所选日期余量和我的预约 |
 | `/comments/mine` | 我的评论 |
 | `/profile` | 账号、健康身份和个人健康资料 |
+| `/agent-actions/:id` | 第一方 Agent 写操作确认与结果回执 |
+| `/oauth-consent` | 外部 Agent 的 OAuth scope 授权确认 |
 
 普通用户可为自己或同行家人创建最多五人的体检安排、订阅空位提醒，并只读查看本人或已授权亲友的健康数据；代预约权限不包含健康数据查看权限。
 
@@ -73,6 +75,7 @@ npm ci
 - 邀请码管理；
 - 账号停用、恢复和删除；
 - 评论审核。
+- Agent 人工工单接手/解决/关闭与 OAuth 客户端批准/拒绝/撤销。
 
 系统管理员没有报告、指标、自测、时间线或个人健康资料入口。
 
@@ -83,7 +86,7 @@ npm ci
 - 机构列表、详情、套餐、相册封面和加载失败占位；
 - 亲友关系、只读授权和脱敏健康视图；时间线与趋势均可在“我本人”和已授权亲友之间切换，不提供代传或代记能力；
 - 用户评论、我的评论与管理员审核；
-- AI 悬浮助手、SSE、取消/重试和逐请求同意；
+- Agent 计划/工具/证据 SSE、确认卡、取消/重试和旧 AI 回退；
 - 关怀模式、AI 顶栏入口、桌面侧栏自适应重排和窄屏 overlay。
 
 ## 角色路由保护
@@ -122,6 +125,15 @@ npm ci
 - 机构账号和系统管理员工作台不显示健康 AI。
 - 桌面端 AI 从顶栏打开，主内容按剩余空间自然重排；空间不足或移动端切换为有焦点管理的遮罩对话框，不整体缩放页面。
 
+## HealthDoc Agent
+
+- 应用启动读取 `/api/agent/capabilities`；服务端启用时自动使用 `AgentAssistant`，禁用或不可用时保留原 `AiAssistant`。
+- 浏览器只保存当前 thread ID；会话正文、活动轨迹和待确认 Action 从服务端恢复。
+- `meta/plan/tool_started/tool_completed/evidence/approval_required/delta/done/error` 事件驱动任务轨迹，不用文本猜测工具状态。
+- 预约、取消、候补和人工工单以确认卡呈现；批准或拒绝都调用独立 SSE 决策接口，重复批准显示同一幂等回执。
+- 管理员 `/admin/agent-ops` 只看人工工单摘要和 OAuth 客户端元数据，不显示健康档案或 Agent 会话正文。
+- `VITE_AGENT_ENABLED=false` 是构建级紧急回退；默认由后端 capability 决定。
+
 ## 关怀模式与响应式布局
 
 关怀模式放大文字和关键控件，并通过断点、换行和弹性布局适配不同宽度。AI 侧栏打开后页面按可用空间重新排布；安全宽度不足时使用遮罩层，避免导航重叠和横向滚动。
@@ -129,7 +141,9 @@ npm ci
 主要实现：
 
 - `src/components/AiAssistant.vue`
+- `src/components/AgentAssistant.vue`
 - `src/stores/aiChat.js`
+- `src/stores/agent.js`
 - `src/utils/aiStageLayout.js`
 - `src/stores/appearance.js`
 - `src/layouts/WorkspaceLayout.vue`
@@ -146,7 +160,9 @@ npm ci
 - `org.js`：机构运营与报告生产；
 - `admin.js`、`dashboards.js`：系统管理；
 - `institutions.js`、`friends.js`、`comments.js`、`indicators.js`：延续功能；
-- `ai.js`：报告选择和 SSE AI。
+- `ai.js`：报告选择和旧 SSE AI；
+- `agent.js`：Agent thread、运行/决定 SSE 和工单运营；
+- `oauth.js`：第一方授权和管理员客户端审批。
 
 ## 开发、构建与预览
 
@@ -171,4 +187,4 @@ npm run build
 npm audit --omit=dev
 ```
 
-当前 100 项测试覆盖认证/角色映射、多标签页会话隔离、健康总览快捷测量、体检/自主记录时间线、同行体检安排与空位提醒、套餐版本展示、机构任务流、亲友健康对象筛选、AI 按需加载、RAG 检索状态与流式交互、关怀模式/响应式布局、日期范围控件列宽约束、账号注册载荷、图表外观和 HTTP 行为。生产构建结果见 [`../项目文档/测试报告.md`](../项目文档/测试报告.md)。
+当前 136 项测试覆盖认证/角色映射、多标签页会话隔离、健康总览快捷测量、体检/自主记录时间线、同行体检安排与空位提醒、套餐版本展示、机构任务流、亲友健康对象筛选、AI/Agent 路由与流式交互、管理员 Agent 运营路由、关怀模式/响应式布局、日期范围控件、图表外观和 HTTP 行为。生产构建结果见 [`../项目文档/测试报告.md`](../项目文档/测试报告.md)。

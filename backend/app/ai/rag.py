@@ -24,6 +24,20 @@ _INDICATOR_QUERY_TERMS = {
 }
 
 
+def segment_search_text(value: str) -> str:
+    """Produce stable Chinese lexical tokens without another resident model."""
+    normalized = re.sub(r"\s+", " ", str(value or "").lower()).strip()
+    tokens = re.findall(r"[a-z0-9]+|[\u3400-\u9fff]+", normalized)
+    output = []
+    for token in tokens:
+        if re.fullmatch(r"[\u3400-\u9fff]+", token):
+            output.extend(token)
+            output.extend(token[index:index + 2] for index in range(len(token) - 1))
+        else:
+            output.append(token)
+    return " ".join(output)
+
+
 def _query_indicator_codes(query: str) -> set[str]:
     normalized = query.lower()
 
@@ -116,12 +130,22 @@ class QdrantKnowledgeRetriever(KnowledgeRetriever):
         self._lock = threading.Lock()
         self._client = None
         self._embedder = None
+        self._sparse_embedder = None
 
     def _initialize(self):
-        if self._client is not None and self._embedder is not None:
+        hybrid = bool(self.config.get("RAG_HYBRID_ENABLED"))
+        if (
+            self._client is not None
+            and self._embedder is not None
+            and (not hybrid or self._sparse_embedder is not None)
+        ):
             return
         with self._lock:
-            if self._client is not None and self._embedder is not None:
+            if (
+                self._client is not None
+                and self._embedder is not None
+                and (not hybrid or self._sparse_embedder is not None)
+            ):
                 return
             from fastembed import TextEmbedding
             from qdrant_client import QdrantClient
@@ -135,6 +159,15 @@ class QdrantKnowledgeRetriever(KnowledgeRetriever):
                 enable_cpu_mem_arena=False,
                 local_files_only=True,
             )
+            if hybrid:
+                from fastembed import SparseTextEmbedding
+
+                self._sparse_embedder = SparseTextEmbedding(
+                    model_name=self.config.get("RAG_SPARSE_MODEL") or "Qdrant/bm25",
+                    cache_dir=str(model_cache),
+                    threads=self.config["RAG_EMBEDDING_THREADS"],
+                    local_files_only=True,
+                )
             url = self.config.get("RAG_QDRANT_URL")
             if url:
                 self._client = QdrantClient(
@@ -173,15 +206,42 @@ class QdrantKnowledgeRetriever(KnowledgeRetriever):
                     for value in audience_values
                 ],
             )
-            top_k = int(self.config.get("RAG_TOP_K", 8))
-            response = self._client.query_points(
-                collection_name=self.config["RAG_COLLECTION_ALIAS"],
-                query=vector,
-                query_filter=audience_filter,
-                limit=top_k,
-                with_payload=True,
-                score_threshold=float(self.config.get("RAG_MIN_SCORE", 0.35)),
-            )
+            if self.config.get("RAG_HYBRID_ENABLED"):
+                sparse = list(
+                    self._sparse_embedder.query_embed(segment_search_text(query))
+                )[0]
+                response = self._client.query_points(
+                    collection_name=self.config["RAG_COLLECTION_ALIAS"],
+                    prefetch=[
+                        models.Prefetch(
+                            query=vector,
+                            using="dense",
+                            limit=int(self.config.get("RAG_DENSE_PREFETCH_K", 24)),
+                        ),
+                        models.Prefetch(
+                            query=models.SparseVector(
+                                indices=sparse.indices.tolist(),
+                                values=sparse.values.tolist(),
+                            ),
+                            using="sparse",
+                            limit=int(self.config.get("RAG_SPARSE_PREFETCH_K", 24)),
+                        ),
+                    ],
+                    query=models.FusionQuery(fusion=models.Fusion.RRF),
+                    query_filter=audience_filter,
+                    limit=int(self.config.get("RAG_FUSION_K", 12)),
+                    with_payload=True,
+                )
+            else:
+                top_k = int(self.config.get("RAG_TOP_K", 8))
+                response = self._client.query_points(
+                    collection_name=self.config["RAG_COLLECTION_ALIAS"],
+                    query=vector,
+                    query_filter=audience_filter,
+                    limit=top_k,
+                    with_payload=True,
+                    score_threshold=float(self.config.get("RAG_MIN_SCORE", 0.35)),
+                )
             requested_codes = {
                 str(item).upper() for item in indicator_codes
             } | _query_indicator_codes(query)
