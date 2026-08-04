@@ -42,6 +42,7 @@ $releaseCommit = Assert-ReleaseSourceState
 $releaseId = (Get-Date).ToUniversalTime().ToString("yyyyMMdd'T'HHmmss'Z'")
 $archiveName = "healthdoc-app-$releaseId.tar.gz"
 $archivePath = Join-Path ([System.IO.Path]::GetTempPath()) $archiveName
+$sourceArchivePath = Join-Path ([System.IO.Path]::GetTempPath()) "healthdoc-source-$releaseId.tar"
 $remoteArchive = "/home/$SshUser/$archiveName"
 $remoteScript = "/home/$SshUser/healthdoc-release-server.sh"
 $demoSnapshotName = "healthdoc-demo-$releaseId.db"
@@ -150,24 +151,31 @@ try {
     [void](Assert-ReleaseSourceState $releaseCommit)
 
     Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $sourceArchivePath -Force -ErrorAction SilentlyContinue
+    $releaseSourcePaths = @(
+        "backend/app",
+        "backend/migrations",
+        "backend/rag_sources",
+        "backend/scripts",
+        "backend/report_media_manifest.json",
+        "backend/.env.example",
+        "backend/README.md",
+        "backend/requirements.txt",
+        "backend/mcp_server.py",
+        "backend/run.py",
+        "backend/wsgi.py",
+        "deploy"
+    )
     Push-Location $projectRoot
     try {
-        tar -czf $archivePath `
-            --exclude="*/__pycache__" `
-            --exclude="*.pyc" `
-            backend/app `
-            backend/migrations `
-            backend/rag_sources `
-            backend/scripts `
-            backend/report_media_manifest.json `
-            backend/.env.example `
-            backend/README.md `
-            backend/requirements.txt `
-            backend/mcp_server.py `
-            backend/run.py `
-            backend/wsgi.py `
-            deploy `
-            -C $releaseStageRoot RELEASE_COMMIT frontend/dist
+        # Package the exact committed bytes instead of the Windows working tree.
+        # This preserves canonical LF content, which is required by the RAG
+        # approved_sha256 integrity check on Linux.
+        git archive --format=tar --output=$sourceArchivePath $releaseCommit -- $releaseSourcePaths
+        Assert-LastExitCode "Committed source archive"
+        tar -xf $sourceArchivePath -C $releaseStageRoot
+        Assert-LastExitCode "Committed source extraction"
+        tar -czf $archivePath -C $releaseStageRoot backend deploy RELEASE_COMMIT frontend/dist
         Assert-LastExitCode "Release packaging"
     }
     finally {
@@ -180,7 +188,7 @@ try {
     Assert-LastExitCode "Archive upload"
     ssh -o BatchMode=yes "${SshUser}@${Server}" "chmod 600 '$remoteArchive'"
     Assert-LastExitCode "Archive permission hardening"
-    scp (Join-Path $projectRoot "deploy\release-server.sh") "${SshUser}@${Server}:$remoteScript"
+    scp (Join-Path $releaseStageRoot "deploy\release-server.sh") "${SshUser}@${Server}:$remoteScript"
     Assert-LastExitCode "Release helper upload"
     ssh -o BatchMode=yes "${SshUser}@${Server}" "chmod 700 '$remoteScript'"
     Assert-LastExitCode "Release helper permission hardening"
@@ -377,6 +385,7 @@ with open(sys.argv[2], "w", encoding="utf-8", newline="\n") as output:
 }
 finally {
     Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $sourceArchivePath -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $demoSnapshotPath -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $demoAssetsPath -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $demoAssetsStageRoot -Recurse -Force -ErrorAction SilentlyContinue

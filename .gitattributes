@@ -6,6 +6,8 @@
 *.yml text eol=lf
 *.yaml text eol=lf
 *.ps1 text eol=crlf
+backend/rag_sources/*.md text eol=lf
+backend/rag_sources/*.json text eol=lf
 *.png binary
 *.pdf binary
 *.docx binary
