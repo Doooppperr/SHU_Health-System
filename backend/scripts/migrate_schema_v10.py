@@ -18,6 +18,12 @@ import app.models  # noqa: E402,F401
 
 
 CORE_TABLES = ("users", "institutions", "appointments", "institution_reports", "comments", "packages")
+REQUIRED_V10_TABLES = {
+    "user_notifications",
+    "report_asset_types",
+    "package_version_asset_requirements",
+    "indicator_reference_rules",
+}
 
 
 def repair_synthetic_demo_values(connection) -> None:
@@ -65,7 +71,17 @@ def migrate(database_url: str) -> None:
                 for name in CORE_TABLES
                 if name in inspector.get_table_names()
             }
-            db.metadata.create_all(bind=connection, checkfirst=True)
+            # Keep this historical migration revision-scoped so importing a
+            # newer application model cannot create future-schema tables.
+            db.metadata.create_all(
+                bind=connection,
+                tables=[
+                    db.metadata.tables[name]
+                    for name in REQUIRED_V10_TABLES
+                    if name in db.metadata.tables
+                ],
+                checkfirst=True,
+            )
             columns = {item["name"] for item in inspect(connection).get_columns("appointments")}
             appointment_columns = {
                 "height_cm_snapshot": "NUMERIC(6,2)",
@@ -138,7 +154,7 @@ def migrate(database_url: str) -> None:
             }
             if before != after:
                 raise RuntimeError(f"core data counts changed: before={before}, after={after}")
-            required = {"user_notifications", "report_asset_types", "package_version_asset_requirements", "indicator_reference_rules"}
+            required = REQUIRED_V10_TABLES
             final_inspector = inspect(connection)
             missing = required - set(final_inspector.get_table_names())
             if missing:

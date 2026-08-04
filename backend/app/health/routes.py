@@ -7,11 +7,12 @@ from flask import g, request
 from app.extensions import db
 from app.health import health_bp
 from app.models import (
-    Appointment, AvailabilityNotificationEvent, FriendRelation, HealthDomain,
+    Appointment, AvailabilityNotificationEvent, HealthDomain,
     IndicatorDict, Institution, InstitutionReport, Package, ReportIndicator,
     SelfMeasurement, User, WaitlistSubscription,
 )
 from app.services.permissions import ROLE_USER, roles_required
+from app.services.user_access import complete_profile_required
 from app.services.indicator_values import IndicatorValueError, evaluate_result_status, validate_indicator_plausibility
 
 
@@ -61,13 +62,16 @@ def requested_owner():
     raw = request.args.get("owner_id")
     if raw in {None, ""}:
         return g.current_user, None
-    try: owner_id = int(raw)
-    except (TypeError, ValueError): return None, ({"message": "成员标识不正确"}, 400)
-    if owner_id == g.current_user.id: return g.current_user, None
-    relation = FriendRelation.query.filter_by(user_id=g.current_user.id, friend_user_id=owner_id, auth_status=True).first()
-    owner = db.session.get(User, owner_id) if relation else None
-    if owner is None or owner.role != "user": return None, ({"message": "尚未获得该亲友的健康资料授权"}, 403)
-    return owner, None
+    try:
+        owner_id = int(raw)
+    except (TypeError, ValueError):
+        return None, ({"message": "成员标识不正确"}, 400)
+    if owner_id != g.current_user.id:
+        return None, ({
+            "message": "健康资料仅展示当前有效账号；请先切换关联账号",
+            "code": "CURRENT_ACCOUNT_REQUIRED",
+        }, 403)
+    return g.current_user, None
 
 
 def parse_range():
@@ -133,6 +137,7 @@ def measurement_payload(row, payload):
 
 @health_bp.post("/self-measurements")
 @roles_required(ROLE_USER)
+@complete_profile_required
 def create_measurement():
     row, error = measurement_payload(None, request.get_json(silent=True) or {})
     if error: return row, error
@@ -141,6 +146,7 @@ def create_measurement():
 
 @health_bp.put("/self-measurements/<int:measurement_id>")
 @roles_required(ROLE_USER)
+@complete_profile_required
 def update_measurement(measurement_id):
     existing = SelfMeasurement.query.filter_by(id=measurement_id, user_id=g.current_user.id).first()
     if not existing: return {"message": "measurement not found"}, 404
@@ -151,6 +157,7 @@ def update_measurement(measurement_id):
 
 @health_bp.delete("/self-measurements/<int:measurement_id>")
 @roles_required(ROLE_USER)
+@complete_profile_required
 def delete_measurement(measurement_id):
     row = SelfMeasurement.query.filter_by(id=measurement_id, user_id=g.current_user.id).first()
     if not row: return {"message": "measurement not found"}, 404
@@ -481,7 +488,7 @@ def timeline():
     page_size = 30 if request.args.get("page_size", default=15, type=int) == 30 else 15
     records = _timeline_records(
         owner, start, end, record_type, institution_id, status,
-        include_participant_name=owner.id == g.current_user.id,
+        include_participant_name=True,
     )
     total = len(records)
     items = records[(page - 1) * page_size:page * page_size]

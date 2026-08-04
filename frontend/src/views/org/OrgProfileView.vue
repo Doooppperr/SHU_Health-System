@@ -27,15 +27,57 @@
 
     <section id="institution-gallery"><OrgGalleryView /></section>
 
+    <el-card shadow="never" class="org-danger-zone">
+      <template #header><strong>注销机构账号</strong></template>
+      <p>注销后当前分院账号将立即失效，分院与套餐会从公开页面撤下；历史预约、报告和投诉仍会保留。</p>
+      <el-button type="danger" plain :loading="deactivationChecking" @click="openDeactivation">检查并申请注销</el-button>
+    </el-card>
+
     <el-alert title="权限说明" description="机构主体和分院归属由系统管理员维护；当前账号只能编辑自己绑定分院的公开资料。" type="info" show-icon :closable="false" />
+
+    <el-dialog v-model="deactivationVisible" title="注销机构账号" width="min(560px, 92vw)" :close-on-click-modal="false">
+      <template v-if="deactivationCheck">
+        <el-alert
+          v-if="!deactivationCheck.can_deactivate"
+          title="当前仍有未完成业务，暂时不能注销"
+          type="warning"
+          show-icon
+          :closable="false"
+        />
+        <el-descriptions :column="1" border style="margin-top: 16px">
+          <el-descriptions-item label="未来有效预约">{{ deactivationCheck.future_effective_appointments || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="已到检未完成报告">{{ deactivationCheck.arrived_unfinished_reports || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="草稿或待复核报告">{{ deactivationCheck.draft_or_pending_reports || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="未解决投诉">{{ deactivationCheck.unresolved_complaints || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="其他未完成上传任务">{{ deactivationCheck.other_upload_tasks || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="将随注销关闭的候补提醒">
+            {{ deactivationCheck.active_waitlist_subscriptions || 0 }}
+          </el-descriptions-item>
+        </el-descriptions>
+        <template v-if="deactivationCheck.can_deactivate">
+          <el-alert title="注销后只能由平台管理员恢复；生效中的候补提醒将关闭并通知相关用户。" type="error" show-icon :closable="false" style="margin-top:16px" />
+          <el-form-item label="当前账号密码" required style="margin-top:16px">
+            <el-input v-model="deactivationPassword" type="password" show-password autocomplete="current-password" />
+          </el-form-item>
+        </template>
+      </template>
+      <template #footer>
+        <el-button @click="deactivationVisible = false">取消</el-button>
+        <el-button v-if="deactivationCheck?.can_deactivate" type="danger" :loading="deactivating" :disabled="!deactivationPassword" @click="confirmDeactivation">确认注销</el-button>
+        <template v-else>
+          <el-button v-if="deactivationCheck?.unresolved_complaints" type="warning" @click="goComplaints">查看未解决投诉</el-button>
+          <el-button type="primary" @click="goReportTasks">查看未完成业务</el-button>
+        </template>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { nextTick, onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
-import { useRoute } from "vue-router";
-import { fetchOrgInstitution, updateOrgInstitution } from "../../api/org";
+import { useRoute, useRouter } from "vue-router";
+import { deactivateOrgAccount, fetchOrgAccountDeactivationCheck, fetchOrgInstitution, updateOrgInstitution } from "../../api/org";
 import AccountSecurityPanel from "../../components/AccountSecurityPanel.vue";
 import AccountEmailPanel from "../../components/AccountEmailPanel.vue";
 import { useAuthStore } from "../../stores/auth";
@@ -44,9 +86,15 @@ import OrgGalleryView from "./OrgGalleryView.vue";
 const loading = ref(false);
 const authStore = useAuthStore();
 const route = useRoute();
+const router = useRouter();
 const saving = ref(false);
 const errorMessage = ref("");
 const organizationName = ref("");
+const deactivationVisible = ref(false);
+const deactivationChecking = ref(false);
+const deactivating = ref(false);
+const deactivationCheck = ref(null);
+const deactivationPassword = ref("");
 const form = reactive({ branch_name: "", district: "", address: "", metro_info: "", consult_phone: "", ext: "", closed_day: "", description: "" });
 
 function assign(item = {}) {
@@ -80,5 +128,51 @@ async function save() {
     saving.value = false;
   }
 }
+
+async function openDeactivation() {
+  deactivationChecking.value = true;
+  try {
+    const { data } = await fetchOrgAccountDeactivationCheck();
+    deactivationCheck.value = data.item || data;
+    deactivationPassword.value = "";
+    deactivationVisible.value = true;
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.message || "暂时无法检查注销条件");
+  } finally {
+    deactivationChecking.value = false;
+  }
+}
+
+function goReportTasks() {
+  deactivationVisible.value = false;
+  router.push({ name: "org-reports", query: { view: "archive" } });
+}
+
+function goComplaints() {
+  deactivationVisible.value = false;
+  router.push({ name: "org-complaints", query: { status: "institution_pending" } });
+}
+
+async function confirmDeactivation() {
+  deactivating.value = true;
+  try {
+    await deactivateOrgAccount(deactivationPassword.value);
+    authStore.logout();
+    ElMessage.success("机构账号已注销");
+    await router.replace({ name: "login" });
+  } catch (error) {
+    const data = error?.response?.data || {};
+    if (data.code === "INSTITUTION_DEACTIVATION_BLOCKED") {
+      deactivationCheck.value = { ...(data.blockers || {}), can_deactivate: false };
+    }
+    ElMessage.error(data.message || "账号注销失败");
+  } finally {
+    deactivating.value = false;
+  }
+}
 onMounted(async()=>{await load();if(route.query.section==="gallery"){await nextTick();document.getElementById("institution-gallery")?.scrollIntoView({behavior:"smooth"});}});
 </script>
+
+<style scoped>
+.org-danger-zone{border-color:#efc2c2}.org-danger-zone p{color:var(--el-text-color-secondary);line-height:1.7}
+</style>

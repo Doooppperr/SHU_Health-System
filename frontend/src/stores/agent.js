@@ -31,16 +31,35 @@ export const useAgentStore = defineStore("agent", {
     statusText: "",
     lastError: "",
     controller: null,
+    identityGeneration: 0,
   }),
 
   actions: {
     async initialize(userId) {
-      if (!userId) return;
-      this.userId = userId;
+      return this.switchIdentity(userId);
+    },
+
+    async switchIdentity(userId) {
+      const nextUserId = userId || null;
+      if (this.userId === nextUserId && this.threadId) return;
+      this.cancel();
+      this.identityGeneration += 1;
+      const generation = this.identityGeneration;
+      this.userId = nextUserId;
+      this.threadId = "";
+      this.messages = [];
+      this.pendingActions = [];
+      this.isSending = false;
+      this.statusText = "";
+      this.lastError = "";
+      this.controller = null;
+      if (!nextUserId) return;
+
       const saved = sessionStorage.getItem(threadStorageKey(userId)) || "";
       if (saved) {
         try {
           const response = await fetchAgentThread(saved);
+          if (this.identityGeneration !== generation || this.userId !== nextUserId) return;
           const item = response.data.item;
           this.threadId = item.id;
           this.messages = (item.messages || []).map((message) => ({
@@ -53,14 +72,21 @@ export const useAgentStore = defineStore("agent", {
           }));
           return;
         } catch {
-          sessionStorage.removeItem(threadStorageKey(userId));
+          if (this.identityGeneration !== generation || this.userId !== nextUserId) return;
+          sessionStorage.removeItem(threadStorageKey(nextUserId));
         }
       }
-      await this.newThread();
+      await this.newThread(generation);
     },
 
-    async newThread() {
+    async newThread(expectedGeneration = this.identityGeneration) {
+      const expectedUserId = this.userId;
+      if (!expectedUserId) return;
       const response = await createAgentThread();
+      if (
+        this.identityGeneration !== expectedGeneration ||
+        this.userId !== expectedUserId
+      ) return;
       this.threadId = response.data.item.id;
       this.messages = [];
       this.pendingActions = [];
@@ -70,7 +96,14 @@ export const useAgentStore = defineStore("agent", {
     async send(message) {
       const content = String(message || "").trim();
       if (!content || this.isSending) return;
-      if (!this.threadId) await this.newThread();
+      const generation = this.identityGeneration;
+      const userId = this.userId;
+      if (!this.threadId) await this.newThread(generation);
+      if (
+        !this.threadId ||
+        this.identityGeneration !== generation ||
+        this.userId !== userId
+      ) return;
       const assistant = {
         id: messageId("assistant"),
         role: "assistant",
@@ -92,6 +125,7 @@ export const useAgentStore = defineStore("agent", {
           {
             signal: this.controller.signal,
             onEvent: (event) => {
+              if (this.identityGeneration !== generation) return;
               if (event.event === "delta") assistant.content += event.content || "";
               if (event.event === "plan") this.statusText = event.message || "正在规划任务";
               if (event.event === "tool_started") {
@@ -110,10 +144,12 @@ export const useAgentStore = defineStore("agent", {
           }
         );
       } catch (error) {
+        if (this.identityGeneration !== generation) return;
         assistant.failed = true;
         this.lastError = error.message || "Agent 执行失败";
         if (!assistant.content) assistant.content = this.lastError;
       } finally {
+        if (this.identityGeneration !== generation) return;
         assistant.streaming = false;
         this.isSending = false;
         this.statusText = "";
@@ -125,10 +161,12 @@ export const useAgentStore = defineStore("agent", {
       if (this.isSending) return;
       const action = this.pendingActions.find((item) => item.action_id === actionId);
       if (!action) return;
+      const generation = this.identityGeneration;
       this.isSending = true;
       this.statusText = decision === "approve" ? "正在重新校验并执行" : "正在取消操作";
       try {
         const result = await streamAgentDecision(actionId, decision);
+        if (this.identityGeneration !== generation) return;
         action.status = result.status;
         this.pendingActions = this.pendingActions.filter(
           (item) => item.action_id !== actionId
@@ -141,8 +179,10 @@ export const useAgentStore = defineStore("agent", {
             : "已取消该操作，没有执行任何业务变更。",
         });
       } catch (error) {
+        if (this.identityGeneration !== generation) return;
         this.lastError = error.message || "操作没有完成";
       } finally {
+        if (this.identityGeneration !== generation) return;
         this.isSending = false;
         this.statusText = "";
       }
@@ -153,13 +193,16 @@ export const useAgentStore = defineStore("agent", {
     },
 
     async clear() {
+      const generation = this.identityGeneration;
+      const userId = this.userId;
       this.cancel();
       if (this.threadId) await clearAgentThread(this.threadId).catch(() => {});
-      sessionStorage.removeItem(threadStorageKey(this.userId));
+      if (this.identityGeneration !== generation || this.userId !== userId) return;
+      sessionStorage.removeItem(threadStorageKey(userId));
       this.threadId = "";
       this.messages = [];
       this.pendingActions = [];
-      await this.newThread();
+      await this.newThread(generation);
     },
   },
 });

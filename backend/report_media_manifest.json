@@ -1,6 +1,6 @@
 {
   "version": 12,
-  "generated_at": "2026-07-28T12:53:04.545123+08:00",
+  "generated_at": "2026-07-31T11:50:19.276854+08:00",
   "items": [
     {
       "storage_key": "health-assets/demo-v10/report-77-ecg_12.png",
@@ -63,7 +63,7 @@
       "annotation_text": "肺功能曲线形态正常，未见明显阻塞性或限制性通气障碍。"
     },
     {
-      "storage_key": "health-assets/demo-v8/report-10-basic.png",
+      "storage_key": "health-assets/demo-v8/report-12-basic.png",
       "kind": "report_attachment",
       "title": "腹部超声",
       "mime_type": "image/png",
@@ -78,7 +78,7 @@
       "annotation_text": "腹部超声示肝胆胰脾形态未见明显异常，未见明确局灶性病变。"
     },
     {
-      "storage_key": "health-assets/demo-v8/report-10-echo_heart.png",
+      "storage_key": "health-assets/demo-v8/report-12-echo_heart.png",
       "kind": "report_attachment",
       "title": "心脏彩超",
       "mime_type": "image/png",
@@ -93,7 +93,7 @@
       "annotation_text": "心脏超声示各心腔大小未见明显异常，室壁运动协调，左心室收缩功能正常。"
     },
     {
-      "storage_key": "health-assets/demo-v8/report-11-basic.png",
+      "storage_key": "health-assets/demo-v8/report-13-basic.png",
       "kind": "report_attachment",
       "title": "血细胞显微影像",
       "mime_type": "image/png",
@@ -108,37 +108,37 @@
       "annotation_text": "血细胞形态及分布未见明显异常。"
     },
     {
-      "storage_key": "health-assets/demo-v8/report-12-basic.png",
-      "kind": "report_attachment",
-      "title": "十二导联心电图",
-      "mime_type": "image/png",
-      "width": 1600,
-      "height": 947,
-      "format": "PNG",
-      "byte_size": 2599477,
-      "sha256": "68d7775e7a51f00b1089e76e8f1bc809be616ba3f6976ecfcad36327b1ac1ed8",
-      "asset_type_code": "ECG_12",
-      "health_domain_id": 2,
-      "modality": "ecg",
-      "annotation_text": "十二导联心电图示窦性心律，节律规则，未见明显 ST-T 异常。"
-    },
-    {
-      "storage_key": "health-assets/demo-v8/report-13-basic.png",
-      "kind": "report_attachment",
-      "title": "十二导联心电图",
-      "mime_type": "image/png",
-      "width": 1600,
-      "height": 947,
-      "format": "PNG",
-      "byte_size": 2599477,
-      "sha256": "68d7775e7a51f00b1089e76e8f1bc809be616ba3f6976ecfcad36327b1ac1ed8",
-      "asset_type_code": "ECG_12",
-      "health_domain_id": 2,
-      "modality": "ecg",
-      "annotation_text": "十二导联心电图示窦性心律，节律规则，未见明显 ST-T 异常。"
-    },
-    {
       "storage_key": "health-assets/demo-v8/report-14-basic.png",
+      "kind": "report_attachment",
+      "title": "十二导联心电图",
+      "mime_type": "image/png",
+      "width": 1600,
+      "height": 947,
+      "format": "PNG",
+      "byte_size": 2599477,
+      "sha256": "68d7775e7a51f00b1089e76e8f1bc809be616ba3f6976ecfcad36327b1ac1ed8",
+      "asset_type_code": "ECG_12",
+      "health_domain_id": 2,
+      "modality": "ecg",
+      "annotation_text": "十二导联心电图示窦性心律，节律规则，未见明显 ST-T 异常。"
+    },
+    {
+      "storage_key": "health-assets/demo-v8/report-15-basic.png",
+      "kind": "report_attachment",
+      "title": "十二导联心电图",
+      "mime_type": "image/png",
+      "width": 1600,
+      "height": 947,
+      "format": "PNG",
+      "byte_size": 2599477,
+      "sha256": "68d7775e7a51f00b1089e76e8f1bc809be616ba3f6976ecfcad36327b1ac1ed8",
+      "asset_type_code": "ECG_12",
+      "health_domain_id": 2,
+      "modality": "ecg",
+      "annotation_text": "十二导联心电图示窦性心律，节律规则，未见明显 ST-T 异常。"
+    },
+    {
+      "storage_key": "health-assets/demo-v8/report-16-basic.png",
       "kind": "report_attachment",
       "title": "胸片",
       "mime_type": "image/png",
@@ -153,7 +153,7 @@
       "annotation_text": "胸部影像示双肺纹理清晰，未见明显活动性病灶，心影大小正常。"
     },
     {
-      "storage_key": "health-assets/demo-v8/report-15-basic.png",
+      "storage_key": "health-assets/demo-v8/report-17-basic.png",
       "kind": "report_attachment",
       "title": "腹部超声",
       "mime_type": "image/png",
@@ -166,36 +166,6 @@
       "health_domain_id": 4,
       "modality": "ultrasound",
       "annotation_text": "腹部超声示肝胆胰脾形态未见明显异常，未见明确局灶性病变。"
-    },
-    {
-      "storage_key": "health-assets/demo-v8/report-16-basic.png",
-      "kind": "report_attachment",
-      "title": "血细胞显微影像",
-      "mime_type": "image/png",
-      "width": 1286,
-      "height": 1600,
-      "format": "PNG",
-      "byte_size": 1446883,
-      "sha256": "6dbb0e7a0115f23b477821f952447affaa641c7e92e9dbec84ccdeb23305c9e0",
-      "asset_type_code": "BLOOD_MICROSCOPY",
-      "health_domain_id": 7,
-      "modality": "microscopy",
-      "annotation_text": "血细胞形态及分布未见明显异常。"
-    },
-    {
-      "storage_key": "health-assets/demo-v8/report-17-basic.png",
-      "kind": "report_attachment",
-      "title": "十二导联心电图",
-      "mime_type": "image/png",
-      "width": 1600,
-      "height": 947,
-      "format": "PNG",
-      "byte_size": 2599477,
-      "sha256": "68d7775e7a51f00b1089e76e8f1bc809be616ba3f6976ecfcad36327b1ac1ed8",
-      "asset_type_code": "ECG_12",
-      "health_domain_id": 2,
-      "modality": "ecg",
-      "annotation_text": "十二导联心电图示窦性心律，节律规则，未见明显 ST-T 异常。"
     },
     {
       "storage_key": "health-assets/demo-v8/report-18-basic.png",
@@ -215,6 +185,36 @@
     {
       "storage_key": "health-assets/demo-v8/report-19-basic.png",
       "kind": "report_attachment",
+      "title": "十二导联心电图",
+      "mime_type": "image/png",
+      "width": 1600,
+      "height": 947,
+      "format": "PNG",
+      "byte_size": 2599477,
+      "sha256": "68d7775e7a51f00b1089e76e8f1bc809be616ba3f6976ecfcad36327b1ac1ed8",
+      "asset_type_code": "ECG_12",
+      "health_domain_id": 2,
+      "modality": "ecg",
+      "annotation_text": "十二导联心电图示窦性心律，节律规则，未见明显 ST-T 异常。"
+    },
+    {
+      "storage_key": "health-assets/demo-v8/report-20-basic.png",
+      "kind": "report_attachment",
+      "title": "血细胞显微影像",
+      "mime_type": "image/png",
+      "width": 1286,
+      "height": 1600,
+      "format": "PNG",
+      "byte_size": 1446883,
+      "sha256": "6dbb0e7a0115f23b477821f952447affaa641c7e92e9dbec84ccdeb23305c9e0",
+      "asset_type_code": "BLOOD_MICROSCOPY",
+      "health_domain_id": 7,
+      "modality": "microscopy",
+      "annotation_text": "血细胞形态及分布未见明显异常。"
+    },
+    {
+      "storage_key": "health-assets/demo-v8/report-21-basic.png",
+      "kind": "report_attachment",
       "title": "胸片",
       "mime_type": "image/png",
       "width": 1154,
@@ -228,7 +228,7 @@
       "annotation_text": "胸部影像示双肺纹理清晰，未见明显活动性病灶，心影大小正常。"
     },
     {
-      "storage_key": "health-assets/demo-v8/report-20-basic.png",
+      "storage_key": "health-assets/demo-v8/report-22-basic.png",
       "kind": "report_attachment",
       "title": "十二导联心电图",
       "mime_type": "image/png",

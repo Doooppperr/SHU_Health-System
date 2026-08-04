@@ -12,9 +12,9 @@
         <el-table-column prop="district" label="区域" width="120" />
         <el-table-column prop="address" label="地址" min-width="220" show-overflow-tooltip />
         <el-table-column label="套餐" width="90"><template #default="scope">{{ scope.row.package_count ?? 0 }}/{{ scope.row.total_package_count ?? scope.row.package_count ?? 0 }}</template></el-table-column>
-        <el-table-column label="机构账号" min-width="140"><template #default="scope">{{ scope.row.administrator_count || 0 }} 个</template></el-table-column>
+        <el-table-column label="机构账号" min-width="140"><template #default="scope"><el-tag :type="scope.row.administrator_count ? 'success' : 'warning'">{{ scope.row.administrator_count ? "已配置唯一账号" : "待配置" }}</el-tag></template></el-table-column>
         <el-table-column label="状态" width="100"><template #default="scope"><el-tag :type="scope.row.is_active ? 'success' : 'info'">{{ scope.row.is_active ? "启用" : "已停用" }}</el-tag></template></el-table-column>
-        <el-table-column label="操作" width="330" fixed="right"><template #default="scope"><el-button link type="primary" @click="openEdit(scope.row)">编辑机构</el-button><el-button link @click="openPackages(scope.row)">查看套餐</el-button><el-button link @click="openGallery(scope.row)">相册</el-button><el-button v-if="scope.row.is_active" link type="danger" @click="deactivate(scope.row)">停用机构</el-button><el-button v-else link type="success" @click="restore(scope.row)">恢复机构</el-button></template></el-table-column>
+        <el-table-column label="操作" width="410" fixed="right"><template #default="scope"><el-button link type="primary" @click="openEdit(scope.row)">编辑机构</el-button><el-button link @click="openAccount(scope.row)">账号与邮件</el-button><el-button link @click="openPackages(scope.row)">查看套餐</el-button><el-button link @click="openGallery(scope.row)">相册</el-button><el-button v-if="scope.row.is_active" link type="danger" @click="deactivate(scope.row)">停用机构</el-button><el-button v-else link type="success" @click="restore(scope.row)">恢复机构</el-button></template></el-table-column>
       </el-table>
     </el-card>
 
@@ -30,12 +30,90 @@
         <el-form-item label="区域" required><el-input v-model="institutionForm.district" maxlength="80" /></el-form-item>
         <el-form-item label="咨询电话"><el-input v-model="institutionForm.consult_phone" maxlength="30" /></el-form-item>
         <el-form-item label="地址" required class="form-grid-full"><el-input v-model="institutionForm.address" maxlength="255" /></el-form-item>
+        <template v-if="!institutionForm.id">
+          <el-alert class="form-grid-full" title="创建分院时同步创建唯一机构账号，账密会发送到机构邮箱。机构首次登录后应立即修改密码。" type="warning" show-icon :closable="false" />
+          <el-form-item label="机构登录用户名" required><el-input v-model.trim="institutionForm.username" maxlength="80" autocomplete="off" /></el-form-item>
+          <el-form-item label="机构邮箱" required><el-input v-model.trim="institutionForm.email" maxlength="255" type="email" autocomplete="off" /></el-form-item>
+          <el-form-item label="初始密码" required class="form-grid-full">
+            <el-input v-model="institutionForm.password" show-password maxlength="128" autocomplete="new-password">
+              <template #append><el-button @click="generatePassword">生成强密码</el-button></template>
+            </el-input>
+          </el-form-item>
+        </template>
         <el-form-item label="交通信息" class="form-grid-full"><el-input v-model="institutionForm.metro_info" maxlength="255" /></el-form-item>
         <el-form-item label="分机号"><el-input v-model="institutionForm.ext" maxlength="20" /></el-form-item>
         <el-form-item label="轮休日"><el-input v-model="institutionForm.closed_day" maxlength="20" /></el-form-item>
         <el-form-item label="机构简介" class="form-grid-full"><el-input v-model="institutionForm.description" type="textarea" :rows="4" maxlength="2000" show-word-limit /></el-form-item>
       </el-form>
       <template #footer><el-button @click="dialogVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveInstitution">保存</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="accountResultVisible" title="分院与机构账号创建成功" width="min(580px, 92vw)" :close-on-click-modal="false">
+      <el-result icon="success" title="机构分院已创建">
+        <template #sub-title>
+          <p>请仅通过安全渠道核对以下信息；机构首次登录后应立即修改密码。</p>
+        </template>
+      </el-result>
+      <el-descriptions v-if="accountResult" :column="1" border>
+        <el-descriptions-item label="用户名">{{ accountResult.account?.username || accountResult.username }}</el-descriptions-item>
+        <el-descriptions-item label="初始密码">{{ accountResult.account?.initial_password || accountResult.account?.password || createdPassword }}</el-descriptions-item>
+        <el-descriptions-item label="机构邮箱">{{ accountResult.account?.email || institutionForm.email }}</el-descriptions-item>
+        <el-descriptions-item label="邮件投递">
+          <el-tag :type="accountResult.delivery?.status === 'sent' || accountResult.delivery?.delivered ? 'success' : 'warning'">
+            {{ accountResult.delivery?.message || (accountResult.delivery?.status === 'sent' || accountResult.delivery?.delivered ? "已发送" : "等待投递或需人工核对") }}
+          </el-tag>
+        </el-descriptions-item>
+      </el-descriptions>
+      <template #footer><el-button type="primary" @click="accountResultVisible = false">我已安全保存</el-button></template>
+    </el-dialog>
+
+    <el-drawer v-model="accountDrawerVisible" :title="`${accountInstitution?.branch_name || '分院'} · 机构账号`" size="min(620px, 94vw)">
+      <div v-loading="accountLoading" class="account-management">
+        <el-alert
+          title="临时密码仅在创建或重置时展示一次；邮件发送成功后，服务端会立即清除队列中的加密凭据。"
+          type="info"
+          show-icon
+          :closable="false"
+        />
+        <el-descriptions v-if="institutionAccount" :column="1" border>
+          <el-descriptions-item label="登录用户名">{{ institutionAccount.username }}</el-descriptions-item>
+          <el-descriptions-item label="机构邮箱">{{ institutionAccount.email || accountDelivery?.recipient || "未绑定" }}</el-descriptions-item>
+          <el-descriptions-item label="首次改密提醒">
+            <el-tag :type="institutionAccount.must_change_initial_password ? 'warning' : 'success'">
+              {{ institutionAccount.must_change_initial_password ? "仍需修改初始密码" : "已完成" }}
+            </el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="邮件状态">
+            <el-tag :type="deliveryTagType(accountDelivery?.status)">{{ deliveryStatusLabel(accountDelivery?.status) }}</el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="发送次数">{{ accountDelivery?.attempts ?? 0 }}</el-descriptions-item>
+          <el-descriptions-item label="发送时间">{{ accountDelivery?.sent_at || "尚未发送" }}</el-descriptions-item>
+          <el-descriptions-item label="敏感凭据清除">{{ accountDelivery?.sensitive_payload_cleared_at || "发送前暂存为服务器密钥加密内容" }}</el-descriptions-item>
+        </el-descriptions>
+        <el-empty v-else-if="!accountLoading" description="该分院尚未配置机构账号" />
+        <div v-if="institutionAccount" class="drawer-toolbar account-actions">
+          <el-button :loading="accountLoading" @click="loadAccount">刷新状态</el-button>
+          <el-button
+            :disabled="!accountDelivery || ['sent', 'sending'].includes(accountDelivery.status)"
+            :loading="accountRetrying"
+            @click="retryAccountMail"
+          >重试发送</el-button>
+          <el-button type="primary" @click="openAccountReset">重置密码并重新发送</el-button>
+        </div>
+      </div>
+    </el-drawer>
+
+    <el-dialog v-model="accountResetVisible" title="重置机构账号凭据" width="min(560px, 92vw)" :close-on-click-modal="false">
+      <el-alert title="重置会让现有令牌立即失效，并永久停止旧的未发送凭据邮件。" type="warning" show-icon :closable="false" />
+      <el-form label-position="top" style="margin-top:16px">
+        <el-form-item label="机构邮箱" required><el-input v-model.trim="accountResetForm.email" type="email" maxlength="255" autocomplete="off" /></el-form-item>
+        <el-form-item label="新初始密码" required>
+          <el-input v-model="accountResetForm.password" show-password maxlength="128" autocomplete="new-password">
+            <template #append><el-button @click="generateResetPassword">生成强密码</el-button></template>
+          </el-input>
+        </el-form-item>
+      </el-form>
+      <template #footer><el-button @click="accountResetVisible=false">取消</el-button><el-button type="primary" :loading="accountResetting" @click="resetAccount">确认重置并发送</el-button></template>
     </el-dialog>
 
     <el-drawer v-model="packageDrawerVisible" :title="`${selectedInstitution?.name || ''} · 当前套餐`" size="min(760px, 94vw)">
@@ -77,25 +155,37 @@
 <script setup>
 import { onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { createAdminOrganization, createAdminInstitution, createAdminPackage, deactivateAdminInstitution, deactivateAdminPackage, deleteAdminImage, fetchAdminImages, fetchAdminInstitutions, fetchAdminOrganizations, fetchAdminPackages, reorderAdminImages, restoreAdminInstitution, updateAdminInstitution, updateAdminPackage, uploadAdminImage } from "../../api/admin";
+import { createAdminOrganization, createAdminInstitution, createAdminPackage, deactivateAdminInstitution, deactivateAdminPackage, deleteAdminImage, fetchAdminImages, fetchAdminInstitutionAccount, fetchAdminInstitutions, fetchAdminOrganizations, fetchAdminPackages, reorderAdminImages, resetAdminInstitutionAccount, restoreAdminInstitution, retryAdminInstitutionAccountNotification, updateAdminInstitution, updateAdminPackage, uploadAdminImage } from "../../api/admin";
 
 const items=ref([]),organizations=ref([]),loading=ref(false),saving=ref(false),errorMessage=ref(""),keyword=ref(""),statusFilter=ref("all"),dialogVisible=ref(false),organizationDialogVisible=ref(false),organizationSaving=ref(false);
+const accountResultVisible=ref(false),accountResult=ref(null),createdPassword=ref("");
+const accountDrawerVisible=ref(false),accountInstitution=ref(null),institutionAccount=ref(null),accountDelivery=ref(null),accountLoading=ref(false),accountRetrying=ref(false),accountResetVisible=ref(false),accountResetting=ref(false);
+const accountResetForm=reactive({email:"",password:""});
 const pagination=reactive({page:1,page_size:15,total:0,pages:0});
 const organizationForm=reactive({name:"",description:"",service_features:[]});
-const institutionForm=reactive({id:null,organization_id:null,branch_name:"",district:"",address:"",metro_info:"",consult_phone:"",ext:"",closed_day:"",description:""});
+const institutionForm=reactive({id:null,organization_id:null,branch_name:"",district:"",address:"",metro_info:"",consult_phone:"",ext:"",closed_day:"",description:"",username:"",password:"",email:""});
 const filteredItems=items;
 const packageDrawerVisible=ref(false),selectedInstitution=ref(null),packages=ref([]),packagesLoading=ref(false),packageDialogVisible=ref(false),packageSaving=ref(false); const packageForm=reactive({id:null,name:"",focus_area:"",gender_scope:"all",price:0,description:""});
 const packagePagination=reactive({page:1,page_size:15,total:0,pages:0});
 const packageDetailVisible=ref(false),selectedPackageDetail=ref(null);const packageTypeLabel=(value)=>({special:"专项套餐",combined:"组合套餐"}[value]||"体检套餐");const genderScopeLabel=(value)=>({all:"不限性别",male:"男性",female:"女性",female_all:"女性"}[value]||"不限性别");function openPackageDetail(item){selectedPackageDetail.value=item;packageDetailVisible.value=true;}
 const galleryDrawerVisible=ref(false),galleryInstitution=ref(null),adminImages=ref([]),galleryLoading=ref(false),galleryUploading=ref(false),galleryOrdering=ref(false),galleryOrderChanged=ref(false),galleryDragIndex=ref(null),galleryFileInput=ref(null);
-function resetInstitution(){Object.assign(institutionForm,{id:null,organization_id:organizations.value[0]?.id||null,branch_name:"",district:"",address:"",metro_info:"",consult_phone:"",ext:"",closed_day:"",description:""});}
+function resetInstitution(){Object.assign(institutionForm,{id:null,organization_id:organizations.value[0]?.id||null,branch_name:"",district:"",address:"",metro_info:"",consult_phone:"",ext:"",closed_day:"",description:"",username:"",password:"",email:""});}
 function openCreate(){resetInstitution();dialogVisible.value=true;}
-function openEdit(item){Object.keys(institutionForm).forEach((key)=>institutionForm[key]=item[key]??(key==="id"?null:""));dialogVisible.value=true;}
+function openEdit(item){resetInstitution();Object.keys(institutionForm).filter((key)=>!["username","password","email"].includes(key)).forEach((key)=>institutionForm[key]=item[key]??(key==="id"?null:""));dialogVisible.value=true;}
+function generatePassword(){const alphabet="ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%";const bytes=new Uint32Array(14);crypto.getRandomValues(bytes);institutionForm.password=Array.from(bytes,(value)=>alphabet[value%alphabet.length]).join("");}
+function deliveryStatusLabel(value){return {pending:"等待发送",sending:"正在发送",sent:"发送成功",failed:"发送失败",cancelled:"已停止"}[value]||"暂无发送记录";}
+function deliveryTagType(value){return value==="sent"?"success":value==="failed"?"danger":value==="sending"?"primary":"warning";}
+async function openAccount(item){accountInstitution.value=item;institutionAccount.value=null;accountDelivery.value=null;accountDrawerVisible.value=true;await loadAccount();}
+async function loadAccount(){if(!accountInstitution.value)return;accountLoading.value=true;try{const{data}=await fetchAdminInstitutionAccount(accountInstitution.value.id);institutionAccount.value=data.account||null;accountDelivery.value=data.delivery||null;}catch(error){institutionAccount.value=null;accountDelivery.value=null;ElMessage.error(error?.response?.data?.message||"机构账号信息加载失败");}finally{accountLoading.value=false;}}
+async function retryAccountMail(){if(!accountInstitution.value)return;accountRetrying.value=true;try{const{data}=await retryAdminInstitutionAccountNotification(accountInstitution.value.id);accountDelivery.value=data.delivery||accountDelivery.value;ElMessage.success(data.message||"账号通知已重新进入发送队列");await loadAccount();}catch(error){ElMessage.error(error?.response?.data?.message||"邮件重试失败");}finally{accountRetrying.value=false;}}
+function generateResetPassword(){const alphabet="ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%";const bytes=new Uint32Array(14);crypto.getRandomValues(bytes);accountResetForm.password=Array.from(bytes,(value)=>alphabet[value%alphabet.length]).join("");}
+function openAccountReset(){Object.assign(accountResetForm,{email:institutionAccount.value?.email||accountDelivery.value?.recipient||"",password:""});generateResetPassword();accountResetVisible.value=true;}
+async function resetAccount(){if(!accountInstitution.value||!accountResetForm.email.trim()||accountResetForm.password.length<8){ElMessage.error("请填写有效邮箱和至少 8 位的新初始密码");return;}accountResetting.value=true;try{const{data}=await resetAdminInstitutionAccount(accountInstitution.value.id,{email:accountResetForm.email.trim(),password:accountResetForm.password});createdPassword.value=accountResetForm.password;accountResult.value=data;accountResultVisible.value=true;accountResetVisible.value=false;ElMessage.success(data.message||"机构账号已重置并进入发送队列");await loadAccount();}catch(error){ElMessage.error(error?.response?.data?.message||"机构账号重置失败");}finally{accountResetting.value=false;}}
 async function load(){loading.value=true;try{const params={page:pagination.page,page_size:15};if(keyword.value.trim())params.keyword=keyword.value.trim();if(statusFilter.value!=="all")params.is_active=statusFilter.value==="active";const[a,b]=await Promise.all([fetchAdminInstitutions(params),fetchAdminOrganizations()]);items.value=a.data.items||[];Object.assign(pagination,a.data.pagination||{});organizations.value=b.data.items||[];}catch(error){errorMessage.value=error?.response?.data?.message||"机构列表加载失败";}finally{loading.value=false;}}
 async function applyFilters(){pagination.page=1;await load();}
 async function saveOrganization(){if(!organizationForm.name.trim())return ElMessage.error("请填写机构品牌名称");organizationSaving.value=true;try{await createAdminOrganization({name:organizationForm.name.trim(),description:organizationForm.description.trim()||null,service_features:organizationForm.service_features});Object.assign(organizationForm,{name:"",description:"",service_features:[]});organizationDialogVisible.value=false;ElMessage.success("机构主体已创建，现在可以添加分院");await load();}catch(error){ElMessage.error(error?.response?.data?.message||"机构主体创建失败");}finally{organizationSaving.value=false;}}
-async function saveInstitution(){if(!institutionForm.organization_id||!institutionForm.branch_name.trim()||!institutionForm.district.trim()||!institutionForm.address.trim()){ElMessage.error("请选择机构主体并填写分院、区域和地址");return;}saving.value=true;const payload=Object.fromEntries(Object.entries(institutionForm).filter(([key])=>key!=="id").map(([key,value])=>[key,typeof value==="string"?(value.trim()||null):value]));try{if(institutionForm.id)await updateAdminInstitution(institutionForm.id,payload);else await createAdminInstitution(payload);ElMessage.success(institutionForm.id?"分院已更新":"分院已创建");dialogVisible.value=false;await load();}catch(error){ElMessage.error(error?.response?.data?.message||"分院保存失败");}finally{saving.value=false;}}
-async function deactivate(item){try{await ElMessageBox.confirm("停用机构会禁止其机构账号登录，并使未使用邀请码失效；历史业务数据保留。","停用机构",{type:"warning",confirmButtonText:"确认停用",cancelButtonText:"取消"});await deactivateAdminInstitution(item.id);ElMessage.success("机构已停用");await load();}catch(error){if(error!=="cancel"&&error!=="close")ElMessage.error(error?.response?.data?.message||"停用失败");}}
+async function saveInstitution(){if(!institutionForm.organization_id||!institutionForm.branch_name.trim()||!institutionForm.district.trim()||!institutionForm.address.trim()){ElMessage.error("请选择机构主体并填写分院、区域和地址");return;}if(!institutionForm.id&&(!institutionForm.username.trim()||!institutionForm.email.trim()||institutionForm.password.length<8)){ElMessage.error("请填写机构用户名、邮箱和至少 8 位的初始密码");return;}saving.value=true;const excluded=new Set(["id",...(institutionForm.id?["username","password","email"]:[])]);const payload=Object.fromEntries(Object.entries(institutionForm).filter(([key])=>!excluded.has(key)).map(([key,value])=>[key,typeof value==="string"?(value.trim()||null):value]));try{if(institutionForm.id){await updateAdminInstitution(institutionForm.id,payload);ElMessage.success("分院已更新");}else{createdPassword.value=institutionForm.password;const{data}=await createAdminInstitution(payload);accountResult.value=data;accountResultVisible.value=true;ElMessage.success("分院及唯一机构账号已创建");}dialogVisible.value=false;await load();}catch(error){ElMessage.error(error?.response?.data?.message||"分院保存失败");}finally{saving.value=false;}}
+async function deactivate(item){try{await ElMessageBox.confirm("停用机构会禁止其机构账号登录；历史业务数据仍会保留。","停用机构",{type:"warning",confirmButtonText:"确认停用",cancelButtonText:"取消"});await deactivateAdminInstitution(item.id);ElMessage.success("机构已停用");await load();}catch(error){if(error!=="cancel"&&error!=="close")ElMessage.error(error?.response?.data?.message||"停用失败");}}
 async function restore(item){try{await restoreAdminInstitution(item.id);ElMessage.success("机构已恢复，原有机构账号可继续登录");await load();}catch(error){ElMessage.error(error?.response?.data?.message||"恢复失败");}}
 async function openPackages(item){selectedInstitution.value=item;packagePagination.page=1;packageDrawerVisible.value=true;await loadPackages();}
 async function loadPackages(){if(!selectedInstitution.value)return;packagesLoading.value=true;try{const{data}=await fetchAdminPackages(selectedInstitution.value.id,{page:packagePagination.page,page_size:15});packages.value=data.items||[];Object.assign(packagePagination,data.pagination||{});}catch(error){ElMessage.error(error?.response?.data?.message||"套餐加载失败");}finally{packagesLoading.value=false;}}

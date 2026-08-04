@@ -1,4 +1,4 @@
-export function buildRegistrationPayload(mode, form) {
+export function buildRegistrationPayload(_mode, form) {
   const payload = {
     username: String(form.username || "").trim(),
     password: form.password || "",
@@ -10,11 +10,6 @@ export function buildRegistrationPayload(mode, form) {
   const phone = String(form.phone || "").trim();
   payload.email = email;
   if (phone) payload.phone = phone;
-
-  if (mode === "staff") {
-    const inviteCode = String(form.invite_code || "").trim();
-    if (inviteCode) payload.invite_code = inviteCode;
-  }
 
   return payload;
 }

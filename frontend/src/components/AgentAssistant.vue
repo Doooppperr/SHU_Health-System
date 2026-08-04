@@ -84,7 +84,7 @@
 </template>
 
 <script setup>
-import { nextTick, onMounted, ref, watch } from "vue";
+import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 
 import { useAgentStore } from "../stores/agent";
 import { useAiChatStore } from "../stores/aiChat";
@@ -114,7 +114,12 @@ async function clearAgent() {
   await agent.clear();
 }
 
-onMounted(() => agent.initialize(auth.user?.id));
+watch(
+  () => auth.user?.id || null,
+  (userId) => agent.switchIdentity(userId),
+  { immediate: true }
+);
+onBeforeUnmount(() => agent.switchIdentity(null));
 watch(
   () => [agent.messages.length, agent.messages.at(-1)?.content, agent.pendingActions.length],
   scrollBottom

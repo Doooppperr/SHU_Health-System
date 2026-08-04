@@ -5,13 +5,17 @@ backend/.venv/
 *.py[cod]
 backend/.coverage
 backend/htmlcov/
+backend/evaluation_results/
 
 # Node
 frontend/node_modules/
 frontend/dist/
 frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/
 
 # Local runtime files
+/uploads/
 # Runtime uploads stay private/ignored. The audited demo-v8/v10 assets are the
 # only exception so a fresh clone matches the tracked demonstration database.
 backend/uploads/*

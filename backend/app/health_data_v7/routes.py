@@ -9,7 +9,7 @@ from flask import current_app, g, request, send_file
 from app.extensions import db
 from app.health_data_v7 import health_data_v7_bp
 from app.models import (
-    FriendRelation, HealthDomain, IndicatorDict, IndicatorDomainLink, Institution, InstitutionReport,
+    HealthDomain, IndicatorDict, IndicatorDomainLink, Institution, InstitutionReport,
     ReportAsset, ReportIndicator, SelfMeasurement, User,
 )
 from app.services.permissions import ROLE_ADMIN, ROLE_INSTITUTION_ADMIN, ROLE_USER, roles_required
@@ -140,13 +140,16 @@ def _track_reference(owner, definition, points):
 def _owner():
     raw = request.args.get("owner_id")
     if raw in {None, ""}: return g.current_user, None
-    try: owner_id = int(raw)
-    except (TypeError, ValueError): return None, ({"message": "成员标识不正确"}, 400)
-    if owner_id == g.current_user.id: return g.current_user, None
-    relation = FriendRelation.query.filter_by(user_id=g.current_user.id, friend_user_id=owner_id, auth_status=True).first()
-    owner = db.session.get(User, owner_id) if relation else None
-    if not owner or owner.role != "user": return None, ({"message": "尚未获得该亲友的健康资料授权"}, 403)
-    return owner, None
+    try:
+        owner_id = int(raw)
+    except (TypeError, ValueError):
+        return None, ({"message": "成员标识不正确"}, 400)
+    if owner_id != g.current_user.id:
+        return None, ({
+            "message": "健康资料仅展示当前有效账号；请先切换关联账号",
+            "code": "CURRENT_ACCOUNT_REQUIRED",
+        }, 403)
+    return g.current_user, None
 
 
 def _date_range():
@@ -239,6 +242,16 @@ def _detail_for(owner, health_data_id):
                   "branch_name": report.institution.branch_name} if report.institution else None
         package = {"id": report.package_id, "name": report.package.name} if report.package else None
         business_date = calendar_date_iso(report.exam_date)
+        review_trace = {
+            "upload_doctor_name": report.upload_doctor_name or "历史报告未记录",
+            "uploaded_at": (
+                report.submitted_for_review_at.isoformat()
+                if report.submitted_for_review_at else None
+            ),
+            "review_doctor_name": report.review_doctor_name or "历史报告未记录",
+            "reviewed_at": report.reviewed_at.isoformat() if report.reviewed_at else None,
+            "published_at": report.published_at.isoformat() if report.published_at else None,
+        }
     elif kind == "self" and value[0] == owner.id:
         day = value[1]
         start_at, end_at = _day_bounds(day)
@@ -251,6 +264,7 @@ def _detail_for(owner, health_data_id):
             link = next((item for item in row.indicator_dict.domain_links if item.is_primary), None)
             if link: sections[link.health_domain_id]["indicators"].append(row.to_dict())
         source = {"id": None, "name": "个人自测", "branch_name": None}; package = None; business_date = day.isoformat()
+        review_trace = None
     else:
         return None
     rendered = []
@@ -259,7 +273,8 @@ def _detail_for(owner, health_data_id):
         rendered.append({"domain": domain.to_dict(), **values})
     rendered.sort(key=lambda row: (row["domain"]["sort_order"], row["domain"]["id"]))
     return {"health_data_id": health_data_id, "source_type": kind, "business_date": business_date,
-            "source": source, "package": package, "sections": rendered}
+            "source": source, "package": package, "review_trace": review_trace,
+            "sections": rendered}
 
 
 @health_data_v7_bp.get("/health-data/<health_data_id>")
@@ -301,6 +316,7 @@ def health_trends(domain_id):
         return {"message": "趋势来源筛选不正确"}, 400
     institution_id = request.args.get("institution_id", type=int)
     items = []
+    qualitative_series = []
     available_institutions = {}
     # Only select comparable scalar columns. Selecting the complete report with
     # DISTINCT also selects its JSON diagnostics column, which openGauss cannot compare.
@@ -324,6 +340,7 @@ def health_trends(domain_id):
         definition = link.indicator
         daily_self = {}
         daily_reports = defaultdict(list)
+        qualitative_points = []
         reports = db.session.query(ReportIndicator, InstitutionReport).join(InstitutionReport).filter(
             InstitutionReport.matched_user_id == owner.id, InstitutionReport.status == "published",
             ReportIndicator.indicator_dict_id == definition.id, ReportIndicator.display_domain_id == domain.id)
@@ -331,20 +348,29 @@ def health_trends(domain_id):
         if end: reports = reports.filter(InstitutionReport.exam_date <= end)
         if institution_id: reports = reports.filter(InstitutionReport.institution_id == institution_id)
         for result, report in reports.order_by(InstitutionReport.exam_date, InstitutionReport.published_at, InstitutionReport.id).all():
-            try: numeric = float(result.value)
-            except (TypeError, ValueError): continue
             result_payload = result.to_dict()
             source = {"type": "institution", "id": report.institution_id,
                       "name": report.institution.name, "branch_name": report.institution.branch_name}
             available_institutions[report.institution_id] = source
             day = calendar_date_iso(report.exam_date)
-            daily_reports[day].append({"date": day, "value": numeric,
+            common_point = {"date": day,
                 "unit": result.normalized_unit or definition.unit, "reference": result.reference_text,
                 "is_abnormal": result_payload["is_abnormal"],
                 "result_status": result_payload["result_status"],
                 "indicator_code": definition.code,
                 "health_data_id": report_key(report), "source": source,
-                "published_at": report.published_at.isoformat() if report.published_at else None})
+                "published_at": report.published_at.isoformat() if report.published_at else None}
+            try:
+                numeric = float(result.value)
+            except (TypeError, ValueError):
+                if source_type in {"all", "institution"}:
+                    qualitative_points.append({
+                        **common_point,
+                        "value": result.value,
+                    })
+                continue
+            daily_reports[day].append({"date": day, "value": numeric,
+                **{key: value for key, value in common_point.items() if key not in {"date", "value"}}})
         if not institution_id and source_type in {"all", "self"}:
             measurements = SelfMeasurement.query.filter_by(user_id=owner.id, indicator_dict_id=definition.id)
             if start: measurements = measurements.filter(SelfMeasurement.measured_at >= _day_bounds(start)[0])
@@ -377,8 +403,23 @@ def health_trends(domain_id):
             items.append({"indicator": definition.to_dict(), "points": points,
                           "reference": _track_reference(owner, definition, points),
                           "summary": {"latest": points[-1]["value"],
-                                      "change": points[-1]["value"] - previous if previous is not None else None,
-                                      "count": len(points)}})
+                                       "change": points[-1]["value"] - previous if previous is not None else None,
+                                       "count": len(points)}})
+        if qualitative_points:
+            qualitative_series.append({
+                "indicator": definition.to_dict(),
+                "points": qualitative_points,
+                "reference": {
+                    "kind": "report_text",
+                    "label": "机构报告定性参考",
+                    "context": "定性结果按机构报告原文展示",
+                    "varies": len({
+                        point.get("reference")
+                        for point in qualitative_points
+                        if point.get("reference")
+                    }) > 1,
+                },
+            })
     source_options = [
         {"value": "all", "label": "全部来源"},
         {"value": "self", "label": "个人日常测量"},
@@ -388,4 +429,11 @@ def health_trends(domain_id):
     ]
     return {"owner": owner.friend_identity_dict(), "domain": domain.to_dict(),
             "series_by_indicator": items, "source_options": source_options,
-            "abnormal_count": sum(1 for item in items for point in item["points"] if point.get("is_abnormal"))}, 200
+            "qualitative_series_by_indicator": qualitative_series,
+            "abnormal_count": sum(
+                1
+                for item in [*items, *qualitative_series]
+                for point in item["points"]
+                if point.get("is_abnormal")
+                or point.get("result_status") in {"high", "low", "positive", "abnormal"}
+            )}, 200

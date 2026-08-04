@@ -25,16 +25,29 @@ from app.services.report_conclusions import (
     ASSET_FINDINGS,
     normalize_report_records,
 )
+from app.services.password_challenges import (
+    consume_password_challenges,
+    increment_user_security_epochs,
+    revoke_account_security_artifacts,
+)
 from app.models import (
     Appointment,
+    AppointmentComplaint,
     AppointmentCapacitySlot,
     AppointmentEvent,
     AvailabilityNotificationEvent,
     BookingGroup,
+    BookingParticipantAuthorization,
+    BookingParticipantToken,
     Comment,
+    CommentAppeal,
+    CommentSanction,
+    ComplaintEvent,
+    ComplaintMessage,
     FriendRelation,
     HealthDomain,
     Institution,
+    InstitutionAudienceInsightCache,
     InstitutionImage,
     InstitutionInvite,
     InstitutionReport,
@@ -62,16 +75,21 @@ from app.models import (
 
 
 DEMO_PASSWORD = "Shuhealthdoc！"
-DEMO_DATASET_VERSION = 10
-DEMO_USERNAMES = tuple(f"test{index}" for index in range(1, 6))
-DEMO_STAFF_USERNAMES = (
-    *(f"institution{institution}_staff{staff}" for institution in range(1, 4) for staff in range(1, 3)),
-    *(f"institution{institution}_staff1" for institution in range(4, 16)),
+DEMO_DATASET_VERSION = 12
+DEMO_UPLOAD_DOCTOR_NAME = "演示医生甲（虚构）"
+DEMO_REVIEW_DOCTOR_NAME = "演示医生乙（虚构）"
+DEMO_USERNAMES = tuple(f"test{index}" for index in range(1, 7))
+DEMO_PROFILE_USERNAMES = tuple(f"test{index}" for index in range(1, 6))
+DEMO_STAFF_USERNAMES = tuple(
+    f"institution{institution}_staff1" for institution in range(1, 16)
 )
+LEGACY_EXTRA_STAFF_USERNAMES = {
+    f"institution{institution}_staff2" for institution in range(1, 4)
+}
 REQUIRED_DEMO_USERNAMES = {"demo_admin", *DEMO_USERNAMES, *DEMO_STAFF_USERNAMES}
 LEGACY_DEMO_USERNAMES = {
-    "demo_admin", *DEMO_USERNAMES,
-    *(f"institution{institution}_staff{staff}" for institution in range(1, 4) for staff in range(1, 3)),
+    "demo_admin", *DEMO_PROFILE_USERNAMES,
+    *(f"institution{institution}_staff1" for institution in range(1, 4)),
 }
 
 
@@ -254,7 +272,7 @@ def _demo_branch(name, branch_name, district, address, phone, packages):
 
 INSTITUTION_SCENARIOS += (
     _demo_branch("澄心健康管理中心", "浦东陆家嘴院区", "浦东新区", "浦东南路855号健康中心4层", "021-58881201", (
-        _demo_package("陆家嘴职场轻体检", "基础体征与代谢风险筛查", "599.00", ("basic", "metabolic"), "工作节奏快、希望半日完成基础筛查的职场人"),
+        _demo_package("陆家嘴职场轻体检", "基础体征与代谢风险筛查", "599.00", ("basic", "metabolic", "hematology"), "工作节奏快、希望半日完成基础筛查的职场人"),
         _demo_package("陆家嘴商务人士心血管筛查", "心脑血管与循环风险评估", "899.00", ("cardio",), "长期出差、应酬或关注循环风险的商务人士"),
     )),
     _demo_branch("澄心健康管理中心", "闵行虹桥院区", "闵行区", "申长路988号虹桥健康楼2层", "021-54881102", (
@@ -281,7 +299,7 @@ INSTITUTION_SCENARIOS += (
         _demo_package("张江女性轻体检", "女性基础与消化健康筛查", "699.00", ("basic", "digestive", "other"), "希望半日完成基础检查的女性职场人"),
     )),
     _demo_branch("澄心健康管理中心", "黄浦人民广场院区", "黄浦区", "南京西路288号健康管理楼6层", "021-63221109", (
-        _demo_package("人民广场都市综合体检", "中心城区职场人年度综合筛查", "799.00", ("basic", "cardio", "metabolic", "digestive"), "在中心城区工作、希望便捷完成年度体检的人群"),
+        _demo_package("人民广场都市综合体检", "中心城区职场人年度综合筛查", "799.00", ("basic", "cardio", "metabolic", "digestive", "hematology"), "在中心城区工作、希望便捷完成年度体检的人群"),
     )),
     _demo_branch("仁序职业健康与综合体检中心", "松江院区", "松江区", "新松江路925号仁序健康楼", "021-57701110", (
         _demo_package("职场年度标准体检", "职场人年度多领域筛查", "699.00", ("basic", "cardio", "metabolic", "digestive"), "18—60岁常规职场体检人群"),
@@ -310,6 +328,7 @@ PROFILE_HEALTH_IDS = {
     "test3": "HID-7N2P6X8D",
     "test4": "HID-4V8J3L5F",
     "test5": "HID-9C6H2M7K",
+    "test6": "HID-3F7Q9R2N",
 }
 
 
@@ -548,7 +567,6 @@ def _apply_institution_scenario(institution: Institution, scenario: dict) -> Non
     institution.ext = None
     institution.logo_url = None
     institution.notification_enabled = True
-    institution.is_active = True
 
 
 def _ensure_organizations() -> dict[str, Organization]:
@@ -556,13 +574,12 @@ def _ensure_organizations() -> dict[str, Organization]:
     for scenario in ORGANIZATION_SCENARIOS:
         item = rows.get(scenario["name"])
         if item is None:
-            item = Organization(name=scenario["name"])
+            item = Organization(name=scenario["name"], is_active=True)
             db.session.add(item)
             db.session.flush()
             rows[item.name] = item
         item.description = scenario["description"]
         item.service_features = scenario["service_features"]
-        item.is_active = True
     return rows
 
 
@@ -638,6 +655,7 @@ def ensure_v7_demo_accounts(*, commit: bool = True) -> bool:
     elif demo_admin.email != shared_email:
         demo_admin.email = shared_email
         demo_admin.email_verified_at = now
+        consume_password_challenges(demo_admin.id, consumed_at=now)
         changed = True
     for index, username in enumerate(DEMO_USERNAMES, start=1):
         existing = User.query.filter_by(username=username).first()
@@ -645,9 +663,13 @@ def ensure_v7_demo_accounts(*, commit: bool = True) -> bool:
             if existing.email != shared_email:
                 existing.email = shared_email
                 existing.email_verified_at = now
+                consume_password_challenges(existing.id, consumed_at=now)
                 changed = True
             continue
-        name, birth_date, gender, allergy, history = PROFILE_SCENARIOS[username]
+        scenario = PROFILE_SCENARIOS.get(username)
+        name, birth_date, gender, allergy, history = (
+            scenario if scenario else (None, None, None, None, None)
+        )
         user = User(
             username=username,
             role="user",
@@ -655,6 +677,7 @@ def ensure_v7_demo_accounts(*, commit: bool = True) -> bool:
             real_name=name,
             birth_date=birth_date,
             gender=gender,
+            identity_completed_at=now if scenario else None,
             allergy_history=allergy,
             medical_history=history,
             email=shared_email,
@@ -664,25 +687,37 @@ def ensure_v7_demo_accounts(*, commit: bool = True) -> bool:
         user.set_password(DEMO_PASSWORD)
         db.session.add(user); changed = True
     for institution_index, institution in enumerate(institutions, start=1):
-        staff_indexes = (1, 2) if institution_index <= 3 else (1,)
-        for staff_index in staff_indexes:
-            username = f"institution{institution_index}_staff{staff_index}"
-            existing = User.query.filter_by(username=username).first()
-            if existing is not None:
-                if existing.email != shared_email:
-                    existing.email = shared_email
-                    existing.email_verified_at = now
-                    changed = True
-                continue
-            user = User(
-                username=username,
-                role="institution_admin",
-                managed_institution_id=institution.id,
-                email=shared_email,
-                email_verified_at=now,
-            )
-            user.set_password(DEMO_PASSWORD)
-            db.session.add(user); changed = True
+        username = f"institution{institution_index}_staff1"
+        existing = User.query.filter_by(username=username).first()
+        if existing is not None:
+            if existing.email != shared_email:
+                existing.email = shared_email
+                existing.email_verified_at = now
+                consume_password_challenges(existing.id, consumed_at=now)
+                changed = True
+            continue
+        user = User(
+            username=username,
+            role="institution_admin",
+            managed_institution_id=institution.id,
+            email=shared_email,
+            email_verified_at=now,
+        )
+        user.set_password(DEMO_PASSWORD)
+        db.session.add(user); changed = True
+    duplicate_security_ids = []
+    for username in sorted(LEGACY_EXTRA_STAFF_USERNAMES):
+        duplicate = User.query.filter_by(username=username).first()
+        if duplicate is None:
+            continue
+        if duplicate.is_active or duplicate.managed_institution_id is not None:
+            duplicate.is_active = False
+            duplicate.managed_institution_id = None
+            duplicate_security_ids.append(duplicate.id)
+            changed = True
+    increment_user_security_epochs(duplicate_security_ids)
+    for duplicate_id in sorted(duplicate_security_ids):
+        revoke_account_security_artifacts(duplicate_id)
     if commit:
         db.session.commit()
     else:
@@ -691,11 +726,14 @@ def ensure_v7_demo_accounts(*, commit: bool = True) -> bool:
 
 
 def _update_demo_profiles() -> None:
+    completed_at = datetime.now(timezone.utc)
     for username, (name, birth_date, gender, allergy, history) in PROFILE_SCENARIOS.items():
         user = User.query.filter_by(username=username).one()
         user.real_name = name
         user.birth_date = birth_date
         user.gender = gender
+        user.identity_completed_at = user.identity_completed_at or completed_at
+        user.allow_health_id_proxy_booking = username != "test5"
         user.allergy_history = allergy
         user.medical_history = history
 
@@ -725,16 +763,14 @@ def _seed_measurements(users: dict[str, User], indicators: dict, today: date) ->
             "HR": [(14, 74), (2, 72)],
         },
         "test3": {
-            "HEIGHT": [(180, 169.0)],
             "WEIGHT": [(28, 70.8), (14, 70.5), (2, 70.2)],
             "HR": [(28, 79), (21, 78), (14, 76), (7, 77), (1, 75)],
             "SPO2": [(14, 97), (7, 98), (1, 97)],
         },
         "test4": {
-            "HEIGHT": [(180, 166.0)],
-            "WEIGHT": [(35, 58.9), (28, 58.7), (21, 58.5), (14, 58.4), (7, 58.2)],
             "HR": [(21, 77), (14, 75), (7, 74), (1, 73)],
             "FBG": [(21, 5.0), (7, 4.9)],
+            "SPO2": [(28, 97), (14, 98), (7, 97), (1, 98)],
         },
         "test5": {
             "HEIGHT": [(180, 172.0)],
@@ -875,6 +911,94 @@ def _create_booking_group(
     return group, appointments
 
 
+def _seed_v12_mixed_booking_authorizations(
+    *,
+    group: BookingGroup,
+    appointments: list[Appointment],
+    users: dict[str, User],
+    now: datetime,
+) -> None:
+    """Attach self, linked-account and health-code evidence to one group.
+
+    The extra expired and revoked rows are deliberate negative fixtures for
+    token-state handling; no raw participant token is stored in the demo.
+    """
+
+    appointments_by_user_id = {row.user_id: row for row in appointments}
+    booker = users["test1"]
+    linked_subject = users["test2"]
+    token_subject = users["test3"]
+    relation = FriendRelation.query.filter_by(
+        pair_key=FriendRelation.canonical_pair_key(
+            booker.id,
+            linked_subject.id,
+        ),
+        status="active",
+    ).one()
+    consumed_token = BookingParticipantToken(
+        token_hash=hashlib.sha256(
+            b"healthdoc-demo-v12-consumed-participant-token"
+        ).hexdigest(),
+        booker_user_id=booker.id,
+        subject_user_id=token_subject.id,
+        authorization_version=token_subject.booking_authorization_version,
+        expires_at=now + timedelta(days=1),
+        consumed_at=group.created_at,
+        created_at=group.created_at - timedelta(minutes=5),
+    )
+    db.session.add(consumed_token)
+    db.session.flush()
+    db.session.add_all([
+        BookingParticipantAuthorization(
+            appointment_id=appointments_by_user_id[booker.id].id,
+            booker_user_id=booker.id,
+            subject_user_id=booker.id,
+            participant_type="self",
+            authorization_version=booker.booking_authorization_version,
+            created_at=group.created_at,
+        ),
+        BookingParticipantAuthorization(
+            appointment_id=appointments_by_user_id[linked_subject.id].id,
+            booker_user_id=booker.id,
+            subject_user_id=linked_subject.id,
+            participant_type="linked_account",
+            friend_relation_id=relation.id,
+            authorization_version=relation.booking_authorization_version,
+            created_at=group.created_at,
+        ),
+        BookingParticipantAuthorization(
+            appointment_id=appointments_by_user_id[token_subject.id].id,
+            booker_user_id=booker.id,
+            subject_user_id=token_subject.id,
+            participant_type="health_code_token",
+            authorization_version=consumed_token.authorization_version,
+            participant_token_id=consumed_token.id,
+            created_at=group.created_at,
+        ),
+        BookingParticipantToken(
+            token_hash=hashlib.sha256(
+                b"healthdoc-demo-v12-expired-participant-token"
+            ).hexdigest(),
+            booker_user_id=users["test2"].id,
+            subject_user_id=users["test4"].id,
+            authorization_version=users["test4"].booking_authorization_version,
+            expires_at=now - timedelta(days=1),
+            created_at=now - timedelta(days=3),
+        ),
+        BookingParticipantToken(
+            token_hash=hashlib.sha256(
+                b"healthdoc-demo-v12-revoked-participant-token"
+            ).hexdigest(),
+            booker_user_id=users["test4"].id,
+            subject_user_id=users["test5"].id,
+            authorization_version=users["test5"].booking_authorization_version,
+            expires_at=now + timedelta(days=1),
+            revoked_at=now - timedelta(hours=8),
+            created_at=now - timedelta(days=2),
+        ),
+    ])
+
+
 def _reference_text(indicator) -> str | None:
     if indicator.reference_low is None and indicator.reference_high is None:
         return None
@@ -901,6 +1025,12 @@ def _create_report(
         appointment_id=appointment.id,
         matched_user_id=appointment.user_id,
         status="published",
+        upload_doctor_name=DEMO_UPLOAD_DOCTOR_NAME,
+        review_doctor_name=DEMO_REVIEW_DOCTOR_NAME,
+        submitted_for_review_at=appointment.attended_at + timedelta(hours=5, minutes=30),
+        reviewed_by_user_id=staff.id,
+        reviewed_by_username_snapshot=staff.username,
+        reviewed_at=appointment.attended_at + timedelta(hours=6),
         locked_at=appointment.attended_at + timedelta(hours=6),
         submitted_at=appointment.fulfilled_at,
         published_at=appointment.fulfilled_at,
@@ -1014,6 +1144,12 @@ def _create_imported_historical_report(
         appointment_id=None,
         matched_user_id=user.id,
         status="published",
+        upload_doctor_name=DEMO_UPLOAD_DOCTOR_NAME,
+        review_doctor_name=DEMO_REVIEW_DOCTOR_NAME,
+        submitted_for_review_at=published_at - timedelta(hours=1, minutes=30),
+        reviewed_by_user_id=staff.id,
+        reviewed_by_username_snapshot=staff.username,
+        reviewed_at=published_at - timedelta(hours=1),
         ocr_diagnostics={"import_kind": "historical_paper_archive", "raw_text_retained": False},
         locked_at=published_at - timedelta(hours=1),
         submitted_at=published_at,
@@ -1059,6 +1195,50 @@ def _create_imported_historical_report(
     return report
 
 
+def _create_review_workflow_report(
+    *, appointment: Appointment, staff: User, status: str, now: datetime,
+) -> InstitutionReport:
+    report = InstitutionReport(
+        institution_id=appointment.institution_id,
+        created_by_user_id=staff.id,
+        created_by_username_snapshot=staff.username,
+        subject_name_snapshot=appointment.user_name_snapshot,
+        subject_health_id=appointment.user_health_id_snapshot,
+        exam_date=appointment.appointment_date,
+        package_id=appointment.package_id,
+        package_version_id=appointment.package_version_id,
+        appointment_id=appointment.id,
+        matched_user_id=appointment.user_id,
+        status=status,
+        upload_doctor_name=(
+            DEMO_UPLOAD_DOCTOR_NAME
+            if status == "pending_review"
+            else None
+        ),
+        submitted_for_review_at=now - timedelta(hours=2) if status == "pending_review" else None,
+        created_at=appointment.attended_at or now - timedelta(hours=4),
+    )
+    db.session.add(report)
+    db.session.flush()
+    domain_links = list(appointment.package_version.domains) if appointment.package_version else []
+    for order, link in enumerate(domain_links):
+        if status == "draft" and order > 0:
+            break
+        report.text_results.append(ReportTextResult(
+            health_domain_id=link.health_domain_id,
+            title=f"{link.domain.name}检查结论",
+            body=(
+                "初步结果已完成录入，等待复核医生结合原始检查资料确认。"
+                if status == "pending_review"
+                else "草稿结论，尚待上传医生继续完善。"
+            ),
+            source_snapshot="机构医生初步结论",
+            sort_order=order,
+            created_by_user_id=staff.id,
+        ))
+    return report
+
+
 def _add_demo_report_asset(report, staff, domain, sequence):
     # These twelve comprehensive-report assets complement the three legacy
     # direction-specific assets (thyroid, abdomen and chest) so the complete
@@ -1079,17 +1259,33 @@ def _add_demo_report_asset(report, staff, domain, sequence):
     )
     if sequence >= len(slot_plan):
         return
-    for asset_order, asset_code in enumerate(slot_plan[sequence]):
+    allowed_domain_ids = {
+        row.health_domain_id
+        for row in report.package_version.domains
+    }
+    compatible_codes = []
+    for asset_code in slot_plan[sequence]:
         asset_type = ReportAssetType.query.filter_by(code=asset_code, is_active=True).first()
         if asset_type is None:
             raise DemoResetSafetyError(f"缺少附件槽位定义：{asset_code}")
-        if not PackageVersionDomain.query.filter_by(
-            package_version_id=report.package_version_id,
-            health_domain_id=asset_type.health_domain_id,
-        ).first():
-            raise DemoResetSafetyError(
-                f"附件槽位 {asset_code} 不属于报告 {report.id} 的套餐版本"
-            )
+        if asset_type.health_domain_id in allowed_domain_ids:
+            compatible_codes.append(asset_code)
+    if not compatible_codes and slot_plan[sequence]:
+        fallback = ReportAssetType.query.filter(
+            ReportAssetType.is_active.is_(True),
+            ReportAssetType.health_domain_id.in_(allowed_domain_ids),
+            ReportAssetType.code.in_(tuple(CURATED_ASSET_SOURCES)),
+        ).order_by(
+            ReportAssetType.sort_order,
+            ReportAssetType.id,
+        ).first()
+        if fallback is not None:
+            compatible_codes.append(fallback.code)
+    for asset_order, asset_code in enumerate(compatible_codes):
+        asset_type = ReportAssetType.query.filter_by(
+            code=asset_code,
+            is_active=True,
+        ).one()
         key = (
             f"health-assets/demo-v8/report-{report.id}-{domain.code}.png"
             if asset_order == 0
@@ -1267,7 +1463,9 @@ def _expand_v8_demo_data(users, institutions, packages, indicators, domains, tod
         while InstitutionReport.query.join(Institution).filter(Institution.organization_id == organization.id).count() < target:
             branch = branches[sequence % len(branches)]
             branch_index = institutions.index(branch) + 1
-            user = users[DEMO_USERNAMES[sequence % len(DEMO_USERNAMES)]]
+            user = users[
+                DEMO_PROFILE_USERNAMES[sequence % len(DEMO_PROFILE_USERNAMES)]
+            ]
             package = package_by_branch[branch_index]
             version = _package_version(package)
             domain = sorted(version.domains, key=lambda item: item.sort_order)[0].domain
@@ -1292,8 +1490,15 @@ def _expand_v8_demo_data(users, institutions, packages, indicators, domains, tod
             party_size = 2 if appointments_left > groups_left else 1
             branch = branches[group_sequence % len(branches)]
             branch_index = institutions.index(branch) + 1
-            participant_start = group_sequence % len(DEMO_USERNAMES)
-            participants = [users[DEMO_USERNAMES[(participant_start + offset) % len(DEMO_USERNAMES)]] for offset in range(party_size)]
+            participant_start = group_sequence % len(DEMO_PROFILE_USERNAMES)
+            participants = [
+                users[
+                    DEMO_PROFILE_USERNAMES[
+                        (participant_start + offset) % len(DEMO_PROFILE_USERNAMES)
+                    ]
+                ]
+                for offset in range(party_size)
+            ]
             _create_booking_group(
                 booker=participants[0], participants=participants, institution=branch,
                 package=package_by_branch[branch_index], appointment_date=today - timedelta(days=260 + group_sequence),
@@ -1305,8 +1510,15 @@ def _expand_v8_demo_data(users, institutions, packages, indicators, domains, tod
     measurement_sequence = 0
     measurement_indicators = ("WEIGHT", "HR", "FBG", "SPO2", "TEMP")
     while SelfMeasurement.query.count() < measurement_target:
-        username = DEMO_USERNAMES[measurement_sequence % len(DEMO_USERNAMES)]
+        username = DEMO_PROFILE_USERNAMES[
+            measurement_sequence % len(DEMO_PROFILE_USERNAMES)
+        ]
         code = measurement_indicators[measurement_sequence % len(measurement_indicators)]
+        # v12 acceptance fixtures: test4 has neither latest height nor weight,
+        # while test5 has height only. Keep filler rows from erasing those
+        # explicit health-code proxy-booking boundary cases.
+        if code == "WEIGHT" and username in {"test4", "test5"}:
+            code = "HR"
         base = {"WEIGHT": 65, "HR": 72, "FBG": 5.2, "SPO2": 98, "TEMP": 36.6}[code]
         _add_measurement(
             users[username], indicators[code], base + (measurement_sequence % 4) * 0.1,
@@ -1447,6 +1659,12 @@ def _expand_v10_test1(users, institutions, packages, indicators, domains, today,
             package_version_id=version.id,
             matched_user_id=user.id,
             status="published",
+            upload_doctor_name=DEMO_UPLOAD_DOCTOR_NAME,
+            review_doctor_name=DEMO_REVIEW_DOCTOR_NAME,
+            submitted_for_review_at=published_at - timedelta(hours=1),
+            reviewed_by_user_id=staff.id,
+            reviewed_by_username_snapshot=staff.username,
+            reviewed_at=published_at,
             ocr_diagnostics={
                 "import_kind": report_kind,
                 "sequence": sequence + 1,
@@ -1603,7 +1821,7 @@ def _normalize_report_business_records():
         for annotation in annotations:
             annotation.text = finding
 
-    reports = InstitutionReport.query.order_by(
+    reports = InstitutionReport.query.filter_by(status="published").order_by(
         InstitutionReport.matched_user_id,
         InstitutionReport.exam_date,
         InstitutionReport.id,
@@ -1615,7 +1833,7 @@ def _normalize_report_business_records():
     )
 
 
-def enrich_institution1_shared_archives() -> dict:
+def enrich_institution1_shared_archives(*, commit: bool = True) -> dict:
     """Replace sparse sibling-branch archives with package-aligned report facts."""
     staff = User.query.filter_by(username="institution1_staff1").one()
     current = staff.managed_institution
@@ -1646,8 +1864,10 @@ def enrich_institution1_shared_archives() -> dict:
 
     for sequence, report in enumerate(reports):
         for item in list(report.indicators):
+            report.indicators.remove(item)
             db.session.delete(item)
         for item in list(report.text_results):
+            report.text_results.remove(item)
             db.session.delete(item)
         db.session.flush()
         allowed_codes = [
@@ -1704,9 +1924,84 @@ def enrich_institution1_shared_archives() -> dict:
                     mapping_status="confirmed",
                 ))
                 used_codes.add(indicator_code)
+        # Some two-domain packages only contribute ten rows through the
+        # curated story profiles above.  Preserve the established acceptance
+        # quality floor by adding deterministic, package-aligned indicators
+        # from the same allowed domains until the archive has at least 15.
+        if len(used_codes) < 15:
+            allowed_domain_ids = {
+                domains[domain_code].id for domain_code in allowed_codes
+            }
+            for definition in sorted(indicators.values(), key=lambda row: row.id):
+                if definition.code in used_codes:
+                    continue
+                matching_link = next(
+                    (
+                        link
+                        for link in sorted(
+                            definition.domain_links,
+                            key=lambda link: (
+                                not link.is_primary,
+                                link.sort_order,
+                                link.id,
+                            ),
+                        )
+                        if link.health_domain_id in allowed_domain_ids
+                    ),
+                    None,
+                )
+                if matching_link is None:
+                    continue
+                value, explicit_status = _demo_indicator_value(
+                    definition,
+                    sequence,
+                    value_sequence=sequence % 16,
+                )
+                status = explicit_status or evaluate_result_status(
+                    definition,
+                    value,
+                    subject=report.owner,
+                    on_date=report.exam_date,
+                )
+                report.indicators.append(ReportIndicator(
+                    indicator_dict_id=definition.id,
+                    value=value,
+                    is_abnormal=status in {
+                        "high",
+                        "low",
+                        "positive",
+                        "abnormal",
+                    },
+                    result_status=status,
+                    input_source="manual",
+                    display_domain_id=matching_link.health_domain_id,
+                    original_name=definition.name,
+                    original_value=value,
+                    original_unit=definition.unit,
+                    normalized_unit=definition.unit,
+                    reference_text=_reference_text(definition),
+                    method_snapshot="机构常规检测",
+                    abnormal_flag={
+                        "high": "H",
+                        "low": "L",
+                        "positive": "+",
+                    }.get(status),
+                    mapping_confidence=Decimal("1.0000"),
+                    mapping_status="confirmed",
+                ))
+                used_codes.add(definition.code)
+                if len(used_codes) >= 15:
+                    break
+        if len(used_codes) < 15:
+            raise DemoResetSafetyError(
+                f"共享档案 {report.id} 的套餐内指标不足 15 项"
+            )
     db.session.flush()
     _normalize_report_business_records()
-    db.session.commit()
+    if commit:
+        db.session.commit()
+    else:
+        db.session.flush()
     return {
         "shared_reports": len(reports),
         "minimum_indicators": min(len(report.indicators) for report in reports),
@@ -1716,6 +2011,252 @@ def enrich_institution1_shared_archives() -> dict:
             for report in reports
         ),
     }
+
+
+def _seed_v12_governance_workflows(users, now):
+    awaiting = Appointment.query.filter_by(status="awaiting_report").order_by(
+        Appointment.appointment_date,
+        Appointment.id,
+    ).all()
+    for index, appointment in enumerate(awaiting[:2]):
+        if appointment.report is None:
+            _create_review_workflow_report(
+                appointment=appointment,
+                staff=appointment.institution.administrator,
+                status="pending_review" if index == 0 else "draft",
+                now=now,
+            )
+
+    states = (
+        ("test1", "institution_pending"),
+        ("test2", "user_confirmation"),
+        ("test3", "platform_pending"),
+        ("test4", "platform_processing"),
+        ("test5", "resolved"),
+    )
+    admin = users["demo_admin"]
+    for offset, (username, status) in enumerate(states, start=1):
+        user = users[username]
+        appointment = Appointment.query.filter_by(
+            user_id=user.id,
+            status="fulfilled",
+        ).order_by(Appointment.appointment_date.desc(), Appointment.id.desc()).first()
+        if appointment is None:
+            continue
+        created_at = now - timedelta(days=10 - offset)
+        item = AppointmentComplaint(
+            appointment_id=appointment.id,
+            institution_id=appointment.institution_id,
+            complainant_user_id=user.id,
+            complainant_username_snapshot=user.username,
+            category="service",
+            content=f"第六轮演示投诉：{username} 反馈接待和报告说明需要进一步沟通。",
+            status=status,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        db.session.add(item)
+        db.session.flush()
+        db.session.add(ComplaintEvent(
+            complaint_id=item.id,
+            event_type="created",
+            actor_user_id=user.id,
+            actor_role="user",
+            content=item.content,
+            created_at=created_at,
+        ))
+        db.session.add(ComplaintMessage(
+            complaint_id=item.id,
+            sender_user_id=user.id,
+            sender_role="user",
+            content=item.content,
+            created_at=created_at,
+        ))
+        if status in {"user_confirmation", "platform_pending", "platform_processing"}:
+            reply_at = created_at + timedelta(hours=6)
+            item.institution_reply = "机构已核对记录并提出改进方案，请用户确认。"
+            item.institution_replied_by_user_id = appointment.institution.administrator.id
+            item.institution_replied_at = reply_at
+            db.session.add(ComplaintEvent(
+                complaint_id=item.id,
+                event_type="institution_replied",
+                actor_user_id=appointment.institution.administrator.id,
+                actor_role="institution_admin",
+                content=item.institution_reply,
+                created_at=reply_at,
+            ))
+            db.session.add(ComplaintMessage(
+                complaint_id=item.id,
+                sender_user_id=appointment.institution.administrator.id,
+                sender_role="institution_admin",
+                content=item.institution_reply,
+                created_at=reply_at,
+            ))
+        if status in {"platform_pending", "platform_processing"}:
+            escalated_at = created_at + timedelta(days=1)
+            item.escalation_reason = "对机构说明仍有疑问，申请平台进一步核验。"
+            item.escalated_at = escalated_at
+            db.session.add(ComplaintEvent(
+                complaint_id=item.id,
+                event_type="escalated",
+                actor_user_id=user.id,
+                actor_role="user",
+                content=item.escalation_reason,
+                created_at=escalated_at,
+            ))
+            db.session.add(ComplaintMessage(
+                complaint_id=item.id,
+                sender_user_id=user.id,
+                sender_role="user",
+                content=item.escalation_reason,
+                created_at=escalated_at,
+            ))
+        if status == "platform_processing":
+            handled_at = created_at + timedelta(days=2)
+            item.handled_by_admin_id = admin.id
+            item.handled_at = handled_at
+            db.session.add(ComplaintEvent(
+                complaint_id=item.id,
+                event_type="admin_started",
+                actor_user_id=admin.id,
+                actor_role="admin",
+                content="平台管理员已开始核验服务记录。",
+                created_at=handled_at,
+            ))
+            admin_reply_at = handled_at + timedelta(hours=4)
+            item.admin_reply = "平台已核验预约和沟通记录，正在协调机构完成整改。"
+            db.session.add(ComplaintEvent(
+                complaint_id=item.id,
+                event_type="admin_replied",
+                actor_user_id=admin.id,
+                actor_role="admin",
+                content=item.admin_reply,
+                created_at=admin_reply_at,
+            ))
+            db.session.add(ComplaintMessage(
+                complaint_id=item.id,
+                sender_user_id=admin.id,
+                sender_role="admin",
+                content=item.admin_reply,
+                created_at=admin_reply_at,
+            ))
+        if status == "resolved":
+            item.institution_reply = "机构已完成回访与改进，用户确认问题解决。"
+            item.institution_replied_by_user_id = appointment.institution.administrator.id
+            item.institution_replied_at = created_at + timedelta(hours=4)
+            item.resolved_at = created_at + timedelta(days=1)
+            db.session.add(ComplaintEvent(
+                complaint_id=item.id,
+                event_type="institution_replied",
+                actor_user_id=appointment.institution.administrator.id,
+                actor_role="institution_admin",
+                content=item.institution_reply,
+                created_at=item.institution_replied_at,
+            ))
+            db.session.add(ComplaintMessage(
+                complaint_id=item.id,
+                sender_user_id=appointment.institution.administrator.id,
+                sender_role="institution_admin",
+                content=item.institution_reply,
+                created_at=item.institution_replied_at,
+            ))
+            db.session.add(ComplaintEvent(
+                complaint_id=item.id,
+                event_type="user_confirmed",
+                actor_user_id=user.id,
+                actor_role="user",
+                content="用户确认投诉已解决。",
+                created_at=item.resolved_at,
+            ))
+
+    comments = {
+        row.user.username: row
+        for row in Comment.query.order_by(Comment.id).all()
+        if row.user and row.user.username in {"test3", "test4", "test5"}
+    }
+    test5_comment = comments.get("test5")
+    if test5_comment:
+        test5_comment.hidden_reason = "演示恶意灌水治理流程"
+        test5_comment.moderated_by_user_id = admin.id
+        test5_comment.moderated_at = now - timedelta(days=2)
+        sanction = CommentSanction(
+            user_id=users["test5"].id,
+            source_comment_id=test5_comment.id,
+            reason="演示：短期重复灌水言论",
+            duration_days=7,
+            status="active",
+            starts_at=now - timedelta(days=2),
+            expires_at=now + timedelta(days=5),
+            created_by_admin_id=admin.id,
+            created_at=now - timedelta(days=2),
+        )
+        db.session.add(sanction)
+        db.session.flush()
+        db.session.add(CommentAppeal(
+            sanction_id=sanction.id,
+            user_id=users["test5"].id,
+            content="演示申诉：已理解社区规范，请平台复核。",
+            status="pending",
+            submitted_at=now - timedelta(days=1),
+        ))
+
+    test4_comment = comments.get("test4")
+    if test4_comment:
+        sanction = CommentSanction(
+            user_id=users["test4"].id,
+            source_comment_id=test4_comment.id,
+            reason="演示：疑似营销水军内容",
+            duration_days=30,
+            status="active",
+            starts_at=now - timedelta(days=5),
+            expires_at=now + timedelta(days=25),
+            created_by_admin_id=admin.id,
+            created_at=now - timedelta(days=5),
+        )
+        db.session.add(sanction)
+        db.session.flush()
+        db.session.add(CommentAppeal(
+            sanction_id=sanction.id,
+            user_id=users["test4"].id,
+            content="演示申诉：请求重新核验评价来源。",
+            status="rejected",
+            review_note="核验后维持原治理决定。",
+            reviewed_by_admin_id=admin.id,
+            submitted_at=now - timedelta(days=4),
+            reviewed_at=now - timedelta(days=3),
+        ))
+
+    test3_comment = comments.get("test3")
+    if test3_comment:
+        test3_comment.hidden_reason = "演示：包含需人工复核的不当引导内容"
+        test3_comment.moderated_by_user_id = admin.id
+        test3_comment.moderated_at = now - timedelta(days=12)
+        sanction = CommentSanction(
+            user_id=users["test3"].id,
+            source_comment_id=test3_comment.id,
+            reason="演示：严重不当言论，初始永久禁言",
+            duration_days=None,
+            status="lifted",
+            starts_at=now - timedelta(days=12),
+            expires_at=None,
+            created_by_admin_id=admin.id,
+            lifted_by_admin_id=admin.id,
+            lifted_at=now - timedelta(days=9),
+            lift_reason="申诉复核通过，解除永久禁言",
+            created_at=now - timedelta(days=12),
+        )
+        db.session.add(sanction)
+        db.session.flush()
+        db.session.add(CommentAppeal(
+            sanction_id=sanction.id,
+            user_id=users["test3"].id,
+            content="演示申诉：原内容表述不当，已补充事实材料并承诺遵守规范。",
+            status="approved",
+            review_note="补充材料成立，批准申诉并解除禁言。",
+            reviewed_by_admin_id=admin.id,
+            submitted_at=now - timedelta(days=11),
+            reviewed_at=now - timedelta(days=9),
+        ))
 
 
 def _seed_waitlists(users, institutions, packages, today, now):
@@ -1925,19 +2466,34 @@ def seed_v7_demo_experience(*, commit: bool = True) -> bool:
     _create_demo_images(institutions)
 
     relations = (
-        ("test1", "test2", "伴侣", True, True),
-        ("test1", "test3", "父亲", True, True),
-        ("test2", "test4", "姐妹", True, False),
-        ("test4", "test5", "朋友", False, False),
+        ("test1", "test2", "伴侣", "active"),
+        ("test2", "test4", "姐妹", "active"),
+        ("test4", "test5", "朋友", "active"),
+        ("test1", "test3", "待确认亲友", "pending"),
+        ("test3", "test5", "已撤销亲友", "revoked"),
     )
-    for viewer, owner, relation_name, health_auth, booking_auth in relations:
+    for viewer, owner, relation_name, status in relations:
+        active = status == "active"
         db.session.add(FriendRelation(
             user_id=users[viewer].id,
             friend_user_id=users[owner].id,
+            pair_key=FriendRelation.canonical_pair_key(
+                users[viewer].id,
+                users[owner].id,
+            ),
             relation_name=relation_name,
-            auth_status=health_auth,
-            booking_auth_status=booking_auth,
-            booking_authorized_at=now - timedelta(days=60) if booking_auth else None,
+            friend_relation_name="亲友" if active else None,
+            status=status,
+            auth_status=active,
+            reverse_auth_status=active,
+            booking_auth_status=active,
+            reverse_booking_auth_status=active,
+            booking_authorized_at=now - timedelta(days=60) if active else None,
+            reverse_booking_authorized_at=(
+                now - timedelta(days=60) if active else None
+            ),
+            accepted_at=now - timedelta(days=60) if active else None,
+            revoked_at=now - timedelta(days=20) if status == "revoked" else None,
             created_at=now - timedelta(days=90),
         ))
     _seed_measurements(users, indicators, today)
@@ -2056,10 +2612,16 @@ def seed_v7_demo_experience(*, commit: bool = True) -> bool:
         package=packages[_package_key(2, "糖脂代谢专项")], appointment_date=today - timedelta(days=1),
         status="awaiting_report", created_at=_utc(today - timedelta(days=8), 12),
     )
-    _create_booking_group(
+    mixed_group, mixed_appointments = _create_booking_group(
         booker=users["test1"], participants=[users["test1"], users["test2"], users["test3"]], institution=institutions[0],
         package=packages[_package_key(1, "家庭长辈健康评估")], appointment_date=today + timedelta(days=12),
         status="unfulfilled", created_at=now - timedelta(days=2),
+    )
+    _seed_v12_mixed_booking_authorizations(
+        group=mixed_group,
+        appointments=mixed_appointments,
+        users=users,
+        now=now,
     )
     _create_booking_group(
         booker=users["test2"], participants=[users["test2"]], institution=institutions[1],
@@ -2104,6 +2666,9 @@ def seed_v7_demo_experience(*, commit: bool = True) -> bool:
         Comment(user_id=users["test1"].id, institution_id=institutions[0].id, rating=5,
                 content="家庭预约流程清楚，陪父亲一起预约时能分别确认受检人。", is_visible=True,
                 created_at=now - timedelta(days=20)),
+        Comment(user_id=users["test3"].id, institution_id=institutions[0].id, rating=3,
+                content="预约说明已收到，建议进一步优化到检前提醒。", is_visible=False,
+                created_at=now - timedelta(days=18)),
         Comment(user_id=users["test4"].id, institution_id=institutions[1].id, rating=4,
                 content="报告按代谢和肝胆分区展示，图片批注也比较直观。", is_visible=True,
                 created_at=now - timedelta(days=15)),
@@ -2111,6 +2676,7 @@ def seed_v7_demo_experience(*, commit: bool = True) -> bool:
                 content="呼吸检查指引明确，希望后续增加更多可选时间段。", is_visible=False,
                 created_at=now - timedelta(days=5)),
     ])
+    _seed_v12_governance_workflows(users, now)
     _expand_v8_demo_data(users, institutions, packages, indicators, domains, today, now)
     _expand_v10_test1(users, institutions, packages, indicators, domains, today, now)
     db.session.flush()
@@ -2136,7 +2702,11 @@ def validate_reset_target() -> None:
     if missing:
         raise DemoResetSafetyError(f"missing fixed demo accounts: {', '.join(missing)}")
     default_admin_username = os.getenv("DEFAULT_ADMIN_USERNAME", "admin").strip() or "admin"
-    allowed_usernames = REQUIRED_DEMO_USERNAMES | {default_admin_username}
+    allowed_usernames = (
+        REQUIRED_DEMO_USERNAMES
+        | LEGACY_EXTRA_STAFF_USERNAMES
+        | {default_admin_username}
+    )
     unexpected_accounts = sorted(item.username for item in users if item.username not in allowed_usernames)
     if unexpected_accounts:
         raise DemoResetSafetyError(
@@ -2146,8 +2716,7 @@ def validate_reset_target() -> None:
     if len(institutions) not in {3, 15}:
         raise DemoResetSafetyError(f"expected three legacy branches or fifteen v8 branches, found {len(institutions)}")
     for institution_index, institution in enumerate(institutions, start=1):
-        expected = ({f"institution{institution_index}_staff1", f"institution{institution_index}_staff2"}
-                    if institution_index <= 3 else {f"institution{institution_index}_staff1"})
+        expected = {f"institution{institution_index}_staff1"}
         actual = {
             item.username for item in users
             if item.role == "institution_admin" and item.managed_institution_id == institution.id
@@ -2161,10 +2730,15 @@ def validate_reset_target() -> None:
 def _clear_demo_business_data() -> None:
     """Delete in FK-safe order while deliberately leaving every user row intact."""
     models = (
-        UserNotification, ReportAccessLog, ReportAssetAnnotation, ReportAsset, ReportTextResult, ReportIndicator,
+        UserNotification, InstitutionAudienceInsightCache, ComplaintMessage,
+        ComplaintEvent,
+        AppointmentComplaint, CommentAppeal, CommentSanction,
+        ReportAccessLog, ReportAssetAnnotation, ReportAsset, ReportTextResult, ReportIndicator,
         InstitutionReport, AppointmentEvent, NotificationDelivery, NotificationOutbox,
         AvailabilityNotificationEvent, WaitlistSubscriptionParticipant,
-        WaitlistSubscription, Appointment, BookingGroup, AppointmentCapacitySlot,
+        WaitlistSubscription, BookingParticipantAuthorization,
+        BookingParticipantToken, Appointment, BookingGroup,
+        AppointmentCapacitySlot,
         PackageChangeRequest, Comment, FriendRelation, SelfMeasurement,
         InstitutionInvite, InstitutionImage, PackageVersionAssetRequirement, PackageVersionDomain,
     )
@@ -2211,6 +2785,13 @@ def rebuild_v7_demo_data(*, commit: bool = True) -> dict:
         seeded = seed_v7_demo_experience(commit=False)
         if not seeded:
             raise RuntimeError("v8 demo experience was not rebuilt")
+        # The compact TESTING fixture intentionally stops at five reports for
+        # the first organization and may keep all of them in its first branch.
+        # Shared-archive enrichment is a full demo-dataset quality gate (where
+        # the organization has at least ten sibling-branch reports), so do not
+        # apply that production-only threshold to the compact unit-test reset.
+        if not current_app.config.get("TESTING", False):
+            enrich_institution1_shared_archives(commit=False)
         after = account_identity_snapshot()
         for username, snapshot in before.items():
             if after.get(username) != snapshot:

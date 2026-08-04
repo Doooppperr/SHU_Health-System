@@ -1,22 +1,50 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 
 from flask import g, request
 from sqlalchemy import update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import OperationalError
 
 from app.appointments import appointments_bp
 from app.extensions import db
 from app.models import Appointment, AppointmentEvent, Institution, Organization, Package
+from app.public_api.routes import public_package_payload
 from app.services.permissions import ROLE_USER, roles_required
-from app.services.notifications import enqueue_user_notification
+from app.services.user_access import complete_profile_required
 
 
 ACTIVE_CAPACITY_STATUSES = ("unfulfilled", "awaiting_report", "fulfilled")
 BUSINESS_TIMEZONE = ZoneInfo("Asia/Shanghai")
+
+
+def _cancel_appointment_cas(appointment_id, cancelled_at):
+    """Atomically release one appointment only while it is still pending.
+
+    Loading an appointment and assigning ``item.status`` is not sufficient:
+    an institution may confirm attendance on another connection between those
+    two operations.  Keep this small helper separate so every caller can make
+    the state transition before emitting events or releasing capacity.
+    """
+    try:
+        result = db.session.execute(
+            update(Appointment)
+            .where(
+                Appointment.id == appointment_id,
+                Appointment.status == "unfulfilled",
+            )
+            .values(
+                status="cancelled",
+                active_date_key=None,
+                cancelled_at=cancelled_at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+    except OperationalError:
+        db.session.rollback()
+        return False
+    return result.rowcount == 1
 
 
 def _business_today():
@@ -29,8 +57,14 @@ def _parse_bookable_date(raw_value):
     except (TypeError, ValueError):
         return None, ({"message": "appointment_date must be YYYY-MM-DD"}, 400)
     today = _business_today()
-    if appointment_date < today or appointment_date > today + timedelta(days=30):
-        return None, ({"message": "appointments are available from today through the next 30 days"}, 400)
+    if (
+        appointment_date < today + timedelta(days=1)
+        or appointment_date > today + timedelta(days=30)
+    ):
+        return None, ({
+            "message": "预约日期须为明天起30天内",
+            "code": "BOOKING_DATE_INVALID",
+        }, 400)
     return appointment_date, None
 
 
@@ -47,15 +81,38 @@ def _availability_payload(institution, appointment_date):
     limit = institution.daily_appointment_limit
     remaining = None if limit is None else max(limit - booked, 0)
     return {
-        "institution": institution.to_dict(),
+        "institution": {
+            "id": institution.id,
+            "organization_id": institution.organization_id,
+            "name": (
+                institution.organization.name
+                if institution.organization
+                else institution.name
+            ),
+            "branch_name": institution.branch_name,
+            "address": institution.address,
+            "district": institution.district,
+            "metro_info": institution.metro_info,
+            "consult_phone": institution.consult_phone,
+            "description": institution.description,
+            "cover_image_url": (
+                institution.images[0].image_url
+                if institution.images
+                else institution.logo_url
+            ),
+        },
         "appointment_date": appointment_date.isoformat(),
         "daily_limit": limit,
         "booked_count": booked,
         "remaining": remaining,
         "is_full": remaining == 0 if remaining is not None else False,
         "packages": [
-            item.to_dict()
-            for item in Package.query.filter_by(institution_id=institution.id, is_active=True)
+            public_package_payload(item)
+            for item in Package.query.filter(
+                Package.institution_id == institution.id,
+                Package.is_active.is_(True),
+                Package.current_version_id.is_not(None),
+            )
             .order_by(Package.id.asc()).all()
         ],
     }
@@ -67,7 +124,10 @@ def availability():
     appointment_date, error = _parse_bookable_date(request.args.get("appointment_date"))
     if error:
         return error
-    query = Institution.query.filter_by(is_active=True)
+    query = Institution.query.join(Institution.organization).filter(
+        Institution.is_active.is_(True),
+        Organization.is_active.is_(True),
+    )
     keyword = (request.args.get("q") or "").strip()
     if keyword:
         pattern = f"%{keyword}%"
@@ -106,136 +166,84 @@ def list_appointments():
 
 @appointments_bp.post("")
 @roles_required(ROLE_USER)
+@complete_profile_required
 def create_appointment():
+    """Compatibility adapter for the canonical v12 group-booking workflow.
+
+    The legacy endpoint remains available to older clients, but it no longer
+    has an independent write path. A one-person request is normalized to a
+    ``self`` participant so notice confirmation, capacity locking, participant
+    authorization snapshots, receipts, events, and notifications are exactly
+    the same as a booking-group request.
+    """
     payload = request.get_json(silent=True) or {}
-    appointment_date, error = _parse_bookable_date(payload.get("appointment_date"))
-    if error:
-        return error
-    try:
-        institution_id = int(payload.get("institution_id"))
-        package_id = int(payload.get("package_id"))
-    except (TypeError, ValueError):
-        return {"message": "institution_id and package_id must be integers"}, 400
-    if not (g.current_user.real_name or "").strip():
-        return {"message": "请先完善真实姓名再提交预约"}, 409
-    try:
-        height = Decimal(str(payload.get("height_cm")))
-        weight = Decimal(str(payload.get("weight_kg")))
-    except (TypeError, ValueError, InvalidOperation):
-        return {"message": "请填写有效的身高和体重"}, 400
-    if not Decimal("80") <= height <= Decimal("250"):
-        return {"message": "身高应在 80 至 250 厘米之间"}, 400
-    if not Decimal("20") <= weight <= Decimal("300"):
-        return {"message": "体重应在 20 至 300 千克之间"}, 400
-    metres = height / Decimal("100")
-    bmi = (weight / (metres * metres)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    normalized = {
+        "institution_id": payload.get("institution_id"),
+        "package_id": payload.get("package_id"),
+        "appointment_date": payload.get("appointment_date"),
+        "notice_confirmed": payload.get("notice_confirmed") is True,
+        "participants": [
+            {
+                "type": "self",
+                "height_cm": payload.get("height_cm"),
+                "weight_kg": payload.get("weight_kg"),
+            }
+        ],
+    }
+    from app.booking_v7.routes import create_booking_group_for_user
 
-    institution = Institution.query.filter_by(id=institution_id, is_active=True).first()
-    package = Package.query.filter_by(id=package_id, institution_id=institution_id, is_active=True).first()
-    if institution is None:
-        return {"message": "institution not found"}, 404
-    if package is None:
-        return {"message": "active approved package not found"}, 404
-
-    # A no-op row update serializes capacity checks in both SQLite and openGauss.
-    db.session.execute(
-        update(Institution).where(Institution.id == institution.id).values(
-            daily_appointment_limit=Institution.daily_appointment_limit
-        ).execution_options(synchronize_session=False)
-    )
-    db.session.refresh(institution)
-    booked = _booked_count(institution.id, appointment_date)
-    if institution.daily_appointment_limit is not None and booked >= institution.daily_appointment_limit:
-        db.session.rollback()
-        return {"message": "今日已无预约名额", "code": "APPOINTMENT_FULL"}, 409
-
-    now = datetime.now(timezone.utc)
-    version = next((row for row in package.versions if row.id == package.current_version_id), None)
-    item = Appointment(
-        user_id=g.current_user.id,
-        booked_by_user_id=g.current_user.id,
-        institution_id=institution.id,
-        package_id=package.id,
-        package_version_id=version.id if version else None,
-        appointment_date=appointment_date,
-        active_date_key=appointment_date,
-        status="unfulfilled",
-        user_name_snapshot=g.current_user.real_name,
-        user_health_id_snapshot=g.current_user.health_id,
-        user_birth_date_snapshot=g.current_user.birth_date,
-        user_gender_snapshot=g.current_user.gender,
-        user_contact_snapshot=g.current_user.phone or g.current_user.email,
-        height_cm_snapshot=height,
-        weight_kg_snapshot=weight,
-        bmi_snapshot=bmi,
-        allergy_history_snapshot=g.current_user.allergy_history,
-        medical_history_snapshot=g.current_user.medical_history,
-        intake_captured_at=now,
-        package_name_snapshot=package.name,
-        package_price_snapshot=package.price,
-    )
-    db.session.add(item)
-    try:
-        db.session.flush()
-    except IntegrityError:
-        db.session.rollback()
-        return {"message": "同一用户同一天只能保留一条有效预约"}, 409
-    db.session.add(AppointmentEvent(
-        appointment_id=item.id,
-        event_type="booked",
-        status_snapshot="unfulfilled",
-        message="预约成功",
-        actor_user_id=g.current_user.id,
-        occurred_at=now,
-    ))
-    notice = version.booking_notice_snapshot if version else package.booking_notice
-    enqueue_user_notification(
+    result, status = create_booking_group_for_user(
         g.current_user,
-        event_type="booking_user_confirmed",
-        idempotency_key=f"appointment:{item.id}:user:{g.current_user.id}:confirmed",
-        title="体检预约成功",
-        body=(
-            f"{appointment_date.isoformat()} {institution.name}·{institution.branch_name}，"
-            f"地址：{institution.address}，电话：{institution.consult_phone or '请在机构详情查看'}，"
-            f"套餐：{package.name}。请携带身份证原件、HealthDoc预约凭证、病历本、"
-            f"既往体检报告或影像资料和用药清单。机构已审核须知：{notice or '暂无额外准备要求'}"
-        ),
-        action_url="/appointments",
-        payload={"appointment_id": item.id},
-        email_payload={
-            "institution": institution.name,
-            "branch": institution.branch_name,
-            "address": institution.address,
-            "consult_phone": institution.consult_phone,
-            "appointment_date": appointment_date.isoformat(),
-            "package": package.name,
-            "booking_notice": notice,
-            "recipient_name": g.current_user.real_name,
-            "participant": {
-                "name": g.current_user.real_name,
-                "health_id_masked": f"{g.current_user.health_id[:3]}****{g.current_user.health_id[-3:]}",
-            },
-            "preparation_items": ["身份证原件", "HealthDoc 预约凭证", "病历本", "既往体检报告或影像资料", "正在使用的药物清单"],
-            "login_url": "/appointments",
-        },
+        normalized,
     )
-    db.session.commit()
-    return {"item": item.to_dict()}, 201
+    if status != 201:
+        return result, status
+    group_payload = result["item"]
+    item = Appointment.query.filter_by(
+        booking_group_id=group_payload["id"],
+        user_id=g.current_user.id,
+    ).one()
+    return {
+        "item": item.to_dict(),
+        "booking_group": group_payload,
+    }, 201
 
 
 @appointments_bp.post("/<int:appointment_id>/cancel")
 @roles_required(ROLE_USER)
+@complete_profile_required
 def cancel_appointment(appointment_id):
-    item = Appointment.query.filter_by(id=appointment_id, user_id=g.current_user.id).first()
+    item = Appointment.query.filter(
+        Appointment.id == appointment_id,
+        db.or_(
+            Appointment.user_id == g.current_user.id,
+            Appointment.booked_by_user_id == g.current_user.id,
+        ),
+    ).first()
     if item is None:
         return {"message": "appointment not found"}, 404
     if item.status != "unfulfilled":
         return {"message": "only unfulfilled appointments can be cancelled"}, 409
-    item.status = "cancelled"
-    item.active_date_key = None
-    item.cancelled_at = datetime.now(timezone.utc)
-    db.session.add(AppointmentEvent(appointment_id=item.id, event_type="cancelled", status_snapshot="cancelled",
-                                    message="预约已取消", actor_user_id=g.current_user.id, occurred_at=item.cancelled_at))
+    cancelled_at = datetime.now(timezone.utc)
+    if not _cancel_appointment_cas(item.id, cancelled_at):
+        db.session.rollback()
+        return {
+            "message": "appointment state changed; reload and retry",
+            "code": "APPOINTMENT_STATE_CONFLICT",
+        }, 409
+    event_message = (
+        "代预约人已取消该受检者预约"
+        if item.user_id != g.current_user.id
+        else "预约已取消"
+    )
+    db.session.add(AppointmentEvent(
+        appointment_id=item.id,
+        event_type="cancelled",
+        status_snapshot="cancelled",
+        message=event_message,
+        actor_user_id=g.current_user.id,
+        occurred_at=cancelled_at,
+    ))
     from app.booking_v7.routes import _lock_capacity, enqueue_available
     slot = _lock_capacity(item.institution, item.appointment_date); slot.revision += 1
     enqueue_available(item.institution, item.appointment_date, slot)

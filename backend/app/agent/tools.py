@@ -31,7 +31,6 @@ from app.models import (
     AgentToolEvent,
     Appointment,
     BookingGroup,
-    FriendRelation,
     HealthRecord,
     IndicatorDict,
     Institution,
@@ -39,8 +38,6 @@ from app.models import (
     ReportIndicator,
     User,
 )
-
-
 READ_TOOLS = {
     "list_reports": ListReportsArgs,
     "get_report_facts": ReportFactsArgs,
@@ -59,9 +56,9 @@ DRAFT_TOOLS = {
 TOOL_MODELS = {**READ_TOOLS, **DRAFT_TOOLS}
 
 TOOL_DESCRIPTIONS = {
-    "list_reports": "列出当前用户本人或已授权亲友的已发布体检报告。",
-    "get_report_facts": "读取已授权报告中的结构化指标事实。",
-    "compute_indicator_trend": "用确定性计算返回某一指标的历次变化。",
+    "list_reports": "列出当前有效账号的已发布体检报告。",
+    "get_report_facts": "读取当前有效账号报告中的结构化指标事实。",
+    "compute_indicator_trend": "用确定性计算返回当前有效账号某一指标的历次变化。",
     "search_institutions": "按名称、区域或地址搜索可用体检机构。",
     "compare_packages": (
         "比较指定体检套餐，或按 institution_id 列出机构套餐；"
@@ -95,16 +92,13 @@ def tool_definitions(*, allow_drafts: bool) -> list[dict]:
 
 
 def _authorized_owner_ids(user: User) -> set[int]:
-    result = {user.id}
-    rows = FriendRelation.query.filter_by(user_id=user.id, auth_status=True).all()
-    result.update(row.friend_user_id for row in rows)
-    return result
+    return {user.id}
 
 
 def _owner_id(user: User, requested: int | None) -> int:
     owner_id = requested or user.id
     if owner_id not in _authorized_owner_ids(user):
-        raise PermissionError("当前账号没有查看该受检者健康档案的权限")
+        raise PermissionError("健康档案仅限当前有效账号；请先切换关联账号")
     return owner_id
 
 
@@ -227,7 +221,10 @@ def _read_indicator_trend(user, args: IndicatorTrendArgs):
 
 
 def _read_institutions(_user, args: SearchInstitutionsArgs):
-    query = Institution.query.filter_by(is_active=True)
+    query = Institution.query.join(Institution.organization).filter(
+        Institution.is_active.is_(True),
+        Institution.organization.has(is_active=True),
+    )
     if args.district:
         query = query.filter(Institution.district == args.district)
     keyword = args.keyword.strip()
@@ -261,7 +258,16 @@ def _read_institutions(_user, args: SearchInstitutionsArgs):
 def _read_packages(_user, args: ComparePackagesArgs):
     if not args.package_ids and args.institution_id is None:
         raise ValueError("package_ids 和 institution_id 至少提供一个")
-    query = Package.query.filter(Package.is_active.is_(True))
+    query = Package.query.filter(
+        Package.is_active.is_(True),
+        Package.current_version_id.is_not(None),
+        Package.institution.has(
+            db.and_(
+                Institution.is_active.is_(True),
+                Institution.organization.has(is_active=True),
+            )
+        ),
+    )
     if args.package_ids:
         query = query.filter(Package.id.in_(args.package_ids))
     if args.institution_id is not None:
@@ -304,7 +310,16 @@ def _read_packages(_user, args: ComparePackagesArgs):
 
 
 def _read_availability(_user, args: AvailabilityArgs):
-    institution = Institution.query.filter_by(id=args.institution_id, is_active=True).first()
+    from app.booking_v7.routes import _parse_day
+
+    _day, date_error = _parse_day(args.appointment_date.isoformat())
+    if date_error:
+        raise ValueError(date_error[0]["message"])
+    institution = Institution.query.filter(
+        Institution.id == args.institution_id,
+        Institution.is_active.is_(True),
+        Institution.organization.has(is_active=True),
+    ).first()
     if institution is None:
         raise LookupError("没有找到可预约机构")
     active = ("unfulfilled", "awaiting_report", "fulfilled")
@@ -341,8 +356,9 @@ def _read_appointments(user, args: AppointmentStatusArgs):
                 "package_name": row.package_name_snapshot,
                 "party_size": row.party_size,
                 "statuses": [item.status for item in row.appointments],
-                "can_cancel": bool(row.appointments)
-                and all(item.status == "unfulfilled" for item in row.appointments),
+                "can_cancel": any(
+                    item.status == "unfulfilled" for item in row.appointments
+                ),
             }
             for row in rows
         ]
@@ -378,8 +394,16 @@ def _draft_summary(name: str, args, *, normalized_payload=None) -> dict:
             "体检机构": institution.name if institution else f"机构 {payload['institution_id']}",
             "体检套餐": package.name if package else f"套餐 {payload['package_id']}",
             "体检日期": payload["appointment_date"],
-            "预约人数": len(payload["participant_user_ids"] or []),
-            "身高/体重": intake_summary,
+            "预约人数": len(
+                payload.get("participants")
+                or payload["participant_user_ids"]
+                or [None]
+            ),
+            "身高/体重": (
+                "由服务端安全读取，不在代预约界面展示"
+                if payload.get("participants")
+                else intake_summary
+            ),
         }
     if name == "create_cancellation_draft":
         return {"title": "确认取消整个预约组", "预约组编号": payload["group_id"]}
@@ -406,22 +430,41 @@ def _create_draft(name, args, *, user, thread_id, run_id):
     action_type = name.removeprefix("create_").removesuffix("_draft")
     action_id = str(uuid.uuid4())
     payload = args.model_dump(mode="json")
+    if name in {
+        "create_booking_draft",
+        "create_waitlist_draft",
+        "create_cancellation_draft",
+    } and not user.profile_completed:
+        raise PermissionError("请先完成实名认证后再使用预约功能")
+    if name in {"create_booking_draft", "create_waitlist_draft"}:
+        from app.booking_v7.routes import _parse_day
+
+        _day, date_error = _parse_day(payload["appointment_date"])
+        if date_error:
+            raise ValueError(date_error[0]["message"])
+        if not payload.get("participants"):
+            payload.pop("participants", None)
     if name == "create_booking_draft":
-        if not payload["participant_user_ids"]:
-            payload["participant_user_ids"] = [user.id]
-        for intake in payload["participant_intakes"]:
-            if intake.get("user_id") is None:
-                intake["user_id"] = user.id
-        participant_ids = payload["participant_user_ids"]
-        intake_ids = [intake["user_id"] for intake in payload["participant_intakes"]]
-        if (
-            len(set(participant_ids)) != len(participant_ids)
-            or len(set(intake_ids)) != len(intake_ids)
-            or set(intake_ids) != set(participant_ids)
-        ):
-            raise ValueError(
-                "预约草稿必须包含每位受检者且仅包含一份身高体重资料"
-            )
+        if payload.get("participants"):
+            participant_types = [item["type"] for item in payload["participants"]]
+            if participant_types.count("self") > 1:
+                raise ValueError("本人受检者不能重复添加")
+        else:
+            if not payload["participant_user_ids"]:
+                payload["participant_user_ids"] = [user.id]
+            for intake in payload["participant_intakes"]:
+                if intake.get("user_id") is None:
+                    intake["user_id"] = user.id
+            participant_ids = payload["participant_user_ids"]
+            intake_ids = [intake["user_id"] for intake in payload["participant_intakes"]]
+            if (
+                len(set(participant_ids)) != len(participant_ids)
+                or len(set(intake_ids)) != len(intake_ids)
+                or set(intake_ids) != set(participant_ids)
+            ):
+                raise ValueError(
+                    "预约草稿必须包含每位受检者且仅包含一份身高体重资料"
+                )
     now = datetime.now(timezone.utc)
     AgentPendingAction.query.filter_by(
         thread_id=thread_id,

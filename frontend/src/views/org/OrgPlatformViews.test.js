@@ -1,14 +1,15 @@
 import { flushPromises, mount } from "@vue/test-utils";
-import ElementPlus from "element-plus";
+import ElementPlus, { ElMessageBox } from "element-plus";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const push=vi.fn(),replace=vi.fn();
 vi.mock("vue-router",()=>({useRouter:()=>({push,replace}),useRoute:()=>({query:{},fullPath:"/org/reports"})}));
 const orgApi=vi.hoisted(()=>({
   fetchOrgPackages:vi.fn(),createOrgPackage:vi.fn(),updateOrgPackage:vi.fn(),deactivateOrgPackage:vi.fn(),reactivateOrgPackage:vi.fn(),
-  fetchOrgReports:vi.fn(),createOrgReport:vi.fn(),fetchOrgReport:vi.fn(),addOrgReportIndicator:vi.fn(),deleteOrgReportIndicator:vi.fn(),addOrgTextResult:vi.fn(),deleteOrgTextResult:vi.fn(),uploadOrgHealthAsset:vi.fn(),deleteOrgHealthAsset:vi.fn(),lockOrgReport:vi.fn(),submitOrgReport:vi.fn(),uploadOrgReportOcr:vi.fn(),
+  fetchOrgReports:vi.fn(),createOrgReport:vi.fn(),fetchOrgReport:vi.fn(),addOrgReportIndicator:vi.fn(),deleteOrgReportIndicator:vi.fn(),addOrgTextResult:vi.fn(),deleteOrgTextResult:vi.fn(),uploadOrgHealthAsset:vi.fn(),deleteOrgHealthAsset:vi.fn(),submitOrgReportForReview:vi.fn(),reviewOrgReport:vi.fn(),uploadOrgReportOcr:vi.fn(),
   fetchOrgReportAssetTypes:vi.fn(),fetchOrgReportAssetContent:vi.fn(),updateOrgHealthAsset:vi.fn(),
   fetchOrgAppointments:vi.fn(),attendOrgAppointment:vi.fn(),closeOrgAppointment:vi.fn(),fetchOrgAppointmentCapacity:vi.fn(),updateOrgAppointmentCapacity:vi.fn(),
+  fetchOrgAudienceInsights:vi.fn(),
 }));
 const healthApi=vi.hoisted(()=>({fetchHealthDomains:vi.fn()}));
 const indicatorApi=vi.hoisted(()=>({fetchIndicatorDicts:vi.fn()}));
@@ -30,6 +31,7 @@ beforeEach(()=>{
   orgApi.fetchOrgReports.mockResolvedValue({data:{items:[],total:0,filtered_total:0}});
   orgApi.fetchOrgAppointments.mockResolvedValue({data:{items:[]}});
   orgApi.fetchOrgReportAssetTypes.mockResolvedValue({data:{items:[]}});
+  orgApi.fetchOrgAudienceInsights.mockResolvedValue({data:{aggregate:{},ai:{}}});
 });
 afterEach(()=>{wrappers.splice(0).forEach((wrapper)=>wrapper.unmount());document.body.innerHTML="";});
 
@@ -113,7 +115,7 @@ describe("institution platform views",()=>{
     expect(wrapper.vm.current.indicators[0].indicator.name).toBe("体重指数");
   });
 
-  it("shows conclusion coverage and prevents locking while a report domain is incomplete",async()=>{
+  it("shows conclusion coverage and prevents review submission while a report domain is incomplete",async()=>{
     orgApi.fetchOrgAppointments.mockResolvedValue({data:{items:[{
       id:8,appointment_date:"2026-07-28",status:"awaiting_report",package_name:"年度综合体检",
       user:{name:"林晓晨",health_id:"HID-8K3M2Q7A"},report_id:11,report_status:"draft",
@@ -134,7 +136,27 @@ describe("institution platform views",()=>{
     expect(wrapper.vm.detailVisible).toBe(true);
     expect(wrapper.vm.conclusionDomainIds.has(1)).toBe(true);
     expect(wrapper.vm.missingConclusionDomains.map((domain)=>domain.name)).toEqual(["代谢"]);
-    await wrapper.vm.lockReport(11);
-    expect(orgApi.lockOrgReport).not.toHaveBeenCalled();
+    wrapper.vm.uploadDoctorName = "上传医生";
+    await wrapper.vm.submitForReview(11);
+    expect(orgApi.submitOrgReportForReview).not.toHaveBeenCalled();
+  });
+
+  it("uses upload doctor and review doctor in the two-stage publishing flow",async()=>{
+    const draft={id:11,status:"draft",can_edit:true,package_version:{domains:[{id:1,name:"心脑血管"}]},indicators:[{id:1,display_domain_id:1,value:"4.2"}],assets:[],text_results:[{id:3,domain_id:1,title:"结论",body:"平稳"}]};
+    const pending={...draft,status:"pending_review",upload_doctor_name:"王医生"};
+    orgApi.fetchOrgReport.mockResolvedValueOnce({data:{item:draft}}).mockResolvedValueOnce({data:{item:pending}});
+    orgApi.submitOrgReportForReview.mockResolvedValue({data:{item:pending}});
+    orgApi.reviewOrgReport.mockResolvedValue({data:{item:{...pending,status:"published"}}});
+    const confirm=vi.spyOn(ElMessageBox,"confirm").mockResolvedValue("confirm");
+    const wrapper=mountView(OrgReportsView);await flushPromises();
+    await wrapper.vm.openDetailById(11);await flushPromises();
+    wrapper.vm.uploadDoctorName="王医生";
+    await wrapper.vm.submitForReview(11);await flushPromises();
+    expect(orgApi.submitOrgReportForReview).toHaveBeenCalledWith(11,"王医生");
+    expect(wrapper.vm.current.status).toBe("pending_review");
+    wrapper.vm.reviewDoctorName="李医生";
+    await wrapper.vm.reviewAndPublish(11);await flushPromises();
+    expect(orgApi.reviewOrgReport).toHaveBeenCalledWith(11,"李医生");
+    confirm.mockRestore();
   });
 });

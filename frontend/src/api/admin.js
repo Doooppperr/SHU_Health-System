@@ -19,6 +19,18 @@ export function fetchAdminInstitution(institutionId) {
   return http.get(`/admin/institutions/${institutionId}`);
 }
 
+export function fetchAdminInstitutionAccount(institutionId) {
+  return http.get(`/admin/institutions/${institutionId}/account`);
+}
+
+export function retryAdminInstitutionAccountNotification(institutionId) {
+  return http.post(`/admin/institutions/${institutionId}/account-notification/retry`);
+}
+
+export function resetAdminInstitutionAccount(institutionId, payload) {
+  return http.post(`/admin/institutions/${institutionId}/account/reset`, payload);
+}
+
 export function updateAdminInstitution(institutionId, payload) {
   return http.put(`/admin/institutions/${institutionId}`, payload);
 }
@@ -65,14 +77,6 @@ export function reorderAdminImages(institutionId, imageIds) {
 
 export function deleteAdminImage(institutionId, imageId) {
   return http.delete(`/admin/institutions/${institutionId}/images/${imageId}`);
-}
-
-export function fetchAdminInvites(params = {}) {
-  return http.get("/admin/invites", { params });
-}
-
-export function issueInstitutionInvite(institutionId) {
-  return http.post(`/admin/institutions/${institutionId}/invite`);
 }
 
 export const deleteInstitutionAccount = (userId) => http.delete(`/admin/institution-accounts/${userId}`);

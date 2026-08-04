@@ -6,8 +6,8 @@
         <h2>{{ greeting }}，今天也照顾好自己</h2>
         <p>记录日常状态、安排体检，并在同一个地方查看每次检查留下的健康资料。</p>
         <div class="user-hero__actions">
-          <el-button type="primary" size="large" @click="measurementVisible = true">记录今日测量</el-button>
-          <el-button size="large" @click="router.push({ name: 'appointments' })">预约体检</el-button>
+          <el-button type="primary" size="large" @click="openMeasurement">记录今日测量</el-button>
+          <el-button size="large" @click="openAppointments">预约体检</el-button>
         </div>
       </div>
       <div class="user-hero__today" aria-label="今日概览">
@@ -24,7 +24,7 @@
         <template #header>
           <div class="user-section-heading">
             <div><span>日常状态</span><h3>最近测量</h3></div>
-            <el-button link type="primary" @click="measurementVisible = true">再记一笔</el-button>
+            <el-button link type="primary" @click="openMeasurement">再记一笔</el-button>
           </div>
         </template>
         <div v-if="latestMeasurements.length" class="latest-measurement-grid">
@@ -37,7 +37,7 @@
         <div v-else class="user-empty-state">
           <span class="user-empty-state__icon">测</span>
           <div><strong>今天还没有测量记录</strong><p>体重、心率、血氧等数据会在这里形成自己的变化轨迹。</p></div>
-          <el-button type="primary" plain @click="measurementVisible = true">开始记录</el-button>
+          <el-button type="primary" plain @click="openMeasurement">开始记录</el-button>
         </div>
       </el-card>
 
@@ -45,7 +45,7 @@
         <template #header>
           <div class="user-section-heading">
             <div><span>下一步</span><h3>体检安排</h3></div>
-            <el-button link type="primary" @click="router.push({ name: 'appointments' })">管理预约</el-button>
+            <el-button link type="primary" @click="openAppointments">管理预约</el-button>
           </div>
         </template>
         <article v-if="nextAppointment" class="next-appointment-card">
@@ -64,7 +64,7 @@
         <div v-else class="user-empty-state user-empty-state--compact">
           <span class="user-empty-state__icon">约</span>
           <div><strong>给健康留一个固定时间</strong><p>选择适合自己的机构和套餐，提前安排一次体检。</p></div>
-          <el-button type="primary" plain @click="router.push({ name: 'appointments' })">去预约</el-button>
+          <el-button type="primary" plain @click="openAppointments">去预约</el-button>
         </div>
       </el-card>
     </section>
@@ -108,6 +108,9 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import MeasurementDrawer from "../components/MeasurementDrawer.vue";
 import { fetchHealthDashboard } from "../api/health";
+import { useAuthStore } from "../stores/auth";
+import { isBasicProfileComplete } from "../utils/v12";
+import { ElMessage } from "element-plus";
 import {
   appointmentMeta,
   formatDate,
@@ -116,11 +119,13 @@ import {
 
 const route = useRoute();
 const router = useRouter();
+const auth = useAuthStore();
 const loading = ref(false);
 const errorMessage = ref("");
 const dashboard = ref({});
 const records = ref([]);
-const measurementVisible = ref(route.query.quick === "measurement");
+const measurementVisible = ref(false);
+const profileReady = computed(() => isBasicProfileComplete(auth.user || {}));
 
 const greeting = computed(() => {
   const hour = new Date().getHours();
@@ -184,6 +189,21 @@ function openRecord(record) {
   }
 }
 
+function requireProfile() {
+  if (profileReady.value) return true;
+  window.dispatchEvent(new CustomEvent("healthdoc-open-profile-gate"));
+  ElMessage.warning("完成实名认证后才能使用该健康服务");
+  return false;
+}
+
+function openMeasurement() {
+  if (requireProfile()) measurementVisible.value = true;
+}
+
+function openAppointments() {
+  if (requireProfile()) router.push({ name: "appointments" });
+}
+
 async function load() {
   loading.value = true;
   errorMessage.value = "";
@@ -199,7 +219,7 @@ async function load() {
 }
 
 watch(() => route.query.quick, (value) => {
-  if (value === "measurement") measurementVisible.value = true;
+  if (value === "measurement") openMeasurement();
 });
 
 watch(measurementVisible, (visible) => {
@@ -210,5 +230,8 @@ watch(measurementVisible, (visible) => {
   }
 });
 
-onMounted(load);
+onMounted(() => {
+  load();
+  if (route.query.quick === "measurement") openMeasurement();
+});
 </script>

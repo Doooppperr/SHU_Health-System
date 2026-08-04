@@ -6,20 +6,32 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import AppointmentBookingView from "./AppointmentBookingView.vue";
 import InstitutionListView from "./InstitutionListView.vue";
 import { useAuthStore } from "../stores/auth";
+import { bookingDateBounds } from "../utils/v12";
 
 const mocks = vi.hoisted(() => ({
+  route: { query: {} },
   router: { push: vi.fn() },
   fetchOrganizations: vi.fn(),
   fetchFriends: vi.fn(),
   fetchAppointmentAvailability: vi.fn(),
   fetchBookingIntakeDefaults: vi.fn(),
   fetchBookingGroups: vi.fn(),
+  fetchMyAppointments: vi.fn(),
   fetchWaitlistSubscriptions: vi.fn(),
+  fetchMyComplaints: vi.fn(),
+  resolveBookingParticipantToken: vi.fn(),
+  createBookingGroup: vi.fn(),
 }));
 
 vi.mock("vue-router", () => ({
-  useRoute: () => ({ query: {} }),
+  useRoute: () => mocks.route,
   useRouter: () => mocks.router,
+}));
+vi.mock("../api/complaints", () => ({
+  confirmComplaintResolved: vi.fn(),
+  createComplaint: vi.fn(),
+  escalateComplaint: vi.fn(),
+  fetchMyComplaints: mocks.fetchMyComplaints,
 }));
 vi.mock("../api/institutions", () => ({
   fetchOrganizations: mocks.fetchOrganizations,
@@ -28,14 +40,17 @@ vi.mock("../api/friends", () => ({
   fetchFriends: mocks.fetchFriends,
 }));
 vi.mock("../api/appointments", () => ({
+  cancelAppointment: vi.fn(),
   cancelBookingGroup: vi.fn(),
   cancelWaitlistSubscription: vi.fn(),
-  createBookingGroup: vi.fn(),
+  createBookingGroup: mocks.createBookingGroup,
   createWaitlistSubscription: vi.fn(),
   fetchAppointmentAvailability: mocks.fetchAppointmentAvailability,
   fetchBookingIntakeDefaults: mocks.fetchBookingIntakeDefaults,
   fetchBookingGroups: mocks.fetchBookingGroups,
+  fetchMyAppointments: mocks.fetchMyAppointments,
   fetchWaitlistSubscriptions: mocks.fetchWaitlistSubscriptions,
+  resolveBookingParticipantToken: mocks.resolveBookingParticipantToken,
 }));
 
 const wrappers = [];
@@ -62,6 +77,7 @@ function mountView(component) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.route.query = {};
   mocks.fetchOrganizations.mockResolvedValue({ data: { items: [] } });
   mocks.fetchFriends.mockResolvedValue({ data: { outgoing: [] } });
   mocks.fetchAppointmentAvailability.mockResolvedValue({ data: { items: [] } });
@@ -83,12 +99,42 @@ beforeEach(() => {
       pagination: { page: 1, page_size: 10, total: 11, pages: 2 },
     },
   });
+  mocks.fetchMyAppointments.mockResolvedValue({
+    data: {
+      items: [{
+        id: 91,
+        appointment_date: "2026-07-26",
+        status: "fulfilled",
+        package_name: "综合体检",
+        institution: { name: "澄心健康管理中心", branch_name: "徐汇综合院区" },
+        booked_by_user_id: 2,
+      }],
+      pagination: { page: 1, page_size: 10, total: 1, pages: 1 },
+    },
+  });
   mocks.fetchWaitlistSubscriptions.mockResolvedValue({
     data: {
       items: [],
       active_count: 0,
       pagination: { page: 1, page_size: 15, total: 0, pages: 0 },
     },
+  });
+  mocks.fetchMyComplaints.mockResolvedValue({ data: { items: [] } });
+  mocks.resolveBookingParticipantToken.mockResolvedValue({
+    data: {
+      item: {
+        participant_token: "bpt-secret",
+        real_name: "虚构受检者",
+        gender: "female",
+        birth_year: 1992,
+        masked_health_id: "HE******01",
+        has_recent_height: true,
+        has_recent_weight: false,
+      },
+    },
+  });
+  mocks.createBookingGroup.mockResolvedValue({
+    data: { item: { id: 71, appointment_date: "2026-08-01" } },
   });
 });
 
@@ -106,9 +152,159 @@ describe("预约记录分页", () => {
     expect(mocks.fetchBookingGroups).toHaveBeenCalledWith(
       expect.objectContaining({ page: 1, page_size: 10 }),
     );
-    expect(wrapper.get(".booking-pagination__summary").text()).toContain("第 1 / 2 页");
-    expect(wrapper.get(".booking-pagination__summary").text()).toContain("每页 10 组");
+    expect(mocks.fetchMyAppointments).toHaveBeenCalledWith({ page: 1, page_size: 10 });
+    expect(wrapper.text()).toContain("我的受检预约");
+    expect(wrapper.text()).toContain("我发起的代预约回执");
+    const paginationSummaries = wrapper.findAll(".booking-pagination__summary");
+    expect(paginationSummaries.some((item) => item.text().includes("第 1 / 2 页"))).toBe(true);
+    expect(paginationSummaries.some((item) => item.text().includes("每页 10 组"))).toBe(true);
     expect(wrapper.find(".el-pagination").exists()).toBe(true);
+  });
+
+  it("restores appointment_date, institution and package after login", async () => {
+    const appointmentDate = bookingDateBounds().minString;
+    mocks.route.query = {
+      appointment_date: appointmentDate,
+      institution_id: "8",
+      package_id: "9",
+    };
+    mocks.fetchAppointmentAvailability.mockResolvedValue({
+      data: {
+        items: [{
+          institution: { id: 8, name: "澄心健康", branch_name: "徐汇院区" },
+          packages: [{ id: 9, name: "综合体检", price: 999 }],
+          remaining: 10,
+        }],
+      },
+    });
+
+    const wrapper = mountView(AppointmentBookingView);
+    await flushPromises();
+
+    expect(mocks.fetchAppointmentAvailability).toHaveBeenCalledWith(appointmentDate, "");
+    expect(wrapper.vm.form.appointment_date).toBe(appointmentDate);
+    expect(wrapper.vm.form.institution_id).toBe(8);
+    expect(wrapper.vm.form.package_id).toBe(9);
+  });
+
+  it("shows only the approved health-code identity summary and keeps the token out of the page", async () => {
+    const wrapper = mountView(AppointmentBookingView);
+    await flushPromises();
+    wrapper.vm.step = 3;
+    wrapper.vm.healthIdInput = "HEALTH-ID-RAW";
+
+    await wrapper.vm.resolveHealthIdParticipant();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("虚构受检者");
+    expect(wrapper.text()).toContain("女性");
+    expect(wrapper.text()).toContain("1992");
+    expect(wrapper.text()).toContain("HE******01");
+    expect(wrapper.text()).not.toContain("HEALTH-ID-RAW");
+    expect(wrapper.text()).not.toContain("bpt-secret");
+  });
+
+  it("deduplicates health codes that belong to self or an active linked account", async () => {
+    mocks.fetchFriends.mockResolvedValue({
+      data: {
+        items: [{
+          id: 42,
+          status: "active",
+          booking_granted_to_me: true,
+          counterparty: { id: 2, display_name: "虚构亲友" },
+        }],
+      },
+    });
+    const wrapper = mountView(AppointmentBookingView);
+    await flushPromises();
+
+    mocks.resolveBookingParticipantToken
+      .mockResolvedValueOnce({
+        data: { item: { participant_type: "linked_account", relation_id: 42 } },
+      })
+      .mockResolvedValueOnce({
+        data: { item: { participant_type: "self" } },
+      });
+
+    wrapper.vm.healthIdInput = "HEALTH-LINKED";
+    await wrapper.vm.resolveHealthIdParticipant();
+    wrapper.vm.healthIdInput = "HEALTH-SELF";
+    await wrapper.vm.resolveHealthIdParticipant();
+    await flushPromises();
+
+    expect(wrapper.vm.form.participant_keys).toEqual(["self:1", "relation:42"]);
+    expect(wrapper.vm.tokenParticipants).toEqual([]);
+    expect(wrapper.text()).not.toContain("HEALTH-LINKED");
+    expect(wrapper.text()).not.toContain("HEALTH-SELF");
+  });
+
+  it("submits only canonical participants and discards consumed participant tokens after success", async () => {
+    const wrapper = mountView(AppointmentBookingView);
+    await flushPromises();
+    wrapper.vm.healthIdInput = "HEALTH-ID-RAW";
+    await wrapper.vm.resolveHealthIdParticipant();
+
+    await wrapper.vm.book();
+    await flushPromises();
+
+    expect(mocks.createBookingGroup).toHaveBeenCalledWith(expect.objectContaining({
+      participants: expect.arrayContaining([
+        expect.objectContaining({
+          type: "health_code_token",
+          participant_token: "bpt-secret",
+        }),
+      ]),
+    }));
+    const submitted = mocks.createBookingGroup.mock.calls[0][0];
+    expect(submitted).not.toHaveProperty("participant_user_ids");
+    expect(submitted).not.toHaveProperty("participant_relation_ids");
+    expect(submitted).not.toHaveProperty("participant_tokens");
+    expect(submitted).not.toHaveProperty("participant_intakes");
+    expect(wrapper.vm.tokenParticipants).toEqual([]);
+    expect(wrapper.vm.form.participant_keys).toEqual(["self:1"]);
+    expect(Object.keys(wrapper.vm.participantIntakes)).toEqual(["self:1"]);
+    expect(wrapper.text()).not.toContain("bpt-secret");
+  });
+
+  it("loads complaint history beyond the former first 50 and focuses a deep link", async () => {
+    mocks.route.query = { complaint_id: "999" };
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({
+      id: index + 1,
+      appointment_id: 1000 + index,
+      status: "resolved",
+      category: "service",
+      content: `虚构历史投诉 ${index + 1}`,
+    }));
+    mocks.fetchMyComplaints.mockImplementation(({ page }) => Promise.resolve({
+      data: page === 1
+        ? {
+          items: firstPage,
+          pagination: { page: 1, page_size: 100, total: 101, pages: 2 },
+        }
+        : {
+          items: [{
+            id: 999,
+            appointment_id: 91,
+            status: "platform_processing",
+            category: "report",
+            content: "虚构第 101 条深链投诉",
+            institution: { name: "虚构体检机构" },
+          }],
+          pagination: { page: 2, page_size: 100, total: 101, pages: 2 },
+        },
+    }));
+
+    const wrapper = mountView(AppointmentBookingView);
+    await flushPromises();
+
+    expect(mocks.fetchMyComplaints).toHaveBeenCalledWith({ page: 2, page_size: 100 });
+    expect(wrapper.vm.complaintPagination).toEqual(expect.objectContaining({
+      page: 11,
+      total: 101,
+      pages: 11,
+    }));
+    expect(wrapper.text()).toContain("虚构第 101 条深链投诉");
+    expect(wrapper.text()).toContain("查看投诉");
   });
 });
 

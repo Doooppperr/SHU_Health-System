@@ -73,6 +73,13 @@ beforeEach(() => {
         business_date: "2026-07-24",
         package: { name: "年度综合体检" },
         source: { name: "澄心健康管理中心", branch_name: "徐汇综合院区" },
+        review_trace: {
+          upload_doctor_name: "测试上传医生（虚构）",
+          uploaded_at: "2026-07-24T02:00:00+00:00",
+          review_doctor_name: "测试复核医生（虚构）",
+          reviewed_at: "2026-07-24T03:00:00+00:00",
+          published_at: "2026-07-24T03:00:00+00:00",
+        },
         sections: [
           {
             domain: { id: 1, name: "基础体征与体格" },
@@ -104,11 +111,12 @@ afterEach(() => {
   wrappers.splice(0).forEach((wrapper) => wrapper.unmount());
 });
 
-describe("健康成员筛选请求", () => {
-  it("体检数据选择亲友时发送亲友编号", async () => {
-    mountView(HealthDataView, { owner_id: "12" });
+describe("当前有效账号的健康页面", () => {
+  it("体检数据始终读取当前有效账号且不再显示成员选择器", async () => {
+    const wrapper = mountView(HealthDataView, { owner_id: "12" });
     await flushPromises();
-    expect(mocks.fetchHealthData).toHaveBeenCalledWith(expect.objectContaining({ owner_id: 12 }));
+    expect(mocks.fetchHealthData).toHaveBeenCalledWith(expect.not.objectContaining({ owner_id: expect.anything() }));
+    expect(wrapper.text()).not.toContain("查看谁的资料");
   });
 
   it("体检数据支持近一周、近一个月和近半年快捷范围", async () => {
@@ -147,16 +155,21 @@ describe("健康成员筛选请求", () => {
     }));
   });
 
-  it("健康时间线选择亲友时发送亲友编号", async () => {
-    mountView(HealthTimelineView, { owner_id: "12" });
+  it("健康时间线始终读取当前有效账号且不再显示成员选择器", async () => {
+    const wrapper = mountView(HealthTimelineView, { owner_id: "12" });
     await flushPromises();
-    expect(mocks.fetchTimeline).toHaveBeenCalledWith(expect.objectContaining({ owner_id: 12 }));
+    expect(mocks.fetchTimeline).toHaveBeenCalledWith(expect.not.objectContaining({ owner_id: expect.anything() }));
+    expect(wrapper.text()).not.toContain("查看谁的记录");
   });
 
-  it("健康趋势和 AI 使用相同的亲友编号", async () => {
-    mountView(TrendView, { owner_id: "12", domain_id: "1" });
+  it("健康趋势与 AI 都基于当前有效账号且不再显示成员选择器", async () => {
+    const wrapper = mountView(TrendView, { owner_id: "12", domain_id: "1" });
     await flushPromises();
-    expect(mocks.fetchHealthTrends).toHaveBeenCalledWith(1, expect.objectContaining({ owner_id: 12, source_type: "all" }));
+    expect(mocks.fetchHealthTrends).toHaveBeenCalledWith(
+      1,
+      expect.not.objectContaining({ owner_id: expect.anything() }),
+    );
+    expect(wrapper.text()).not.toContain("查看谁的趋势");
   });
 
   it("健康趋势支持快捷日期和跨年自定义范围", async () => {
@@ -247,6 +260,65 @@ describe("健康成员筛选请求", () => {
     expect(note.find("a").exists()).toBe(false);
   });
 
+  it("异常提示默认每指标只显示最近异常并可展开历史与进入详情", async () => {
+    mocks.fetchHealthTrends.mockResolvedValue({
+      data: {
+        series_by_indicator: [{
+          indicator: { id: 7, name: "收缩压", unit: "mmHg" },
+          points: [
+            { date: "2026-07-20", value: 150, result_status: "high", health_data_id: "hd-i-20", source: { type: "institution", name: "澄心健康" } },
+            { date: "2026-07-28", value: 146, result_status: "high", health_data_id: "hd-i-28", source: { type: "institution", name: "澄心健康" } },
+            { date: "2026-07-29", value: 132, result_status: "normal", is_abnormal: false, health_data_id: "hd-s-1-2026-07-29", source: { type: "self" } },
+          ],
+          summary: { latest: 132, change: -14 },
+          reference: { low: 90, high: 139 },
+        }],
+        source_options: [{ value: "all", label: "全部来源" }],
+      },
+    });
+    const wrapper = mountView(TrendView, { domain_id: "1" });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("发现 1 项指标存在异常（共 2 条记录）");
+    expect(wrapper.text()).toContain("146 mmHg");
+    expect(wrapper.text()).not.toContain("150 mmHg");
+    expect(wrapper.text()).toContain("90–139 mmHg");
+    expect(wrapper.text()).toContain("历史异常，最新已恢复正常");
+
+    await wrapper.get(".abnormal-panel__actions .el-button").trigger("click");
+    expect(wrapper.text()).toContain("150 mmHg");
+    await wrapper.findAll(".abnormal-list__tail .el-button")[0].trigger("click");
+    expect(mocks.router.push).toHaveBeenCalledWith({
+      name: "health-data-detail",
+      params: { id: "hd-i-28" },
+    });
+  });
+
+  it("异常提示接收机构报告的非数值阳性结果", async () => {
+    mocks.fetchHealthTrends.mockResolvedValue({
+      data: {
+        series_by_indicator: [],
+        qualitative_series_by_indicator: [{
+          indicator: { id: 19, name: "尿蛋白", unit: "" },
+          points: [
+            { date: "2026-07-20", value: "阳性", result_status: "positive", is_abnormal: true, health_data_id: "hd-i-19", reference: "阴性", source: { type: "institution", name: "虚构体检机构" } },
+            { date: "2026-07-29", value: "阴性", result_status: "negative", is_abnormal: false, health_data_id: "hd-i-29", reference: "阴性", source: { type: "institution", name: "虚构体检机构" } },
+          ],
+          reference: { label: "机构报告定性参考" },
+        }],
+        source_options: [{ value: "all", label: "全部来源" }],
+      },
+    });
+
+    const wrapper = mountView(TrendView, { domain_id: "1" });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("尿蛋白");
+    expect(wrapper.text()).toContain("阳性");
+    expect(wrapper.text()).toContain("历史异常，最新已恢复正常");
+    expect(wrapper.findAll('[data-testid="trend-chart"]')).toHaveLength(0);
+  });
+
   it("体检详情支持按一个或多个健康方向同步筛选指标、结论和附件", async () => {
     const wrapper = mountView(HealthDataDetailView);
     await flushPromises();
@@ -254,6 +326,9 @@ describe("健康成员筛选请求", () => {
     expect(wrapper.text()).toContain("已显示 2/2 个方向");
     expect(wrapper.text()).toContain("体格检查结论");
     expect(wrapper.text()).toContain("十二导联心电图");
+    expect(wrapper.text()).toContain("测试上传医生（虚构）");
+    expect(wrapper.text()).toContain("测试复核医生（虚构）");
+    expect(wrapper.text()).toContain("已锁档展示");
     expect(wrapper.text()).toContain("2");
 
     wrapper.vm.handleDomainSelection([2]);
@@ -272,5 +347,12 @@ describe("健康成员筛选请求", () => {
     await flushPromises();
     expect(wrapper.text()).toContain("已显示 2/2 个方向");
     expect(wrapper.text()).toContain("体格检查结论");
+  });
+
+  it("体检详情忽略旧 owner_id 并始终读取当前有效账号", async () => {
+    mountView(HealthDataDetailView, { owner_id: "12" });
+    await flushPromises();
+
+    expect(mocks.fetchHealthDataDetail).toHaveBeenCalledWith("hd-i-42");
   });
 });

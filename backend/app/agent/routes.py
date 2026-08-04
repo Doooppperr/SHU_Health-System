@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import traceback
 import uuid
 from datetime import datetime, timezone
 
@@ -13,8 +15,25 @@ from app.agent.crypto import decrypt_json, encrypt_json
 from app.agent.runtime import run_agent
 from app.ai.service import AiConfigurationError, AiProviderError, iter_text_chunks
 from app.extensions import db
-from app.models import AgentPendingAction, AgentRun, AgentThread, SupportHandoff, User
+from app.models import (
+    AgentActionExecution,
+    AgentPendingAction,
+    AgentRun,
+    AgentThread,
+    SupportHandoff,
+    User,
+)
 from app.services.permissions import ROLE_ADMIN, roles_required
+from app.services.sensitive_data import redact_health_identity_codes
+
+
+HEALTH_ID_PATTERN = re.compile(
+    r"HID-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}",
+    re.IGNORECASE,
+)
+PARTICIPANT_TOKEN_PATTERN = re.compile(r"bpt_[A-Za-z0-9_-]{43}")
+PARTICIPANT_SLOT_PREFIX = "participant_slot_"
+PARTICIPANT_SLOT_PATTERN = re.compile(r"participant_slot_[0-9a-f]{32}")
 
 
 def _user():
@@ -27,10 +46,10 @@ def _user():
 
 
 def _error(message, code, status, *, retryable=False):
-    return {
+    return _redact_user_visible_participant_data({
         "message": message,
         "error": {"code": code, "message": message, "retryable": retryable},
-    }, status
+    }), status
 
 
 def _enabled():
@@ -42,6 +61,8 @@ def _owned_thread(thread_id, user):
 
 
 def _sse(event, payload):
+    event = _redact_user_visible_participant_data(event)
+    payload = _redact_user_visible_participant_data(payload)
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
@@ -53,6 +74,208 @@ def _stream_response(generator):
             "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+def _claim_action_decision(action_id, *, user_id, decision, decided_at):
+    """Atomically choose the sole decision allowed to execute an action."""
+    next_status = "approved" if decision == "approve" else "rejected"
+    changed = AgentPendingAction.query.filter(
+        AgentPendingAction.id == action_id,
+        AgentPendingAction.user_id == user_id,
+        AgentPendingAction.status == "pending",
+        AgentPendingAction.expires_at > decided_at,
+    ).update(
+        {
+            AgentPendingAction.status: next_status,
+            AgentPendingAction.decided_at: decided_at,
+        },
+        synchronize_session=False,
+    )
+    return changed == 1
+
+
+def _expire_pending_action_cas(action_id, *, user_id, expired_at):
+    changed = AgentPendingAction.query.filter(
+        AgentPendingAction.id == action_id,
+        AgentPendingAction.user_id == user_id,
+        AgentPendingAction.status == "pending",
+        AgentPendingAction.expires_at <= expired_at,
+    ).update(
+        {
+            AgentPendingAction.status: "expired",
+            AgentPendingAction.decided_at: expired_at,
+        },
+        synchronize_session=False,
+    )
+    return changed == 1
+
+
+def _masked_agent_name(value):
+    name = str(value or "").strip()
+    if not name:
+        return "未完善姓名"
+    if len(name) == 1:
+        return f"{name}*"
+    return f"{name[0]}{'*' * (len(name) - 1)}"
+
+
+def _prepare_agent_message(user, message):
+    """Replace raw health IDs before any model call or conversation storage.
+
+    Health identity codes are secure booking inputs, not model context. The
+    model receives only the canonical self/linked source or a thread-scoped,
+    non-secret slot plus a masked summary. Raw codes and bearer credentials
+    never enter the model conversation.
+    """
+    matches = list(dict.fromkeys(
+        match.group(0).upper()
+        for match in HEALTH_ID_PATTERN.finditer(message)
+    ))
+    if not matches:
+        return message, {}, None
+    if len(matches) > 5:
+        return None, {}, _error(
+            "一次最多解析5位受检者的健康身份码",
+            "BOOKING_PARTICIPANTS_INVALID",
+            400,
+        )
+
+    from app.services.booking_participants import issue_participant_token
+
+    replacements = {}
+    participant_slots = {}
+    for health_id in matches:
+        item, error = issue_participant_token(user, health_id)
+        if error:
+            db.session.rollback()
+            payload, status = error
+            return None, {}, _error(
+                payload.get("message") or "无法使用该健康身份码添加受检者，请核对后重试",
+                payload.get("code") or "HEALTH_ID_PARTICIPANT_UNAVAILABLE",
+                status,
+            )
+        participant_type = item.get("participant_type")
+        if participant_type == "self":
+            credential_summary = "participant_type=self；"
+        elif participant_type == "linked_account":
+            credential_summary = (
+                "participant_type=linked_account；"
+                f"relation_id={item['relation_id']}；"
+            )
+        else:
+            slot_id = f"{PARTICIPANT_SLOT_PREFIX}{uuid.uuid4().hex}"
+            participant_slots[slot_id] = {
+                "participant_token": item["participant_token"],
+                "expires_at": item["expires_at"],
+            }
+            credential_summary = (
+                "participant_type=health_code_token；"
+                f"participant_token={slot_id}；"
+            )
+        replacements[health_id] = (
+            "[健康身份码已由服务端安全解析："
+            f"{credential_summary}"
+            f"受检者={_masked_agent_name(item.get('real_name'))}；"
+            f"性别={item.get('gender') or '未公开'}；"
+            f"出生年份={item.get('birth_year') or '未知'}；"
+            f"身份码={item.get('masked_health_id') or '已脱敏'}。"
+            "不得展示或复述内部参与人凭证。]"
+        )
+
+    sanitized = HEALTH_ID_PATTERN.sub(
+        lambda match: replacements[match.group(0).upper()],
+        message,
+    )
+    return sanitized, participant_slots, None
+
+
+def _redact_participant_tokens(value):
+    """Remove one-time booking credentials from every user-visible payload."""
+    if isinstance(value, str):
+        return PARTICIPANT_TOKEN_PATTERN.sub("[安全参与人凭证]", value)
+    if isinstance(value, list):
+        return [_redact_participant_tokens(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_participant_tokens(item) for item in value)
+    if isinstance(value, dict):
+        return {
+            (
+                _redact_participant_tokens(key)
+                if isinstance(key, str)
+                else key
+            ): _redact_participant_tokens(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _redact_user_visible_participant_data(value):
+    """Hide bearer tokens and internal slots from every client/log surface."""
+    value = redact_health_identity_codes(value)
+    value = _redact_participant_tokens(value)
+    if isinstance(value, str):
+        return PARTICIPANT_SLOT_PATTERN.sub("[安全参与人引用]", value)
+    if isinstance(value, list):
+        return [_redact_user_visible_participant_data(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(
+            _redact_user_visible_participant_data(item) for item in value
+        )
+    if isinstance(value, dict):
+        return {
+            (
+                _redact_user_visible_participant_data(key)
+                if isinstance(key, str)
+                else key
+            ): _redact_user_visible_participant_data(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _redact_model_history(value):
+    """Remove legacy raw secrets while retaining non-secret participant slots."""
+    return redact_health_identity_codes(_redact_participant_tokens(value))
+
+
+def _active_participant_slots(value):
+    """Keep only well-formed, unexpired encrypted slot mappings."""
+    if not isinstance(value, dict):
+        return {}
+    now = datetime.now(timezone.utc)
+    active = {}
+    for slot_id, row in value.items():
+        if (
+            not isinstance(slot_id, str)
+            or not slot_id.startswith(PARTICIPANT_SLOT_PREFIX)
+            or not isinstance(row, dict)
+            or not PARTICIPANT_TOKEN_PATTERN.fullmatch(
+                str(row.get("participant_token") or "")
+            )
+        ):
+            continue
+        try:
+            expires_at = datetime.fromisoformat(str(row.get("expires_at") or ""))
+        except ValueError:
+            continue
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at <= now:
+            continue
+        active[slot_id] = {
+            "participant_token": row["participant_token"],
+            "expires_at": expires_at.isoformat(),
+        }
+    return active
+
+
+def _log_sanitized_exception(message):
+    """Retain a useful traceback without writing bearer credentials."""
+    current_app.logger.error(
+        "%s\n%s",
+        message,
+        _redact_user_visible_participant_data(traceback.format_exc()),
     )
 
 
@@ -94,7 +317,11 @@ def create_thread():
         id=thread_id,
         user_id=user.id,
         encrypted_state=encrypt_json(
-            {"messages": [], "active_subject_id": user.id},
+            {
+                "messages": [],
+                "active_subject_id": user.id,
+                "participant_slots": {},
+            },
             purpose=f"agent-thread:{thread_id}",
         ),
     )
@@ -124,13 +351,17 @@ def get_thread(thread_id):
         "item": {
             "id": thread.id,
             "status": thread.status,
-            "messages": state.get("messages") or [],
+            "messages": _redact_user_visible_participant_data(
+                state.get("messages") or []
+            ),
             "active_subject_id": state.get("active_subject_id"),
             "pending_actions": [
                 {
                     "action_id": row.id,
                     "action_type": row.action_type,
-                    "summary": row.summary,
+                    "summary": _redact_user_visible_participant_data(
+                        row.summary
+                    ),
                     "expires_at": row.expires_at.isoformat(),
                 }
                 for row in pending
@@ -150,7 +381,11 @@ def clear_thread(thread_id):
     now = datetime.now(timezone.utc)
     thread.status = "cleared"
     thread.encrypted_state = encrypt_json(
-        {"messages": [], "active_subject_id": user.id},
+        {
+            "messages": [],
+            "active_subject_id": user.id,
+            "participant_slots": {},
+        },
         purpose=f"agent-thread:{thread.id}",
     )
     thread.cleared_at = now
@@ -177,6 +412,11 @@ def run_stream(thread_id):
     message = str(payload.get("message") or "").strip()
     if not 1 <= len(message) <= 4000:
         return _error("问题长度必须在 1 到 4000 个字符之间", "invalid_message", 400)
+    model_message, new_participant_slots, preparation_error = (
+        _prepare_agent_message(user, message)
+    )
+    if preparation_error:
+        return preparation_error
 
     run_id = str(uuid.uuid4())
     run = AgentRun(
@@ -202,22 +442,49 @@ def run_stream(thread_id):
                 stream_thread.encrypted_state,
                 purpose=f"agent-thread:{stream_thread_id}",
             )
+            participant_slots = _active_participant_slots(
+                state.get("participant_slots")
+            )
+            participant_slots.update(new_participant_slots)
+            state["participant_slots"] = participant_slots
+            # Threads created by an older release may still have placed a
+            # bearer in model-facing history. Drop it before this release ever
+            # sends that history to a provider.
+            state["messages"] = _redact_model_history(
+                state.get("messages") or []
+            )
             result = run_agent(
-                message=message,
-                messages=state.get("messages") or [],
+                message=model_message,
+                messages=state["messages"],
+                participant_slots=participant_slots,
                 user=stream_user,
                 thread_id=stream_thread_id,
                 run_id=stream_run_id,
             )
             for item in result.get("events") or []:
-                yield _sse(item["event"], item["data"])
-            answer = result.get("answer") or ""
+                yield _sse(
+                    item["event"],
+                    _redact_user_visible_participant_data(item["data"]),
+                )
+            answer = _redact_user_visible_participant_data(
+                result.get("answer") or ""
+            )
             for chunk in iter_text_chunks(answer):
                 yield _sse("delta", {"content": chunk})
-            state["messages"] = result.get("messages") or [
+            result_messages = result.get("messages") or [
                 *(state.get("messages") or []),
-                {"role": "user", "content": message},
+                {"role": "user", "content": model_message},
                 {"role": "assistant", "content": answer},
+            ]
+            # Model-facing history contains only non-secret slot identifiers.
+            # The short-lived bearer stays solely in the separate encrypted
+            # participant_slots map and is resolved immediately before a tool
+            # executes.
+            state["messages"] = [
+                _redact_model_history(row)
+                if isinstance(row, dict)
+                else row
+                for row in result_messages
             ]
             stream_thread.encrypted_state = encrypt_json(
                 state, purpose=f"agent-thread:{stream_thread_id}"
@@ -257,7 +524,7 @@ def run_stream(thread_id):
                 },
             )
         except Exception:
-            current_app.logger.exception("Agent run failed")
+            _log_sanitized_exception("Agent run failed")
             db.session.rollback()
             failed = db.session.get(AgentRun, stream_run_id)
             failed.status = "failed"
@@ -295,19 +562,8 @@ def decide_action(action_id):
 
     def generate():
         yield _sse("meta", {"action_id": stream_action_id, "thread_id": stream_thread_id})
-        stream_action = db.session.get(AgentPendingAction, stream_action_id)
-        stream_user = db.session.get(User, stream_user_id)
-        if payload["decision"] == "reject":
-            if stream_action.status == "pending":
-                stream_action.status = "rejected"
-                stream_action.decided_at = datetime.now(timezone.utc)
-                db.session.commit()
-            yield _sse(
-                "done",
-                {"action_id": stream_action_id, "status": stream_action.status},
-            )
-            return
-        if not current_app.config.get("AGENT_WRITE_ENABLED"):
+        decision = payload["decision"]
+        if decision == "approve" and not current_app.config.get("AGENT_WRITE_ENABLED"):
             yield _sse(
                 "error",
                 {
@@ -317,11 +573,90 @@ def decide_action(action_id):
                 },
             )
             return
+
+        decided_at = datetime.now(timezone.utc)
+        if not _claim_action_decision(
+            stream_action_id,
+            user_id=stream_user_id,
+            decision=decision,
+            decided_at=decided_at,
+        ):
+            db.session.rollback()
+            current = AgentPendingAction.query.filter_by(
+                id=stream_action_id,
+                user_id=stream_user_id,
+            ).first()
+            if current is None:
+                yield _sse(
+                    "error",
+                    {
+                        "code": "action_not_found",
+                        "message": "没有找到待确认操作",
+                        "retryable": False,
+                    },
+                )
+                return
+            expires_at = current.expires_at
+            if expires_at is not None and expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if current.status == "pending" and expires_at <= decided_at:
+                _expire_pending_action_cas(
+                    stream_action_id,
+                    user_id=stream_user_id,
+                    expired_at=decided_at,
+                )
+                db.session.commit()
+                yield _sse(
+                    "error",
+                    {
+                        "code": "action_conflict",
+                        "message": "操作草稿已经过期，请重新发起",
+                        "retryable": False,
+                    },
+                )
+                return
+            if decision == "reject" and current.status == "rejected":
+                yield _sse(
+                    "done",
+                    {"action_id": stream_action_id, "status": "rejected"},
+                )
+                return
+            if decision == "approve" and current.status == "executed":
+                execution = AgentActionExecution.query.filter_by(
+                    action_id=stream_action_id,
+                    status="completed",
+                ).first()
+                result = execution.result if execution is not None else {}
+                yield _sse(
+                    "done",
+                    {
+                        "action_id": stream_action_id,
+                        "status": "executed",
+                        "result": result,
+                    },
+                )
+                return
+            yield _sse(
+                "error",
+                {
+                    "code": "action_conflict",
+                    "message": "操作草稿已经被其他请求处理",
+                    "retryable": False,
+                },
+            )
+            return
+
+        db.session.expire_all()
+        stream_action = db.session.get(AgentPendingAction, stream_action_id)
+        stream_user = db.session.get(User, stream_user_id)
+        if decision == "reject":
+            db.session.commit()
+            yield _sse(
+                "done",
+                {"action_id": stream_action_id, "status": "rejected"},
+            )
+            return
         try:
-            if stream_action.status == "pending":
-                stream_action.status = "approved"
-                stream_action.decided_at = datetime.now(timezone.utc)
-                db.session.flush()
             yield _sse("status", {"stage": "write_commit", "message": "正在重新校验并执行"})
             result = execute_approved_action(stream_action, stream_user)
             yield _sse(
@@ -339,7 +674,7 @@ def decide_action(action_id):
                 {"code": "action_conflict", "message": str(exc), "retryable": False},
             )
         except Exception:
-            current_app.logger.exception("Agent action failed")
+            _log_sanitized_exception("Agent action failed")
             db.session.rollback()
             yield _sse(
                 "error",
@@ -369,7 +704,7 @@ def get_action(action_id):
             "id": action.id,
             "thread_id": action.thread_id,
             "action_type": action.action_type,
-            "summary": action.summary,
+            "summary": _redact_user_visible_participant_data(action.summary),
             "status": action.status,
             "expires_at": action.expires_at.isoformat(),
         }

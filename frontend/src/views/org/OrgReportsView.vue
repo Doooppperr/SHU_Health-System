@@ -63,9 +63,10 @@
     </el-drawer>
 
     <el-dialog v-model="ocrVisible" title="导入体检报告并识别" width="min(560px,94vw)">
-      <el-alert title="系统只会创建待复核草稿，所有识别结果都需要工作人员确认后才能归档。" type="warning" show-icon :closable="false"/>
+      <el-alert title="导入确认后将进入“待复核”，复核医生仍可修改识别结果；复核通过后才会锁档并展示给用户。" type="warning" show-icon :closable="false"/>
       <label class="upload-field"><strong>选择报告文件</strong><span>支持 PDF、PNG、JPG、WEBP</span><input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" @change="ocrFile=$event.target.files?.[0]||null"/></label>
-      <template #footer><el-button @click="ocrVisible=false">取消</el-button><el-button type="primary" :loading="ocrLoading" @click="runOcr">导入并创建待复核数据</el-button></template>
+      <el-form-item label="上传医生姓名" required style="margin-top:16px"><el-input v-model.trim="ocrDoctorName" maxlength="50" placeholder="填写本次报告上传医生"/></el-form-item>
+      <template #footer><el-button @click="ocrVisible=false">取消</el-button><el-button type="primary" :loading="ocrLoading" @click="runOcr">上传并提交复核</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="closeVisible" title="结束或取消预约" width="min(560px,94vw)">
@@ -113,8 +114,8 @@
 
         <section class="production-section">
           <header><div><span>01</span><h3>结构化检查结果</h3></div><small>{{current.indicators?.length||0}} 项</small></header>
-          <div v-if="current.status==='draft'" class="result-entry"><el-select v-model="indicatorForm.indicator_dict_id" filterable placeholder="选择标准指标"><el-option v-for="item in allowedIndicators" :key="item.id" :label="`${item.name}（${item.unit||'-'}）`" :value="item.id"/></el-select><el-input v-model="indicatorForm.value" placeholder="检查结果"/><el-button type="primary" @click="addIndicator">添加</el-button></div>
-          <div class="result-list"><article v-for="item in current.indicators||[]" :key="item.id"><span><strong>{{item.indicator?.name}}</strong><small>{{item.normalized_unit||item.indicator?.unit||'无单位'}}</small></span><b>{{item.value}}</b><el-button v-if="current.status==='draft'" link type="danger" @click="removeIndicator(item)">删除</el-button></article><el-empty v-if="!(current.indicators||[]).length" description="尚未录入检查结果" :image-size="54"/></div>
+          <div v-if="reportEditable" class="result-entry"><el-select v-model="indicatorForm.indicator_dict_id" filterable placeholder="选择标准指标"><el-option v-for="item in allowedIndicators" :key="item.id" :label="`${item.name}（${item.unit||'-'}）`" :value="item.id"/></el-select><el-input v-model="indicatorForm.value" placeholder="检查结果"/><el-button type="primary" @click="addIndicator">添加</el-button></div>
+          <div class="result-list"><article v-for="item in current.indicators||[]" :key="item.id"><span><strong>{{item.indicator?.name}}</strong><small>{{item.normalized_unit||item.indicator?.unit||'无单位'}}</small></span><b>{{item.value}}</b><el-button v-if="reportEditable" link type="danger" @click="removeIndicator(item)">删除</el-button></article><el-empty v-if="!(current.indicators||[]).length" description="尚未录入检查结果" :image-size="54"/></div>
         </section>
 
         <section class="production-section">
@@ -135,23 +136,34 @@
             type="warning"
             :closable="false"
           />
-          <div v-if="current.status==='draft'" class="text-entry"><el-select v-model="textForm.health_domain_id" placeholder="健康领域"><el-option v-for="d in allowedDomains" :key="d.id" :label="d.name" :value="d.id"/></el-select><el-input v-model="textForm.title" placeholder="结论标题"/><el-input v-model="textForm.body" type="textarea" :rows="2" placeholder="填写检查所见或专业结论"/><el-button @click="addText">添加结论</el-button></div>
-          <article v-for="item in current.text_results||[]" :key="item.id" class="text-result"><div><strong>{{item.title}}</strong><p>{{item.body}}</p></div><el-button v-if="current.status==='draft'" link type="danger" @click="removeText(item)">删除</el-button></article>
+          <div v-if="reportEditable" class="text-entry"><el-select v-model="textForm.health_domain_id" placeholder="健康领域"><el-option v-for="d in allowedDomains" :key="d.id" :label="d.name" :value="d.id"/></el-select><el-input v-model="textForm.title" placeholder="结论标题"/><el-input v-model="textForm.body" type="textarea" :rows="2" placeholder="填写检查所见或专业结论"/><el-button @click="addText">添加结论</el-button></div>
+          <article v-for="item in current.text_results||[]" :key="item.id" class="text-result"><div><strong>{{item.title}}</strong><p>{{item.body}}</p></div><el-button v-if="reportEditable" link type="danger" @click="removeText(item)">删除</el-button></article>
         </section>
 
         <section class="production-section">
           <header><div><span>03</span><h3>检查影像与附件</h3></div><small>{{current.assets?.length||0}} 份</small></header>
-          <div v-if="current.status==='draft'" class="asset-entry">
+          <div v-if="reportEditable" class="asset-entry">
             <el-select v-model="assetForm.asset_type_id" placeholder="标准附件槽位" @change="assetTypeChanged"><el-option v-for="t in assetTypes" :key="t.id" :label="`${t.name}（最多${t.max_files}份）`" :value="t.id"/></el-select>
             <el-input v-model="assetForm.title" placeholder="附件标题"/>
             <el-input v-model="assetForm.annotation" placeholder="机构批注（可选）"/>
             <input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" @change="assetFile=$event.target.files?.[0]||null"/>
             <el-button @click="addAsset">上传检查附件</el-button>
           </div>
-          <article v-for="item in current.assets||[]" :key="item.id" class="asset-result"><span><strong>{{item.asset_type?.name||item.title}} · {{item.title}}</strong><small>{{item.annotation||'暂无机构批注'}}</small></span><div class="asset-actions"><el-button link type="primary" @click="viewAsset(item)">查看附件</el-button><el-button v-if="current.status==='draft'" link @click="editAsset(item)">修改标题/批注</el-button><el-button v-if="current.status==='draft'" link type="danger" @click="removeAsset(item)">删除</el-button></div></article>
+          <article v-for="item in current.assets||[]" :key="item.id" class="asset-result"><span><strong>{{item.asset_type?.name||item.title}} · {{item.title}}</strong><small>{{item.annotation||'暂无机构批注'}}</small></span><div class="asset-actions"><el-button link type="primary" @click="viewAsset(item)">查看附件</el-button><el-button v-if="reportEditable" link @click="editAsset(item)">修改标题/批注</el-button><el-button v-if="reportEditable" link type="danger" @click="removeAsset(item)">删除</el-button></div></article>
         </section>
 
-        <section class="production-final"><div><h3>复核与正式归档</h3><p>{{ finalGuidance }}</p></div><el-button v-if="current.status==='draft'" type="success" :disabled="missingConclusionDomains.length>0" @click="lockReport(current.id)">完成复核并锁定</el-button><el-button v-else-if="current.status==='locked'" type="primary" @click="submitReport(current.id)">提交并交付给用户</el-button><el-tag v-else type="success">已正式交付</el-tag></section>
+        <section class="production-final">
+          <div><h3>上传、复核与正式归档</h3><p>{{ finalGuidance }}</p></div>
+          <div v-if="current.status==='draft'" class="doctor-confirm">
+            <el-input v-model.trim="uploadDoctorName" maxlength="50" placeholder="上传医生姓名"/>
+            <el-button type="success" :disabled="missingConclusionDomains.length>0 || !uploadDoctorName" @click="submitForReview(current.id)">上传确认，提交复核</el-button>
+          </div>
+          <div v-else-if="['pending_review','locked'].includes(current.status)" class="doctor-confirm">
+            <el-input v-model.trim="reviewDoctorName" maxlength="50" placeholder="复核医生姓名"/>
+            <el-button type="primary" :disabled="!reviewDoctorName" @click="reviewAndPublish(current.id)">复核通过并归档</el-button>
+          </div>
+          <el-tag v-else type="success">已正式交付</el-tag>
+        </section>
       </template>
     </el-drawer>
 
@@ -177,15 +189,15 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { fetchIndicatorDicts } from "../../api/indicators";
-import { addOrgReportIndicator, addOrgTextResult, uploadOrgHealthAsset, deleteOrgTextResult, deleteOrgHealthAsset, attendOrgAppointment, closeOrgAppointment, createOrgReport, deleteOrgReportIndicator, fetchOrgAppointmentCapacity, fetchOrgAppointments, fetchOrgReport, fetchOrgReportAssetContent, fetchOrgReportAssetTypes, fetchOrgReports, lockOrgReport, submitOrgReport, updateOrgAppointmentCapacity, updateOrgHealthAsset, uploadOrgReportOcr } from "../../api/org";
+import { addOrgReportIndicator, addOrgTextResult, uploadOrgHealthAsset, deleteOrgTextResult, deleteOrgHealthAsset, attendOrgAppointment, closeOrgAppointment, createOrgReport, deleteOrgReportIndicator, fetchOrgAppointmentCapacity, fetchOrgAppointments, fetchOrgReport, fetchOrgReportAssetContent, fetchOrgReportAssetTypes, fetchOrgReports, reviewOrgReport, submitOrgReportForReview, updateOrgAppointmentCapacity, updateOrgHealthAsset, uploadOrgReportOcr } from "../../api/org";
 
 const route=useRoute(),router=useRouter();
 const appointmentStatuses=[{value:"unfulfilled",label:"待到检"},{value:"awaiting_report",label:"待归档"},{value:"fulfilled",label:"已完成"},{value:"no_show",label:"未到检"},{value:"institution_cancelled",label:"机构取消"},{value:"cancelled",label:"用户取消"}];
 const appointmentLabel=(value)=>appointmentStatuses.find((item)=>item.value===value)?.label||"处理中";
 const appointmentType=(value)=>({fulfilled:"success",no_show:"danger",institution_cancelled:"danger",cancelled:"info",awaiting_report:"warning"}[value]||"");
-const reportLabel=(value)=>({draft:"待完善",locked:"待提交",published:"已交付"}[value]||"尚未创建");
-const reportType=(value)=>({draft:"warning",locked:"primary",published:"success"}[value]||"info");
-const items=ref([]),archivedReports=ref([]),sharedReports=ref([]),loading=ref(false),status=ref(""),view=ref(["today","archive","all","history","shared"].includes(route.query.view)?route.query.view:"today"),tabCounts=reactive({today:0,archive:0,all:0}),archiveTotals=reactive({history:0,shared:0}),limited=ref(false),dailyLimit=ref(20),capacitySaving=ref(false),capacityVisible=ref(false),ocrVisible=ref(false),ocrFile=ref(null),ocrLoading=ref(false),selectedAppointment=ref(null),detailVisible=ref(false),current=ref(null),indicators=ref([]),assetFile=ref(null);
+const reportLabel=(value)=>({draft:"待上传确认",pending_review:"待复核",locked:"待复核",published:"已交付"}[value]||"尚未创建");
+const reportType=(value)=>({draft:"warning",pending_review:"primary",locked:"primary",published:"success"}[value]||"info");
+const items=ref([]),archivedReports=ref([]),sharedReports=ref([]),loading=ref(false),status=ref(""),view=ref(["today","archive","all","history","shared"].includes(route.query.view)?route.query.view:"today"),tabCounts=reactive({today:0,archive:0,all:0}),archiveTotals=reactive({history:0,shared:0}),limited=ref(false),dailyLimit=ref(20),capacitySaving=ref(false),capacityVisible=ref(false),ocrVisible=ref(false),ocrFile=ref(null),ocrDoctorName=ref(""),ocrLoading=ref(false),selectedAppointment=ref(null),detailVisible=ref(false),current=ref(null),indicators=ref([]),assetFile=ref(null),uploadDoctorName=ref(""),reviewDoctorName=ref("");
 const indicatorForm=reactive({indicator_dict_id:null,value:""}),textForm=reactive({health_domain_id:null,title:"",body:""}),assetForm=reactive({health_domain_id:null,asset_type_id:null,title:"",annotation:""});
 const archiveFilters=reactive({subject:""}),archiveDateRange=ref([]);
 const appointmentPagination=reactive({page:1,page_size:15,total:0,pages:0}),assetTypes=ref([]);
@@ -199,6 +211,7 @@ const representedDomainIds=computed(()=>new Set([...(current.value?.indicators||
 const representedDomains=computed(()=>allowedDomains.value.filter((domain)=>representedDomainIds.value.has(domain.id)));
 const conclusionDomainIds=computed(()=>new Set((current.value?.text_results||[]).map((item)=>item.domain_id)));
 const missingConclusionDomains=computed(()=>representedDomains.value.filter((domain)=>!conclusionDomainIds.value.has(domain.id)));
+const reportEditable=computed(()=>["draft","pending_review"].includes(current.value?.status)&&current.value?.access_mode!=="cross_branch_read_only");
 const visibleAppointments=computed(()=>items.value);
 const tabs=computed(()=>[{value:"today",label:"今日接待",count:tabCounts.today},{value:"archive",label:"待归档",count:tabCounts.archive},{value:"all",label:"全部预约",count:tabCounts.all},{value:"history",label:"本院归档",count:archiveTotals.history},{value:"shared",label:"机构共享档案",count:archiveTotals.shared}]);
 const displayedReports=computed(()=>view.value==="shared"?sharedReports.value:archivedReports.value);
@@ -206,13 +219,13 @@ const currentArchiveTotal=computed(()=>view.value==="shared"?archiveTotals.share
 const currentArchivePagination=computed(()=>view.value==="shared"?sharedPagination:historyPagination);
 const tabCopy={today:{title:"今天需要接待的受检者",description:"核对身份并确认到检后，开始本次体检流程。",empty:"今天暂无待接待预约"},archive:{title:"等待完善与归档",description:"补充检查结果、文字结论和附件，复核后正式交付。",empty:"当前没有待归档任务"},all:{title:"全部预约进度",description:"查看本机构所有预约及其当前服务状态。",empty:"暂无预约记录"}};
 const currentTab=computed(()=>tabCopy[view.value]||tabCopy.all);
-const productionStep=computed(()=>current.value?.status==="published"?4:current.value?.status==="locked"?3:Math.min(2,[(current.value?.indicators||[]).length,(current.value?.text_results||[]).length,(current.value?.assets||[]).length].filter(Boolean).length));
-const finalGuidance=computed(()=>current.value?.status==="draft"?"确认结果、结论和附件无误后锁定。锁定后将不能继续修改。":current.value?.status==="locked"?"内容已锁定。提交后将永久归档并向用户交付。":"本份健康数据已正式交付，内容不可修改或撤下。");
+const productionStep=computed(()=>current.value?.status==="published"?4:["pending_review","locked"].includes(current.value?.status)?3:Math.min(2,[(current.value?.indicators||[]).length,(current.value?.text_results||[]).length,(current.value?.assets||[]).length].filter(Boolean).length));
+const finalGuidance=computed(()=>current.value?.status==="draft"?"由上传医生确认内容并提交复核；提交后状态变为待复核。":["pending_review","locked"].includes(current.value?.status)?"复核医生可先修改问题数据，确认无误后归档；归档后将锁定并展示给用户。":"本份健康数据已正式交付，内容不可修改或撤下。");
 
 function dateParts(value){const match=String(value||"").match(/^(\d{4})-(\d{2})-(\d{2})/);return match?{day:match[3],month:`${Number(match[2])} 月`}:{day:"—",month:"日期待核对"};} function formatDay(value){return dateParts(value).day;} function formatMonth(value){return dateParts(value).month;}
 function formatExamDate(value){const match=String(value||"").match(/^(\d{4})-(\d{2})-(\d{2})/);return match?`${match[1]}年${Number(match[2])}月${Number(match[3])}日`:"日期待核对";}
 function reportProgress(item){return item.report_status?`健康数据：${reportLabel(item.report_status)}`:"尚未建立健康数据";}
-function nextActionText(item){if(item.status==="unfulfilled")return"核对受检者并确认到检";if(item.status==="awaiting_report"&&!item.report_id)return"建立并录入本次检查结果";if(item.report_status==="draft")return"继续完善并复核检查结果";if(item.report_status==="locked")return"提交正式归档";if(item.status==="fulfilled")return"本次服务已完成";return"无需继续处理";}
+function nextActionText(item){if(item.status==="unfulfilled")return"核对受检者并确认到检";if(item.status==="awaiting_report"&&!item.report_id)return"建立并录入本次检查结果";if(item.report_status==="draft")return"上传医生确认并提交复核";if(["pending_review","locked"].includes(item.report_status))return"复核医生确认并正式归档";if(item.status==="fulfilled")return"本次服务已完成";return"无需继续处理";}
 async function selectView(value){view.value=value;status.value="";appointmentPagination.page=1;await router.replace({query:{...route.query,view:value}});await load();}
 async function applyAppointmentStatus(){appointmentPagination.page=1;await load();}
 function archiveQuery(){const [start_date,end_date]=archiveDateRange.value||[];return{subject:archiveFilters.subject.trim()||undefined,start_date,end_date};}
@@ -226,11 +239,13 @@ function showSubject(item){subjectAppointment.value=item;subjectVisible.value=tr
 function openCloseDialog(item){closingAppointment.value=item;Object.assign(closeForm,{reason_type:"no_show",reason_code:"",reason_text:""});closeVisible.value=true;}
 async function submitClose(){if(closeForm.reason_type==="institution_cancelled"&&(!closeForm.reason_code||closeForm.reason_text.trim().length<5))return ElMessage.error("请选择机构原因并填写至少 5 个字符的说明");try{await closeOrgAppointment(closingAppointment.value.id,{...closeForm,reason_text:closeForm.reason_text.trim()});ElMessage.success(closeForm.reason_type==="no_show"?"已记录为未到检":"已取消预约并通知用户");closeVisible.value=false;await load();}catch(error){ElMessage.error(error?.response?.data?.message||"操作失败");}}
 async function createManual(item){try{const{data}=await createOrgReport({appointment_id:item.id});ElMessage.success("已建立待完善健康数据");await load();await openDetailById(data.item.id);}catch(error){ElMessage.error(error?.response?.data?.message||"建立失败");}}
-function openOcr(item){selectedAppointment.value=item;ocrFile.value=null;ocrVisible.value=true;}
-async function runOcr(){if(!ocrFile.value){ElMessage.error("请选择体检报告文件");return;}ocrLoading.value=true;try{const{data}=await uploadOrgReportOcr(ocrFile.value,{appointment_id:selectedAppointment.value.id});ocrVisible.value=false;ElMessage.success(`已建立待复核健康数据，识别到 ${data.item.indicator_count} 项结果`);await load();await openDetailById(data.item.id);}catch(error){ElMessage.error(error?.response?.data?.message||"报告识别失败");}finally{ocrLoading.value=false;}}
+function openOcr(item){selectedAppointment.value=item;ocrFile.value=null;ocrDoctorName.value="";ocrVisible.value=true;}
+async function runOcr(){if(!ocrFile.value){ElMessage.error("请选择体检报告文件");return;}if(!ocrDoctorName.value){ElMessage.error("请填写上传医生姓名");return;}ocrLoading.value=true;try{const{data}=await uploadOrgReportOcr(ocrFile.value,{appointment_id:selectedAppointment.value.id});await submitOrgReportForReview(data.item.id,ocrDoctorName.value);ocrVisible.value=false;ElMessage.success(`报告已上传并进入待复核，识别到 ${data.item.indicator_count} 项结果`);await load();await openDetailById(data.item.id);}catch(error){ElMessage.error(error?.response?.data?.message||"报告上传或提交复核失败");}finally{ocrLoading.value=false;}}
 async function openDetailById(id){
   try {
     current.value=(await fetchOrgReport(id)).data.item;
+    uploadDoctorName.value=current.value?.upload_doctor_name||"";
+    reviewDoctorName.value="";
     const firstMissing=missingConclusionDomains.value[0]?.id;
     const first=current.value?.package_version?.domains?.[0]?.id;
     textForm.health_domain_id=firstMissing||first||null;
@@ -263,8 +278,8 @@ async function editAsset(item){try{const{value}=await ElMessageBox.prompt("格�
 async function viewAsset(item){try{const response=await fetchOrgReportAssetContent(current.value.id,item.id);closeAssetPreview();previewAsset.value=item;previewUrl.value=URL.createObjectURL(response.data);assetPreviewVisible.value=true;}catch(error){ElMessage.error(error?.response?.data?.message||"检查影像读取失败");}}
 function closeAssetPreview(){if(previewUrl.value)URL.revokeObjectURL(previewUrl.value);previewUrl.value="";previewAsset.value=null;assetZoomed.value=false;}
 async function removeAsset(item){try{await deleteOrgHealthAsset(current.value.id,item.id);await openDetailById(current.value.id);}catch(error){ElMessage.error(error?.response?.data?.message||"删除失败");}}
-async function lockReport(id){if(missingConclusionDomains.value.length){textForm.health_domain_id=missingConclusionDomains.value[0].id;ElMessage.warning(`请先完善${missingConclusionDomains.value.map((domain)=>domain.name).join("、")}的机构结论`);return;}try{await ElMessageBox.confirm("请再次核对本次检查结果。锁定后将不能继续修改。","完成复核并锁定",{type:"warning",confirmButtonText:"确认锁定"});await lockOrgReport(id);ElMessage.success("内容已锁定，等待正式提交");await load();await openDetailById(id);}catch(error){if(error!=="cancel"&&error!=="close")ElMessage.error(error?.response?.data?.message||"锁定失败");}}
-async function submitReport(id){try{await ElMessageBox.confirm("提交后健康数据将永久归档并向用户交付，不能修改或撤下。","提交正式归档",{type:"warning",confirmButtonText:"确认提交并交付"});await submitOrgReport(id);ElMessage.success("健康数据已正式交付");detailVisible.value=false;await load();}catch(error){if(error!=="cancel"&&error!=="close")ElMessage.error(error?.response?.data?.message||"提交失败");}}
+async function submitForReview(id){if(missingConclusionDomains.value.length){textForm.health_domain_id=missingConclusionDomains.value[0].id;ElMessage.warning(`请先完善${missingConclusionDomains.value.map((domain)=>domain.name).join("、")}的机构结论`);return;}if(!uploadDoctorName.value)return ElMessage.warning("请填写上传医生姓名");try{await ElMessageBox.confirm("确认由该医生上传并将报告提交复核？复核阶段仍可修改问题数据。","提交复核",{type:"warning",confirmButtonText:"确认提交复核"});await submitOrgReportForReview(id,uploadDoctorName.value);ElMessage.success("报告已进入待复核状态");await load();await openDetailById(id);}catch(error){if(error!=="cancel"&&error!=="close")ElMessage.error(error?.response?.data?.message||"提交复核失败");}}
+async function reviewAndPublish(id){if(!reviewDoctorName.value)return ElMessage.warning("请填写复核医生姓名");try{await ElMessageBox.confirm("请确认已检查并修正所有问题。归档后报告将锁定并展示给用户，不能继续修改。","复核确认",{type:"warning",confirmButtonText:"复核通过并归档"});await reviewOrgReport(id,reviewDoctorName.value);ElMessage.success("复核完成，健康数据已锁档并交付");detailVisible.value=false;await load();}catch(error){if(error!=="cancel"&&error!=="close")ElMessage.error(error?.response?.data?.message||"复核归档失败");}}
 onMounted(async()=>{try{const response=await fetchIndicatorDicts();indicators.value=response.data.items||[];indicatorForm.indicator_dict_id=indicators.value[0]?.id||null;}catch{ElMessage.error("标准指标加载失败");}await Promise.all([load(),loadCapacity()]);});
 onBeforeUnmount(closeAssetPreview);
 </script>
@@ -276,6 +291,8 @@ onBeforeUnmount(closeAssetPreview);
 .org-asset-preview iframe{width:100%;height:66vh;border:0;border-radius:8px;background:#fff}
 .org-asset-preview p{margin:0;color:#d5e8e4;font-size:12px;line-height:1.6}
 .conclusion-coverage{display:flex;flex-wrap:wrap;gap:8px}
+.doctor-confirm{display:flex;align-items:center;gap:8px;min-width:min(440px,100%)}.doctor-confirm :deep(.el-input){min-width:180px}
+@media(max-width:680px){.doctor-confirm{align-items:stretch;flex-direction:column;min-width:100%}}
 </style>
 
 <style scoped>

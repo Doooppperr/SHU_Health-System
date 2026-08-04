@@ -41,6 +41,9 @@ def init_extensions(app):
     @jwt.token_verification_loader
     def verify_token_version(_header, payload):
         from app.models import User
+        if payload.get("delegated") is True:
+            from app.services.delegation import validate_delegation_claims
+            return validate_delegation_claims(payload)
         try:
             user = db.session.get(User, int(payload.get("sub")))
         except (TypeError, ValueError):

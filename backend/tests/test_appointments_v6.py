@@ -35,6 +35,7 @@ def test_capacity_is_rechecked_and_cancellation_releases_the_slot(app, client):
         "appointment_date": day.isoformat(),
         "height_cm": 170,
         "weight_kg": 65,
+        "notice_confirmed": True,
     }
     first = client.post("/api/appointments", headers=user1, json=payload)
     assert first.status_code == 201
@@ -58,6 +59,7 @@ def test_user_has_only_one_effective_appointment_per_day_across_institutions(app
         "appointment_date": day.isoformat(),
         "height_cm": 170,
         "weight_kg": 65,
+        "notice_confirmed": True,
     }).status_code == 201
     duplicate = client.post("/api/appointments", headers=headers, json={
         "institution_id": second_institution,
@@ -65,6 +67,7 @@ def test_user_has_only_one_effective_appointment_per_day_across_institutions(app
         "appointment_date": day.isoformat(),
         "height_cm": 170,
         "weight_kg": 65,
+        "notice_confirmed": True,
     })
     assert duplicate.status_code == 409
 
@@ -81,11 +84,28 @@ def test_institution_invalidation_is_final_and_visible_in_friend_timeline(app, c
         "appointment_date": day.isoformat(),
         "height_cm": 170,
         "weight_kg": 65,
+        "notice_confirmed": True,
     })
     appointment_id = created.get_json()["item"]["id"]
     with app.app_context():
         owner_id = User.query.filter_by(username="test2").first().id
-    before_invalidation = client.get(f"/api/health/timeline?owner_id={owner_id}", headers=viewer).get_json()["items"]
+    relation = next(
+        item
+        for item in client.get("/api/friends", headers=viewer).get_json()["items"]
+        if item["counterparty"]["id"] == owner_id and item["can_switch"]
+    )
+    switched = client.post(
+        f"/api/friends/{relation['id']}/switch-session",
+        headers=viewer,
+    )
+    assert switched.status_code == 200, switched.get_json()
+    effective_viewer = {
+        "Authorization": f"Bearer {switched.get_json()['access_token']}"
+    }
+    before_invalidation = client.get(
+        "/api/health/timeline",
+        headers=effective_viewer,
+    ).get_json()["items"]
     booked_event = next(item for item in before_invalidation if item["type"] == "appointment" and item["item"]["id"] == appointment_id)
     assert booked_event["item"]["status"] == "unfulfilled"
     assert booked_event["item"]["status_label"] == "预约成功"
@@ -95,7 +115,10 @@ def test_institution_invalidation_is_final_and_visible_in_friend_timeline(app, c
     assert invalidated.status_code == 200 and invalidated.get_json()["item"]["status"] == "no_show"
     assert client.post(f"/api/org/appointments/{appointment_id}/attend", headers=org).status_code == 409
     assert client.post("/api/org/reports", headers=org, json={"appointment_id": appointment_id}).status_code == 409
-    timeline = client.get(f"/api/health/timeline?owner_id={owner_id}", headers=viewer).get_json()["items"]
+    timeline = client.get(
+        "/api/health/timeline",
+        headers=effective_viewer,
+    ).get_json()["items"]
     event = next(item for item in timeline if item["type"] == "appointment" and item["item"]["id"] == appointment_id)
     assert event["item"]["appointment_date"] == day.isoformat()
     assert event["item"]["status"] == "no_show"

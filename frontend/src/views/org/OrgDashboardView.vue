@@ -44,11 +44,66 @@
         <h3>健康数据归档流程</h3>
         <ol>
           <li><span>1</span><div><strong>确认受检者已到检</strong><small>确认后用户将不能再取消预约。</small></div></li>
-          <li><span>2</span><div><strong>录入并复核检查结果</strong><small>可添加指标、文字结论和检查影像。</small></div></li>
-          <li><span>3</span><div><strong>锁定并提交归档</strong><small>归档后成为用户的正式健康数据。</small></div></li>
+          <li><span>2</span><div><strong>上传医生提交复核</strong><small>填写上传医生，并将完整报告转为待复核。</small></div></li>
+          <li><span>3</span><div><strong>复核医生确认归档</strong><small>可先修正问题，确认后锁档并展示给用户。</small></div></li>
         </ol>
         <el-alert title="当前分院只能处理本院预约；可在机构共享档案中只读查看同机构其他分院已归档的体检报告。" type="info" show-icon :closable="false" />
       </article>
+    </section>
+
+    <section class="org-panel audience-panel" v-loading="insightLoading">
+      <header class="org-panel-header">
+        <div><p class="org-kicker">经营洞察</p><h3>用户人群画像与套餐分析</h3></div>
+        <div class="audience-filters">
+          <el-select v-model="insightFilters.scope" @change="loadInsights">
+            <el-option label="当前分院" value="branch" />
+            <el-option label="全部分院" value="organization" />
+          </el-select>
+          <el-select v-model="insightFilters.period_days" @change="loadInsights">
+            <el-option label="近 30 天" :value="30" />
+            <el-option label="近 90 天" :value="90" />
+            <el-option label="近 12 个月" :value="365" />
+            <el-option label="全部历史" :value="0" />
+          </el-select>
+        </div>
+      </header>
+      <p class="audience-note">仅使用聚合后的预约统计生成画像，不展示或发送任何个人健康档案。</p>
+      <div class="audience-sample-summary">
+        <el-tag effect="plain">去重受检者 {{ aggregate.unique_user_count || 0 }} 人</el-tag>
+        <el-tag effect="plain">已完成体检 {{ aggregate.report_count || 0 }} 次</el-tag>
+        <el-tag v-if="aggregate.period_start" effect="plain">{{ aggregate.period_start }} 至 {{ aggregate.period_end }}</el-tag>
+        <el-tag v-else effect="plain">全部历史至 {{ aggregate.period_end || "当前" }}</el-tag>
+        <el-tag v-if="aggregate.report_count > 0 && aggregate.unique_user_count < 10" type="warning">样本较少，结论仅供初步参考</el-tag>
+      </div>
+      <div v-if="insightHasData" class="audience-layout">
+        <article class="audience-chart">
+          <h4>性别分布</h4>
+          <div v-for="item in genderBreakdown" :key="item.label" class="audience-bar">
+            <span>{{ item.label }}</span><i><b :style="{ width: `${item.percent}%` }"></b></i><strong>{{ item.count }} 人</strong>
+          </div>
+        </article>
+        <article class="audience-chart">
+          <h4>年龄段分布</h4>
+          <div v-for="item in ageBreakdown" :key="item.label" class="audience-bar">
+            <span>{{ item.label }}</span><i><b :style="{ width: `${item.percent}%` }"></b></i><strong>{{ item.count }} 人</strong>
+          </div>
+        </article>
+        <article class="audience-chart">
+          <h4>热门套餐</h4>
+          <div v-for="item in packageBreakdown" :key="item.label" class="audience-bar">
+            <span>{{ item.label }}</span><i><b :style="{ width: `${item.percent}%` }"></b></i><strong>{{ item.count }} 次</strong>
+          </div>
+        </article>
+        <article class="audience-ai-card">
+          <span>AI 运营建议</span>
+          <h4>{{ aiInsight.title || "根据当前人群优化服务供给" }}</h4>
+          <p>{{ aiInsight.analysis_text || aiInsight.summary || aiInsight.analysis || "累计更多预约后，平台会给出更稳定的人群画像与套餐建议。" }}</p>
+          <ul v-if="aiRecommendations.length">
+            <li v-for="(item, index) in aiRecommendations" :key="index">{{ typeof item === "string" ? item : item.content || item.title }}</li>
+          </ul>
+        </article>
+      </div>
+      <el-empty v-else-if="!insightLoading" description="当前筛选范围内还没有足够的预约数据" :image-size="86" />
     </section>
 
     <section v-if="recentReviews.length" class="org-panel">
@@ -59,15 +114,50 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 
 import { fetchOrgDashboard } from "../../api/dashboards";
+import { fetchOrgAudienceInsights } from "../../api/org";
 
 const router = useRouter();
 const summary = ref({});
 const loading = ref(false);
+const insightLoading = ref(false);
+const insights = ref({});
+const insightFilters = reactive({ scope: "branch", period_days: 365 });
+
+function normalizeBreakdown(source) {
+  if (!source) return [];
+  const rows = Array.isArray(source)
+    ? source
+    : Object.entries(source).map(([label, value]) => (
+      typeof value === "object" ? { label, ...value } : { label, count: value }
+    ));
+  const counts = rows.map((item) => Number(item.count ?? item.value ?? item.total ?? 0));
+  const total = counts.reduce((sum, value) => sum + value, 0);
+  const max = Math.max(...counts, 1);
+  return rows.map((item, index) => ({
+    label: item.label || item.name || item.range || item.package_name || "其他",
+    count: counts[index],
+    percent: Number(item.percentage ?? item.percent ?? (total ? (counts[index] / total) * 100 : (counts[index] / max) * 100)),
+  }));
+}
+
+const aggregate = computed(() => insights.value.aggregate || {});
+const genderBreakdown = computed(() => normalizeBreakdown(
+  aggregate.value.gender_distribution || aggregate.value.gender || aggregate.value.by_gender,
+));
+const ageBreakdown = computed(() => normalizeBreakdown(
+  aggregate.value.age_distribution || aggregate.value.age_groups || aggregate.value.by_age,
+));
+const packageBreakdown = computed(() => normalizeBreakdown(
+  aggregate.value.package_ranking || aggregate.value.package_distribution || aggregate.value.top_packages || aggregate.value.by_package,
+).slice(0, 6));
+const aiInsight = computed(() => insights.value.ai || {});
+const aiRecommendations = computed(() => aiInsight.value.recommendations || aiInsight.value.suggestions || []);
+const insightHasData = computed(() => Number(aggregate.value.report_count || 0) > 0);
 
 const appointmentCounts = computed(() => summary.value.appointment_status_counts || {});
 const today = computed(() => summary.value.today || {});
@@ -90,10 +180,24 @@ function goReports(view) {
   router.push({ name: "org-reports", query: { view } });
 }
 
+async function loadInsights() {
+  insightLoading.value = true;
+  try {
+    const { data } = await fetchOrgAudienceInsights({ ...insightFilters });
+    insights.value = data || {};
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.message || "人群画像加载失败");
+    insights.value = {};
+  } finally {
+    insightLoading.value = false;
+  }
+}
+
 onMounted(async () => {
   loading.value = true;
   try {
-    summary.value = (await fetchOrgDashboard()).data.summary || {};
+    const [dashboardResponse] = await Promise.all([fetchOrgDashboard(), loadInsights()]);
+    summary.value = dashboardResponse.data.summary || {};
   } catch (error) {
     ElMessage.error(error?.response?.data?.message || "运营数据加载失败");
   } finally {
@@ -131,9 +235,11 @@ onMounted(async () => {
 .org-guide li { display:flex; gap:12px; }.org-guide li>span { display:grid; place-items:center; width:28px; height:28px; border-radius:50%; color:white; background:#2c8c7c; font-weight:800; }
 .org-guide :deep(.el-alert) { margin-top:18px; }
 .review-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:12px}.review-strip article{display:grid;align-content:start;gap:7px;padding:14px;border:1px solid #e5eceb;border-radius:12px;background:#fbfdfc}.review-strip :deep(.el-tag){width:max-content}.review-strip strong{color:#2b4c4f}.review-strip span{color:#738587;font-size:12px;line-height:1.55}
+.audience-filters{display:flex;gap:8px}.audience-filters :deep(.el-select){width:130px}.audience-note{margin:0 0 12px;color:#718486;font-size:13px}.audience-sample-summary{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}.audience-layout{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.audience-chart,.audience-ai-card{padding:16px;border:1px solid #e4ecea;border-radius:14px;background:#fbfdfc}.audience-chart h4,.audience-ai-card h4{margin:0 0 14px;color:#294c4f}.audience-bar{display:grid;grid-template-columns:minmax(58px,.7fr) minmax(70px,1.2fr) auto;align-items:center;gap:8px;margin-top:10px;font-size:12px}.audience-bar>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.audience-bar i{height:8px;border-radius:99px;background:#e4efec;overflow:hidden}.audience-bar b{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#55ad9d,#2e8174)}.audience-bar strong{color:#456062;font-size:12px}.audience-ai-card{grid-column:1/-1;border-color:#bcdcd5;background:linear-gradient(135deg,#edf8f5,#f9fcfb)}.audience-ai-card>span{color:#217769;font-size:12px;font-weight:800}.audience-ai-card p{color:#506a6c;line-height:1.7}.audience-ai-card ul{display:grid;gap:6px;margin:0;padding-left:20px;color:#385b5b}
 @media(max-width:1100px){.org-overview-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.org-task-layout{grid-template-columns:1fr}}
+@media(max-width:900px){.audience-layout{grid-template-columns:1fr}.audience-ai-card{grid-column:auto}}
 @media(max-width:800px){.review-strip{grid-template-columns:1fr}}
-@media(max-width:650px){.org-hero{align-items:flex-start;flex-direction:column;padding:20px}.org-hero-actions{width:100%}.org-hero-actions :deep(.el-button){flex:1}.org-overview-grid{grid-template-columns:1fr}.org-task{grid-template-columns:auto minmax(0,1fr) auto}.org-task i{display:none}}
+@media(max-width:650px){.org-hero{align-items:flex-start;flex-direction:column;padding:20px}.org-hero-actions{width:100%}.org-hero-actions :deep(.el-button){flex:1}.org-overview-grid{grid-template-columns:1fr}.org-task{grid-template-columns:auto minmax(0,1fr) auto}.org-task i{display:none}.org-panel-header{align-items:flex-start;flex-direction:column}.audience-filters{width:100%}.audience-filters :deep(.el-select){width:100%}}
 :global(html[data-theme="dark"]) .org-hero,
 :global(html[data-theme="dark"]) .org-overview-card,
 :global(html[data-theme="dark"]) .org-panel,

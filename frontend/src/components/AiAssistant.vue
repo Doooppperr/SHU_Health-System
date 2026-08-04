@@ -163,26 +163,15 @@
               <el-radio-group
                 :model-value="aiStore.recordSelectionMode"
                 size="small"
-                @change="aiStore.setRecordSelectionMode"
+                @change="changeRecordSelectionMode"
               >
                 <el-radio-button value="owner">检索全部历史</el-radio-button>
                 <el-radio-button value="records">精确选择档案</el-radio-button>
               </el-radio-group>
-              <el-select
-                v-if="aiStore.recordSelectionMode === 'owner'"
-                :model-value="aiStore.selectedOwnerId"
-                placeholder="选择本人或一位已授权亲友"
-                style="width: 100%"
-                :loading="aiStore.recordsLoading"
-                @change="aiStore.setSelectedOwnerId"
-              >
-                <el-option
-                  v-for="owner in aiStore.availableOwners"
-                  :key="owner.owner_id"
-                  :label="ownerScopeLabel(owner)"
-                  :value="owner.owner_id"
-                />
-              </el-select>
+              <div v-if="aiStore.recordSelectionMode === 'owner'" class="ai-current-account-scope">
+                <strong>当前有效账号的全部已确认档案</strong>
+                <small>{{ pickerSelectionLabel }}</small>
+              </div>
               <el-select
                 v-else
                 :model-value="aiStore.selectedRecordIds"
@@ -282,26 +271,15 @@
           <el-radio-group
             :model-value="aiStore.recordSelectionMode"
             size="small"
-            @change="aiStore.setRecordSelectionMode"
+            @change="changeRecordSelectionMode"
           >
             <el-radio-button value="owner">检索全部历史</el-radio-button>
             <el-radio-button value="records">精确选择档案</el-radio-button>
           </el-radio-group>
-          <el-select
-            v-if="aiStore.recordSelectionMode === 'owner'"
-            :model-value="aiStore.selectedOwnerId"
-            placeholder="选择本人或一位已授权亲友"
-            style="width: 100%"
-            :loading="aiStore.recordsLoading"
-            @change="aiStore.setSelectedOwnerId"
-          >
-            <el-option
-              v-for="owner in aiStore.availableOwners"
-              :key="owner.owner_id"
-              :label="ownerScopeLabel(owner)"
-              :value="owner.owner_id"
-            />
-          </el-select>
+          <div v-if="aiStore.recordSelectionMode === 'owner'" class="ai-current-account-scope">
+            <strong>当前有效账号的全部已确认档案</strong>
+            <small>{{ pickerSelectionLabel }}</small>
+          </div>
           <el-select
             v-else
             :model-value="aiStore.selectedRecordIds"
@@ -486,7 +464,7 @@ const hasRecordPickerSelection = computed(() =>
     : aiStore.selectedRecordIds.length > 0
 );
 const selectedScopeOwner = computed(() =>
-  aiStore.availableOwners.find((owner) => owner.owner_id === aiStore.selectedOwnerId)
+  aiStore.availableOwners.find((owner) => owner.owner_id === Number(authStore.user?.id))
 );
 const pickerSelectionLabel = computed(() => {
   if (aiStore.recordSelectionMode !== "owner") {
@@ -495,7 +473,7 @@ const pickerSelectionLabel = computed(() => {
       : "未选择";
   }
   const owner = selectedScopeOwner.value;
-  return owner ? `${owner.owner_name} · ${owner.record_count} 份` : "未选择归属人";
+  return owner ? `${owner.owner_name} · ${owner.record_count} 份` : "当前账号暂无已确认档案";
 });
 const activeContextLabel = computed(
   () => aiStore.activeRecordContext?.display_summary || ""
@@ -531,14 +509,13 @@ const selectedOwnerId = computed(() => {
 
 const recordGroups = computed(() => {
   const groups = new Map();
-  aiStore.availableRecords.forEach((record) => {
+  aiStore.availableRecords
+    .filter((record) => record.owner_id === Number(authStore.user?.id))
+    .forEach((record) => {
     if (!groups.has(record.owner_id)) {
-      const isSelf = record.owner_id === authStore.user?.id;
       groups.set(record.owner_id, {
         ownerId: record.owner_id,
-        label: isSelf
-          ? `本人 · ${record.owner_name || "当前用户"}`
-          : `已授权亲友 · ${record.owner_name || record.owner_id}`,
+        label: `当前有效账号 · ${record.owner_name || "当前用户"}`,
         records: [],
       });
     }
@@ -656,12 +633,12 @@ function recordOptionLabel(record) {
   return `${record.exam_date || "日期未填写"} · ${record.institution_name || "未填写机构"} · ${record.indicator_count || 0} 项指标`;
 }
 
-function ownerScopeLabel(owner) {
-  const prefix = owner.owner_id === authStore.user?.id ? "本人" : "已授权亲友";
-  const range = owner.date_range?.first && owner.date_range?.latest
-    ? `${owner.date_range.first} 至 ${owner.date_range.latest}`
-    : "日期未填写";
-  return `${prefix} · ${owner.owner_name} · ${owner.record_count} 份 · ${range}`;
+function changeRecordSelectionMode(mode) {
+  aiStore.setRecordSelectionMode(mode);
+  const currentUserId = Number(authStore.user?.id);
+  if (mode === "owner" && Number.isInteger(currentUserId)) {
+    aiStore.setSelectedOwnerId(currentUserId);
+  }
 }
 
 function isRecordDisabled(record) {
@@ -869,6 +846,21 @@ watch(
   () => {
     errorMessage.value = "";
   }
+);
+
+watch(
+  () => [aiStore.recordSelectionMode, aiStore.recordsLoaded, authStore.user?.id],
+  ([mode, _loaded, userId]) => {
+    const currentUserId = Number(userId);
+    if (
+      mode === "owner"
+      && Number.isInteger(currentUserId)
+      && aiStore.selectedOwnerId !== currentUserId
+    ) {
+      aiStore.setSelectedOwnerId(currentUserId);
+    }
+  },
+  { immediate: true },
 );
 
 watch(
@@ -1313,6 +1305,19 @@ onBeforeUnmount(() => {
 
 .ai-record-picker :deep(.el-select__wrapper.is-focused) {
   box-shadow: 0 0 0 2px var(--color-focus, #1677ff) inset;
+}
+
+.ai-current-account-scope {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border, #d2d2d7);
+  border-radius: var(--radius-sm, 0.5rem);
+  background: var(--color-surface-muted, #f5f5f7);
+}
+
+.ai-current-account-scope small {
+  color: var(--color-text-secondary, #5f6368);
 }
 
 .ai-stream-status,

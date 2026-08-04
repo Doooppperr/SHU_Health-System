@@ -25,6 +25,15 @@ class PasswordVerificationChallenge(db.Model):
     code_hash = db.Column(db.String(255), nullable=False)
     request_ip_hash = db.Column(db.String(64), nullable=True, index=True)
     attempt_count = db.Column(db.Integer, nullable=False, default=0, server_default="0")
+    # A verification code belongs to exactly one authentication epoch.  Any
+    # password, account-state or other token-version change makes the code
+    # unusable even if its email destination and expiry still match.
+    token_version_snapshot = db.Column(
+        db.Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
     expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
     consumed_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utc_now, index=True)

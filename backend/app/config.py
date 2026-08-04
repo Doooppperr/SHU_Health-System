@@ -10,6 +10,8 @@ _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class Config:
+    RELEASE_COMMIT = os.getenv("RELEASE_COMMIT", "development").strip()
+    PUBLIC_APP_URL = os.getenv("PUBLIC_APP_URL", "").strip().rstrip("/")
     # Local development keeps using SQLite.  Production deployments can set
     # DATABASE_URL to an opengauss+psycopg2 GaussDB/openGauss connection URL.
     # Flask-SQLAlchemy resolves the default relative SQLite path under
@@ -55,6 +57,10 @@ class Config:
     AGENT_WRITE_ENABLED = os.getenv("AGENT_WRITE_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
     AGENT_ROUTER_ENABLED = os.getenv("AGENT_ROUTER_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
     AGENT_DATA_ENCRYPTION_KEY = os.getenv("AGENT_DATA_ENCRYPTION_KEY", "").strip()
+    ACCOUNT_CREDENTIAL_ENCRYPTION_KEY = os.getenv(
+        "ACCOUNT_CREDENTIAL_ENCRYPTION_KEY",
+        "dev-account-credential-key-change-me",
+    ).strip()
     AGENT_THREAD_TTL_HOURS = int(os.getenv("AGENT_THREAD_TTL_HOURS", "24"))
     AGENT_ACTION_TTL_SECONDS = int(os.getenv("AGENT_ACTION_TTL_SECONDS", "600"))
     AGENT_MAX_TOOL_CALLS = int(os.getenv("AGENT_MAX_TOOL_CALLS", "10"))
@@ -146,6 +152,7 @@ class TestingConfig(Config):
     AGENT_ENABLED = True
     AGENT_WRITE_ENABLED = True
     AGENT_DATA_ENCRYPTION_KEY = "test-agent-encryption-key-not-for-production"
+    ACCOUNT_CREDENTIAL_ENCRYPTION_KEY = "test-account-credential-key-not-for-production"
     OAUTH_ENABLED = True
     MCP_ENABLED = True
     MCP_INTERNAL_KEY = "test-mcp-internal-key"
@@ -154,6 +161,9 @@ class TestingConfig(Config):
 class ProductionConfig(Config):
     DEBUG = False
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "").strip()
+    ACCOUNT_CREDENTIAL_ENCRYPTION_KEY = os.getenv(
+        "ACCOUNT_CREDENTIAL_ENCRYPTION_KEY", ""
+    ).strip()
     REQUIRE_SECURE_DEFAULT_ADMIN = True
 
 

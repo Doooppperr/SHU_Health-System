@@ -61,6 +61,14 @@ export const updateOrgHealthAsset = (id, assetId, payload) => http.patch(`/org/h
 export const deleteOrgHealthAsset = (id, assetId) => http.delete(`/org/health-data/${id}/assets/${assetId}`);
 export const lockOrgReport = (id) => http.post(`/org/reports/${id}/lock`);
 export const submitOrgReport = (id) => http.post(`/org/reports/${id}/submit`);
+export const submitOrgReportForReview = (id, uploadDoctorName) => http.post(`/org/reports/${id}/submit-review`, { upload_doctor_name: uploadDoctorName });
+export const reviewOrgReport = (id, reviewDoctorName) => http.post(`/org/reports/${id}/review`, { review_doctor_name: reviewDoctorName });
+export const fetchOrgAudienceInsights = (params = {}) => http.get("/org/audience-insights", { params });
+export const fetchOrgAccountDeactivationCheck = () => http.get("/org/account/deactivation-check");
+export const deactivateOrgAccount = (currentPassword) => http.post(
+  "/org/account/deactivate",
+  { confirm: true, current_password: currentPassword },
+);
 export function uploadOrgReportOcr(file, fields) {
   const form = new FormData(); form.append("file", file);
   Object.entries(fields).forEach(([key, value]) => { if (value !== null && value !== "") form.append(key, value); });

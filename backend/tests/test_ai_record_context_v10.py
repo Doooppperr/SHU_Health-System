@@ -324,8 +324,8 @@ def test_record_context_rejects_unauthorized_and_mixed_owners(app, client):
             "selected_record_ids": [own["id"], authorized_other_id],
         },
     )
-    assert mixed.status_code == 400
-    assert mixed.get_json()["error"]["code"] == "mixed_record_owners"
+    assert mixed.status_code == 404
+    assert mixed.get_json()["error"]["code"] == "record_unavailable"
 
     other = unauthorized_published_record(app, "test1")
     forbidden = client.post(

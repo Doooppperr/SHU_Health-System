@@ -3,7 +3,10 @@ from flask_jwt_extended import jwt_required
 from app.extensions import db
 from app.institutions import institutions_bp
 from app.models import Institution, Package
-from app.services.institution_management import institution_payload
+from app.public_api.routes import (
+    public_branch_payload,
+    public_package_payload,
+)
 
 
 @institutions_bp.get("")
@@ -17,7 +20,7 @@ def list_institutions():
         .order_by(Institution.id.asc())
         .all()
     )
-    return {"items": [institution_payload(item) for item in institutions]}, 200
+    return {"items": [public_branch_payload(item) for item in institutions]}, 200
 
 
 @institutions_bp.get("/<int:institution_id>")
@@ -27,7 +30,7 @@ def get_institution_detail(institution_id: int):
     if institution is None or not institution.is_active or not institution.organization.is_active:
         return {"message": "institution not found"}, 404
 
-    return {"item": institution_payload(institution)}, 200
+    return {"item": public_branch_payload(institution)}, 200
 
 
 @institutions_bp.get("/<int:institution_id>/packages")
@@ -39,6 +42,7 @@ def list_packages(institution_id: int):
 
     packages = (
         Package.query.filter_by(institution_id=institution_id, is_active=True)
+        .filter(Package.current_version_id.is_not(None))
         .order_by(Package.id.asc())
         .all()
     )
@@ -49,5 +53,5 @@ def list_packages(institution_id: int):
             "name": institution.organization.name,
             "branch_name": institution.branch_name,
         },
-        "items": [item.to_dict() for item in packages],
+        "items": [public_package_payload(item) for item in packages],
     }, 200

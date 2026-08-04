@@ -264,6 +264,7 @@ def test_report_indicator_outside_package_domain_is_blocked(app, client):
         "appointment_date": day.isoformat(),
         "height_cm": 170,
         "weight_kg": 65,
+        "notice_confirmed": True,
     })
     assert appointment.status_code == 201
     appointment_id = appointment.get_json()["item"]["id"]

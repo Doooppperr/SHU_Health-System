@@ -53,3 +53,23 @@ export function fetchUnreadCommentReplyCount() {
 export function markCommentRepliesRead() {
   return http.post("/comments/mine/replies/read");
 }
+
+export const fetchMyCommentSanction = () => http.get("/comments/mine/sanction");
+export const submitCommentAppeal = (sanctionId, content) => http.post(
+  "/comments/appeals",
+  { sanction_id: sanctionId, content },
+);
+export const fetchCommentAppeals = (params = {}) => http.get("/comments/appeals", { params });
+export const sanctionCommentUser = (userId, reason, sourceCommentId = null, durationDays = null) => http.post(
+  "/comments/moderation/sanctions",
+  {
+    user_id: userId,
+    source_comment_id: sourceCommentId,
+    reason,
+    duration_days: durationDays,
+  },
+);
+export const resolveCommentAppeal = (appealId, action, reason = "") => http.post(
+  `/comments/appeals/${appealId}/${action === "unban" ? "approve" : "reject"}`,
+  { review_note: reason },
+);

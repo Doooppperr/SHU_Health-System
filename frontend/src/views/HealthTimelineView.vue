@@ -12,12 +12,6 @@
       <el-segmented v-model="filters.record_type" :options="recordTypeOptions" @change="recordTypeChanged" />
       <div class="timeline-filter-grid">
         <label class="filter-field">
-          <span class="filter-field-label">查看谁的记录</span>
-          <el-select v-model="filters.owner_id" @change="filters.page = 1">
-            <el-option v-for="owner in owners" :key="String(owner.value)" :label="owner.label" :value="owner.value" />
-          </el-select>
-        </label>
-        <label class="filter-field">
           <span class="filter-field-label">日期范围</span>
           <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" range-separator="至" />
         </label>
@@ -90,7 +84,7 @@
 
       <div v-if="!loading && !visibleItems.length" class="user-empty-state user-empty-state--page">
         <span class="user-empty-state__icon">历</span>
-        <div><strong>这段时间还没有健康记录</strong><p>可以调整成员、日期或记录类型后重新查看。</p></div>
+        <div><strong>这段时间还没有健康记录</strong><p>可以调整日期或记录类型后重新查看。</p></div>
       </div>
     </section>
 
@@ -109,11 +103,8 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { fetchFriends } from "../api/friends";
 import { fetchTimeline } from "../api/health";
 import { fetchInstitutions } from "../api/institutions";
-import { useAuthStore } from "../stores/auth";
-import { buildHealthOwnerOptions, ownerRequestParams, SELF_OWNER_VALUE, withOwnerRequestParams } from "../utils/healthOwners";
 import {
   APPOINTMENT_STATUS,
   appointmentMeta,
@@ -124,8 +115,6 @@ import {
 
 const route = useRoute();
 const router = useRouter();
-const auth = useAuthStore();
-const owners = ref([]);
 const institutions = ref([]);
 const items = ref([]);
 const loading = ref(false);
@@ -139,7 +128,6 @@ const recordTypeOptions = [
 ];
 const filters = reactive({
   record_type: ["all", "exam", "self"].includes(route.query.record_type) ? route.query.record_type : "all",
-  owner_id: route.query.owner_id ? String(route.query.owner_id) : SELF_OWNER_VALUE,
   institution_id: route.query.institution_id ? Number(route.query.institution_id) : null,
   status: route.query.status || null,
   page: Number(route.query.page) || 1,
@@ -161,7 +149,6 @@ function openDetail(record) {
   router.push({
     name: "health-data-detail",
     params: { id: record.detailId },
-    query: ownerRequestParams(filters.owner_id),
   });
 }
 
@@ -186,7 +173,7 @@ async function load() {
   loading.value = true;
   error.value = "";
   try {
-    const params = cleanParams(withOwnerRequestParams({
+    const params = cleanParams({
       start_date: dateRange.value?.[0],
       end_date: dateRange.value?.[1],
       page: filters.page,
@@ -194,7 +181,7 @@ async function load() {
       record_type: filters.record_type,
       institution_id: filters.record_type === "self" ? null : filters.institution_id,
       status: filters.record_type === "self" ? null : filters.status,
-    }, filters.owner_id));
+    });
     const { data } = await fetchTimeline(params);
     items.value = (data.items || []).map(normalizeTimelineEntry);
     Object.assign(pagination, data.pagination || {});
@@ -209,7 +196,6 @@ async function apply(resetPage = false) {
   if (resetPage) filters.page = 1;
   const query = cleanParams({
     ...filters,
-    owner_id: filters.owner_id === SELF_OWNER_VALUE ? undefined : filters.owner_id,
     start_date: dateRange.value?.[0],
     end_date: dateRange.value?.[1],
   });
@@ -218,8 +204,7 @@ async function apply(resetPage = false) {
 }
 
 onMounted(async () => {
-  const [friendResponse, institutionResponse] = await Promise.all([fetchFriends(), fetchInstitutions()]);
-  owners.value = buildHealthOwnerOptions(friendResponse.data, auth.user);
+  const institutionResponse = await fetchInstitutions();
   institutions.value = institutionResponse.data.items || [];
   await load();
 });

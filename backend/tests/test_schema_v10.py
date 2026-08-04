@@ -265,6 +265,7 @@ def test_structured_asset_slot_rejects_duplicate_upload(app, client):
         "appointment_date": (date.today() + timedelta(days=25)).isoformat(),
         "height_cm": 170,
         "weight_kg": 65,
+        "notice_confirmed": True,
     }).get_json()["item"]
     org_headers = login(client, "institution1_staff1")
     assert client.post(f"/api/org/appointments/{appointment['id']}/attend", headers=org_headers).status_code == 200

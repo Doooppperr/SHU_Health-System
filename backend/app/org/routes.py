@@ -9,12 +9,15 @@ from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 from flask import current_app, g, request, send_file
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.extensions import db
 from app.models import (
-    Appointment, AppointmentEvent, HealthDomain, IndicatorDict, Institution,
-    InstitutionReport, Package, PackageChangeRequest, ReportAsset,
+    Appointment, AppointmentComplaint, AppointmentEvent, ComplaintEvent,
+    ComplaintMessage,
+    HealthDomain, IndicatorDict, Institution, InstitutionReport, Package,
+    PackageChangeRequest, ReportAsset,
     ReportAccessLog, ReportIndicator, ReportTextResult, WaitlistSubscription,
     User, PackageVersionAssetRequirement, ReportAssetType,
 )
@@ -28,6 +31,11 @@ from app.services.indicator_values import (
     validate_indicator_plausibility,
 )
 from app.services.notifications import enqueue_user_notification
+from app.services.password_challenges import (
+    increment_user_security_epochs,
+    revoke_account_security_artifacts,
+)
+from app.services.platform_contact import PLATFORM_CONTACT
 from app.services.institution_management import (
     ManagementValidationError, apply_institution_payload, apply_package_payload,
     delete_institution_image, image_payload, institution_payload,
@@ -37,8 +45,9 @@ from app.services.ocr import mapping_service
 from app.services.permissions import ROLE_INSTITUTION_ADMIN, roles_required
 from app.services.package_reviews import create_change_request
 from app.services.record_files import delete_report_urls
-from app.services.reports import find_subject_user, submit_report
+from app.services.reports import find_subject_user
 from app.services.report_conclusions import missing_conclusion_domains
+from app.services.audience_insights import get_audience_insight
 from app.services.dates import calendar_date_iso
 from app.services.domain_rules import (
     DomainAdmissionError, admit_indicator, report_allowed_domain_ids,
@@ -75,12 +84,73 @@ def resolve_package(institution_id, raw_id):
     return (package, None) if package else (None, ({"message": "package not found"}, 404))
 
 
-def scoped_report(report_id):
+def scoped_report(report_id, *, for_update=False):
     institution, error = managed_institution()
     if error:
         return None, error
-    report = InstitutionReport.query.filter_by(id=report_id, institution_id=institution.id).first()
+    query = InstitutionReport.query.filter_by(
+        id=report_id,
+        institution_id=institution.id,
+    )
+    if for_update:
+        # openGauss/PostgreSQL serialize reviewers at the report row. SQLite
+        # ignores FOR UPDATE, so the guarded state transition below remains the
+        # authoritative cross-database concurrency check.
+        query = query.with_for_update()
+    report = query.first()
     return (report, None) if report else (None, ({"message": "report not found"}, 404))
+
+
+def scoped_editable_report(report_id):
+    """Lock/claim the parent report before any mutable child is changed.
+
+    ``FOR UPDATE`` serializes openGauss writers. The guarded no-op UPDATE also
+    acquires SQLite's write lock, so a concurrent publish either observes this
+    edit first or wins the status transition and makes this edit fail.
+    """
+    report, error = scoped_report(report_id, for_update=True)
+    if error:
+        return None, error
+    if report.status not in {"draft", "pending_review"}:
+        return None, (
+            {
+                "message": "published reports are immutable",
+                "code": "REPORT_STATE_CONFLICT",
+            },
+            409,
+        )
+    try:
+        claimed = _claim_editable_report_cas(report.id)
+    except OperationalError:
+        db.session.rollback()
+        return None, (
+            {
+                "message": "report is being updated; reload and retry",
+                "code": "REPORT_STATE_CONFLICT",
+            },
+            409,
+        )
+    if claimed != 1:
+        db.session.rollback()
+        return None, (
+            {
+                "message": "report state changed; reload and retry",
+                "code": "REPORT_STATE_CONFLICT",
+            },
+            409,
+        )
+    return report, None
+
+
+def _claim_editable_report_cas(report_id):
+    """Claim an editable parent before touching any report child row."""
+    return InstitutionReport.query.filter(
+        InstitutionReport.id == report_id,
+        InstitutionReport.status.in_(("draft", "pending_review")),
+    ).update(
+        {InstitutionReport.status: InstitutionReport.status},
+        synchronize_session=False,
+    )
 
 
 def readable_report(report_id):
@@ -108,7 +178,7 @@ def report_payload(report, current_institution, *, include_indicators=False):
             "branch_name": report.institution.branch_name,
         },
         "access_mode": "editable" if own_branch else "cross_branch_read_only",
-        "can_edit": own_branch and report.status != "published",
+        "can_edit": own_branch and report.status in {"draft", "pending_review"},
         "subject_display_name": report.owner.real_name if report.owner else report.subject_name_snapshot,
     })
     return payload
@@ -160,6 +230,14 @@ def create_report_from_payload(payload, *, temporary_file_url=None, diagnostics=
     )
     db.session.add(report)
     db.session.flush()
+    db.session.add(AppointmentEvent(
+        appointment_id=appointment.id,
+        event_type="report_uploaded",
+        status_snapshot=appointment.status,
+        message="体检报告已上传，等待上传医生确认",
+        actor_user_id=g.current_user.id,
+        occurred_at=datetime.now(timezone.utc),
+    ))
     return report, None
 
 
@@ -169,7 +247,13 @@ def dashboard():
     institution, error = managed_institution()
     if error:
         return error
-    counts = {status: InstitutionReport.query.filter_by(institution_id=institution.id, status=status).count() for status in ("draft", "locked", "published")}
+    counts = {
+        status: InstitutionReport.query.filter_by(
+            institution_id=institution.id,
+            status=status,
+        ).count()
+        for status in ("draft", "pending_review", "published")
+    }
     appointment_counts = {
         status: Appointment.query.filter_by(institution_id=institution.id, status=status).count()
         for status in ("unfulfilled", "awaiting_report", "fulfilled", "invalidated", "cancelled")
@@ -237,6 +321,196 @@ def context():
             "read_sibling_appointments": False,
         },
     }}, 200
+
+
+@org_bp.get("/audience-insights")
+@roles_required(ROLE_INSTITUTION_ADMIN)
+def audience_insights():
+    institution, error = managed_institution()
+    if error:
+        return error
+    scope = str(request.args.get("scope") or "branch").strip()
+    if scope not in {"branch", "organization"}:
+        return {"message": "scope must be branch or organization"}, 400
+    try:
+        period_days = int(request.args.get("period_days", 365))
+    except (TypeError, ValueError):
+        return {"message": "period_days must be an integer"}, 400
+    if period_days not in {0, 30, 90, 365}:
+        return {"message": "period_days must be one of 0, 30, 90 or 365"}, 400
+    item, cache_hit = get_audience_insight(
+        institution,
+        scope=scope,
+        period_days=period_days,
+    )
+    serialized = item.to_dict()
+    return {
+        "item": serialized,
+        "aggregate": serialized["aggregate"],
+        "ai": {
+            "analysis_text": serialized["analysis_text"],
+            "source": serialized["source"],
+            "model": serialized["model"],
+            "generated_at": serialized["generated_at"],
+            "cache_hit": cache_hit,
+        },
+    }, 200
+
+
+def _account_deactivation_summary(institution):
+    business_today = datetime.now(BUSINESS_TZ).date()
+    arrived_unfinished_reports = Appointment.query.filter_by(
+        institution_id=institution.id,
+        status="awaiting_report",
+    ).count()
+    draft_or_pending_reports = InstitutionReport.query.filter(
+        InstitutionReport.institution_id == institution.id,
+        InstitutionReport.status.in_(("draft", "pending_review")),
+    ).count()
+    future_effective_appointments = Appointment.query.filter(
+        Appointment.institution_id == institution.id,
+        Appointment.status == "unfulfilled",
+        Appointment.appointment_date >= business_today,
+    ).count()
+    unresolved_complaints = AppointmentComplaint.query.filter(
+        AppointmentComplaint.institution_id == institution.id,
+        AppointmentComplaint.status != "resolved",
+    ).count()
+    # An arrived appointment without any report row is an explicit upload task
+    # that would otherwise be hidden by a report-status-only check.  Past
+    # appointments that were never attended/cancelled are also operational work
+    # requiring reconciliation before the branch can disappear.
+    missing_report_uploads = Appointment.query.filter(
+        Appointment.institution_id == institution.id,
+        Appointment.status == "awaiting_report",
+        ~Appointment.report.has(),
+    ).count()
+    overdue_unreconciled_appointments = Appointment.query.filter(
+        Appointment.institution_id == institution.id,
+        Appointment.status == "unfulfilled",
+        Appointment.appointment_date < business_today,
+    ).count()
+    other_upload_tasks = (
+        missing_report_uploads + overdue_unreconciled_appointments
+    )
+    active_waitlist_subscriptions = WaitlistSubscription.query.filter_by(
+        institution_id=institution.id,
+        status="active",
+    ).count()
+    canonical_blockers = {
+        "future_effective_appointments": future_effective_appointments,
+        "arrived_unfinished_reports": arrived_unfinished_reports,
+        "draft_or_pending_reports": draft_or_pending_reports,
+        "unresolved_complaints": unresolved_complaints,
+        "other_upload_tasks": other_upload_tasks,
+    }
+    pending_report_tasks = max(
+        arrived_unfinished_reports,
+        draft_or_pending_reports,
+    )
+    return {
+        **canonical_blockers,
+        "active_waitlist_subscriptions": active_waitlist_subscriptions,
+        # Transitional aliases keep older clients readable while the five
+        # canonical blocker fields above are the deactivation contract.
+        "pending_report_tasks": pending_report_tasks,
+        "pending_appointment_uploads": arrived_unfinished_reports,
+        "unfinished_reports": draft_or_pending_reports,
+        "upcoming_appointments": future_effective_appointments,
+        "can_deactivate": not any(canonical_blockers.values()),
+    }
+
+
+@org_bp.get("/account/deactivation-check")
+@roles_required(ROLE_INSTITUTION_ADMIN)
+def account_deactivation_check():
+    institution, error = managed_institution()
+    if error:
+        return error
+    return {"item": _account_deactivation_summary(institution)}, 200
+
+
+@org_bp.post("/account/deactivate")
+@roles_required(ROLE_INSTITUTION_ADMIN)
+def deactivate_own_account():
+    institution, error = managed_institution()
+    if error:
+        return error
+    payload = request.get_json(silent=True) or {}
+    if payload.get("confirm") is not True:
+        return {"message": "请确认注销机构账号"}, 400
+    if not g.current_user.check_password(str(payload.get("current_password") or "")):
+        return {"message": "当前密码不正确", "code": "CURRENT_PASSWORD_INCORRECT"}, 400
+    summary = _account_deactivation_summary(institution)
+    if not summary["can_deactivate"]:
+        return {
+            "message": (
+                "请先完成全部报告上传与复核任务，并处理有效预约、遗留任务和未解决投诉后再注销"
+            ),
+            "code": "INSTITUTION_DEACTIVATION_BLOCKED",
+            "blockers": summary,
+        }, 409
+    now = datetime.now(timezone.utc)
+    institution.is_active = False
+    institution.account_deactivated_at = now
+    g.current_user.is_active = False
+    versions = increment_user_security_epochs(g.current_user.id)
+    deactivation_version = versions[g.current_user.id]["token_version"]
+    revoke_account_security_artifacts(g.current_user.id, revoked_at=now)
+    invalidated_waitlists = WaitlistSubscription.query.filter_by(
+        institution_id=institution.id,
+        status="active",
+    ).all()
+    institution_display_name = (
+        institution.organization.name
+        if institution.organization is not None
+        else institution.name
+    )
+    for subscription in invalidated_waitlists:
+        subscription.status = "invalid"
+        subscription.closed_at = now
+        subscriber = db.session.get(User, subscription.subscriber_user_id)
+        if subscriber is None:
+            continue
+        appointment_date = subscription.appointment_date.isoformat()
+        body = (
+            f"您订阅的 {institution_display_name}·{institution.branch_name}"
+            f"（{appointment_date}）候补提醒已因分院注销而关闭，"
+            "可前往机构列表选择其他分院。"
+        )
+        enqueue_user_notification(
+            subscriber,
+            event_type="waitlist_institution_deactivated",
+            idempotency_key=(
+                f"institution:{institution.id}:deactivated:"
+                f"v{deactivation_version}:waitlist:{subscription.id}"
+            ),
+            title="候补订阅已关闭",
+            body=body,
+            action_url="/institutions",
+            payload={
+                "institution_id": institution.id,
+                "waitlist_subscription_id": subscription.id,
+                "appointment_date": appointment_date,
+                "reason": "institution_deactivated",
+            },
+            email_payload={
+                "institution": institution_display_name,
+                "branch": institution.branch_name,
+                "appointment_date": appointment_date,
+                "message": body,
+                "platform_contact": PLATFORM_CONTACT,
+                "login_url": "/institutions",
+            },
+        )
+    if institution.invite and institution.invite.status == "active":
+        institution.invite.status = "superseded"
+    db.session.commit()
+    return {
+        "message": "机构账号与分院已注销，历史业务数据继续保留",
+        "deactivated_at": now.isoformat(),
+        "invalidated_waitlist_subscriptions": len(invalidated_waitlists),
+    }, 200
 
 
 @org_bp.get("/institution")
@@ -414,9 +688,31 @@ def withdraw_package_change_request(request_id):
     item = PackageChangeRequest.query.filter_by(id=request_id, institution_id=institution.id).first()
     if item is None: return {"message": "review request not found"}, 404
     if item.status != "pending": return {"message": "only pending requests can be withdrawn"}, 409
-    item.status = "withdrawn"; item.withdrawn_at = datetime.now(timezone.utc)
+    withdrawn_at = datetime.now(timezone.utc)
+    if not _withdraw_package_change_request_cas(
+        request_id=item.id,
+        institution_id=institution.id,
+        withdrawn_at=withdrawn_at,
+    ):
+        db.session.rollback()
+        return {"message": "only pending requests can be withdrawn"}, 409
     db.session.commit()
     return {"item": item.to_dict()}, 200
+
+
+def _withdraw_package_change_request_cas(*, request_id, institution_id, withdrawn_at):
+    changed = PackageChangeRequest.query.filter(
+        PackageChangeRequest.id == request_id,
+        PackageChangeRequest.institution_id == institution_id,
+        PackageChangeRequest.status == "pending",
+    ).update(
+        {
+            PackageChangeRequest.status: "withdrawn",
+            PackageChangeRequest.withdrawn_at: withdrawn_at,
+        },
+        synchronize_session=False,
+    )
+    return changed == 1
 
 
 @org_bp.get("/appointments")
@@ -462,6 +758,123 @@ def list_appointments():
             "pagination": {"page": page, "page_size": size, "total": total, "pages": (total + size - 1) // size}}, 200
 
 
+@org_bp.get("/complaints")
+@roles_required(ROLE_INSTITUTION_ADMIN)
+def list_institution_complaints():
+    institution, error = managed_institution()
+    if error:
+        return error
+    query = AppointmentComplaint.query.filter_by(institution_id=institution.id)
+    status = str(request.args.get("status") or "").strip()
+    if status:
+        query = query.filter_by(status=status)
+    page = max(request.args.get("page", 1, type=int) or 1, 1)
+    size = min(max(request.args.get("page_size", 15, type=int) or 15, 1), 100)
+    total = query.count()
+    rows = query.order_by(
+        AppointmentComplaint.updated_at.desc(),
+        AppointmentComplaint.id.desc(),
+    ).offset((page - 1) * size).limit(size).all()
+    return {
+        "items": [row.to_dict() for row in rows],
+        "pagination": {
+            "page": page,
+            "page_size": size,
+            "total": total,
+            "pages": (total + size - 1) // size,
+        },
+    }, 200
+
+
+@org_bp.post("/complaints/<int:complaint_id>/reply")
+@roles_required(ROLE_INSTITUTION_ADMIN)
+def reply_to_complaint(complaint_id):
+    institution, error = managed_institution()
+    if error:
+        return error
+    item = AppointmentComplaint.query.filter_by(
+        id=complaint_id,
+        institution_id=institution.id,
+    ).first()
+    if item is None:
+        return {"message": "未找到该投诉记录"}, 404
+    if item.status != "institution_pending":
+        return {
+            "message": "只有待机构处理的投诉可以回复",
+            "code": "COMPLAINT_STATE_CONFLICT",
+        }, 409
+    content = str((request.get_json(silent=True) or {}).get("content") or "").strip()
+    if not content:
+        return {"message": "请填写机构处理回复"}, 400
+    if len(content) > 2000:
+        return {"message": "机构处理回复不能超过2000个字符"}, 400
+    now = datetime.now(timezone.utc)
+    if not _reply_to_complaint_cas(
+        complaint_id=item.id,
+        institution_id=institution.id,
+        replier_user_id=g.current_user.id,
+        content=content,
+        replied_at=now,
+    ):
+        db.session.rollback()
+        return {
+            "message": "投诉状态已变化，请刷新后重试",
+            "code": "COMPLAINT_STATE_CONFLICT",
+        }, 409
+    db.session.add(ComplaintEvent(
+        complaint_id=item.id,
+        event_type="institution_replied",
+        actor_user_id=g.current_user.id,
+        actor_role=g.current_user.role,
+        content=content,
+        created_at=now,
+    ))
+    db.session.add(ComplaintMessage(
+        complaint_id=item.id,
+        sender_user_id=g.current_user.id,
+        sender_role=g.current_user.role,
+        content=content,
+        created_at=now,
+    ))
+    if item.complainant is not None:
+        enqueue_user_notification(
+            item.complainant,
+            event_type="complaint_institution_replied",
+            idempotency_key=f"complaint:{item.id}:institution-replied",
+            title="机构已回复您的投诉",
+            body="请查看机构处理结果，并确认解决或申请平台介入。",
+            action_url=f"/appointments?complaint_id={item.id}",
+            payload={"complaint_id": item.id},
+        )
+    db.session.commit()
+    return {"item": item.to_dict(), "message": "处理回复已提交，等待用户确认"}, 200
+
+
+def _reply_to_complaint_cas(
+    *,
+    complaint_id,
+    institution_id,
+    replier_user_id,
+    content,
+    replied_at,
+):
+    changed = AppointmentComplaint.query.filter(
+        AppointmentComplaint.id == complaint_id,
+        AppointmentComplaint.institution_id == institution_id,
+        AppointmentComplaint.status == "institution_pending",
+    ).update(
+        {
+            AppointmentComplaint.status: "user_confirmation",
+            AppointmentComplaint.institution_reply: content,
+            AppointmentComplaint.institution_replied_by_user_id: replier_user_id,
+            AppointmentComplaint.institution_replied_at: replied_at,
+            AppointmentComplaint.updated_at: replied_at,
+        },
+        synchronize_session=False,
+    )
+    return changed == 1
+
+
 @org_bp.post("/appointments/<int:appointment_id>/attend")
 @roles_required(ROLE_INSTITUTION_ADMIN)
 def attend_appointment(appointment_id):
@@ -470,21 +883,52 @@ def attend_appointment(appointment_id):
     item = Appointment.query.filter_by(id=appointment_id, institution_id=institution.id).first()
     if item is None: return {"message": "appointment not found"}, 404
     if item.status != "unfulfilled": return {"message": "only unfulfilled appointments can be confirmed"}, 409
-    item.status = "awaiting_report"; item.attended_at = datetime.now(timezone.utc)
+    attended_at = datetime.now(timezone.utc)
+    if not _attend_appointment_cas(item.id, attended_at):
+        db.session.rollback()
+        return {
+            "message": "appointment state changed; reload and retry",
+            "code": "APPOINTMENT_STATE_CONFLICT",
+        }, 409
     db.session.add(AppointmentEvent(appointment_id=item.id, event_type="attended", status_snapshot="awaiting_report",
-                                    message="机构确认到检", actor_user_id=g.current_user.id, occurred_at=item.attended_at))
+                                    message="机构确认到检", actor_user_id=g.current_user.id, occurred_at=attended_at))
     db.session.commit()
     return {"item": item.to_dict(include_user=True)}, 200
 
 
+def _attend_appointment_cas(appointment_id, attended_at):
+    try:
+        result = db.session.execute(
+            update(Appointment)
+            .where(
+                Appointment.id == appointment_id,
+                Appointment.status == "unfulfilled",
+            )
+            .values(status="awaiting_report", attended_at=attended_at)
+            .execution_options(synchronize_session=False)
+        )
+    except OperationalError:
+        db.session.rollback()
+        return False
+    return result.rowcount == 1
+
+
 def _close_appointment(item, institution, *, reason_type, reason_code, reason_text):
     now = datetime.now(timezone.utc)
-    item.status = reason_type
-    item.active_date_key = None
-    item.invalidated_at = now
-    item.termination_party = "subject" if reason_type == "no_show" else "institution"
-    item.termination_reason_code = reason_code
-    item.termination_reason_text = reason_text or None
+    try:
+        updated = _close_appointment_cas(
+            item.id,
+            closed_at=now,
+            reason_type=reason_type,
+            reason_code=reason_code,
+            reason_text=reason_text,
+        )
+    except OperationalError:
+        db.session.rollback()
+        return False
+    if updated != 1:
+        db.session.rollback()
+        return False
     message = "受检者未到检" if reason_type == "no_show" else f"机构原因取消：{reason_text}"
     db.session.add(AppointmentEvent(
         appointment_id=item.id,
@@ -522,7 +966,10 @@ def _close_appointment(item, institution, *, reason_type, reason_code, reason_te
                 f"{row['name']}·{row['branch_name']}，{row['address']}，电话{row['consult_phone'] or '请在平台查看'}"
                 for row in alternatives
             )
-            solution = branch_text or f"暂无可用兄弟分院，请联系本院{institution.consult_phone or '平台客服'}或平台 021-666666"
+            solution = branch_text or (
+                f"暂无可用兄弟分院，请联系本院"
+                f"{institution.consult_phone or '平台客服'}或平台 {PLATFORM_CONTACT['phone']}"
+            )
             email_payload = {
                 "recipient_name": user.real_name or "用户",
                 "institution": institution.name,
@@ -532,7 +979,7 @@ def _close_appointment(item, institution, *, reason_type, reason_code, reason_te
                 "reason": reason_text,
                 "alternatives": alternatives,
                 "institution_phone": institution.consult_phone,
-                "support_phone": "021-666666",
+                "support_phone": PLATFORM_CONTACT["phone"],
                 "login_url": "/appointments",
             }
             enqueue_user_notification(
@@ -549,6 +996,36 @@ def _close_appointment(item, institution, *, reason_type, reason_code, reason_te
                 },
                 email_payload=email_payload,
             )
+    return True
+
+
+def _close_appointment_cas(
+    appointment_id,
+    *,
+    closed_at,
+    reason_type,
+    reason_code,
+    reason_text,
+):
+    result = db.session.execute(
+        update(Appointment)
+        .where(
+            Appointment.id == appointment_id,
+            Appointment.status == "unfulfilled",
+        )
+        .values(
+            status=reason_type,
+            active_date_key=None,
+            invalidated_at=closed_at,
+            termination_party=(
+                "subject" if reason_type == "no_show" else "institution"
+            ),
+            termination_reason_code=reason_code,
+            termination_reason_text=reason_text or None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount
 
 
 @org_bp.post("/appointments/<int:appointment_id>/close")
@@ -574,13 +1051,18 @@ def close_appointment(appointment_id):
     else:
         reason_code = "no_show"
         reason_text = reason_text[:500]
-    _close_appointment(
+    closed = _close_appointment(
         item,
         institution,
         reason_type=reason_type,
         reason_code=reason_code,
         reason_text=reason_text,
     )
+    if not closed:
+        return {
+            "message": "appointment state changed; reload and retry",
+            "code": "APPOINTMENT_STATE_CONFLICT",
+        }, 409
     db.session.commit()
     return {"item": item.to_dict(include_user=True)}, 200
 
@@ -593,13 +1075,18 @@ def invalidate_appointment(appointment_id):
     item = Appointment.query.filter_by(id=appointment_id, institution_id=institution.id).first()
     if item is None: return {"message": "appointment not found"}, 404
     if item.status != "unfulfilled": return {"message": "只有待到检预约可以标记未到检"}, 409
-    _close_appointment(
+    closed = _close_appointment(
         item,
         institution,
         reason_type="no_show",
         reason_code="no_show",
         reason_text="",
     )
+    if not closed:
+        return {
+            "message": "appointment state changed; reload and retry",
+            "code": "APPOINTMENT_STATE_CONFLICT",
+        }, 409
     db.session.commit()
     return {"item": item.to_dict(include_user=True)}, 200
 
@@ -752,9 +1239,10 @@ def get_report_asset_content(report_id, asset_id):
 @org_bp.put("/reports/<int:report_id>")
 @roles_required(ROLE_INSTITUTION_ADMIN)
 def update_report(report_id):
-    report, error = scoped_report(report_id)
+    report, error = scoped_editable_report(report_id)
     if error: return error
-    if report.status != "draft": return {"message": "locked reports are immutable"}, 409
+    if report.status not in {"draft", "pending_review"}:
+        return {"message": "published reports are immutable"}, 409
     payload = request.get_json(silent=True) or {}
     if report.appointment_id and any(key in payload for key in ("subject_name", "subject_health_id", "exam_date", "package_id")):
         return {"message": "appointment identity, date and package are immutable"}, 409
@@ -776,9 +1264,10 @@ def update_report(report_id):
 @org_bp.post("/reports/<int:report_id>/indicators")
 @roles_required(ROLE_INSTITUTION_ADMIN)
 def add_indicator(report_id):
-    report, error = scoped_report(report_id)
+    report, error = scoped_editable_report(report_id)
     if error: return error
-    if report.status != "draft": return {"message": "locked reports are immutable"}, 409
+    if report.status not in {"draft", "pending_review"}:
+        return {"message": "published reports are immutable"}, 409
     payload = request.get_json(silent=True) or {}
     definition = db.session.get(IndicatorDict, payload.get("indicator_dict_id"))
     if not definition: return {"message": "indicator not found"}, 404
@@ -817,9 +1306,10 @@ def add_indicator(report_id):
 @org_bp.put("/reports/<int:report_id>/indicators/<int:indicator_id>")
 @roles_required(ROLE_INSTITUTION_ADMIN)
 def update_indicator(report_id, indicator_id):
-    report, error = scoped_report(report_id)
+    report, error = scoped_editable_report(report_id)
     if error: return error
-    if report.status != "draft": return {"message": "locked reports are immutable"}, 409
+    if report.status not in {"draft", "pending_review"}:
+        return {"message": "published reports are immutable"}, 409
     row = ReportIndicator.query.filter_by(id=indicator_id, report_id=report.id).first()
     if not row: return {"message": "indicator not found"}, 404
     payload = request.get_json(silent=True) or {}
@@ -857,9 +1347,10 @@ def update_indicator(report_id, indicator_id):
 @org_bp.delete("/reports/<int:report_id>/indicators/<int:indicator_id>")
 @roles_required(ROLE_INSTITUTION_ADMIN)
 def delete_indicator(report_id, indicator_id):
-    report, error = scoped_report(report_id)
+    report, error = scoped_editable_report(report_id)
     if error: return error
-    if report.status != "draft": return {"message": "locked reports are immutable"}, 409
+    if report.status not in {"draft", "pending_review"}:
+        return {"message": "published reports are immutable"}, 409
     row = ReportIndicator.query.filter_by(id=indicator_id, report_id=report.id).first()
     if not row: return {"message": "indicator not found"}, 404
     db.session.delete(row); db.session.commit(); return {"message": "indicator deleted"}, 200
@@ -877,9 +1368,10 @@ def _allowed_report_domain(report, raw_domain_id):
 @org_bp.post("/health-data/<int:report_id>/text-results")
 @roles_required(ROLE_INSTITUTION_ADMIN)
 def add_text_result(report_id):
-    report, error = scoped_report(report_id)
+    report, error = scoped_editable_report(report_id)
     if error: return error
-    if report.status != "draft": return {"message": "locked health data is immutable"}, 409
+    if report.status not in {"draft", "pending_review"}:
+        return {"message": "published health data is immutable"}, 409
     payload = request.get_json(silent=True) or {}
     domain, error = _allowed_report_domain(report, payload.get("health_domain_id"))
     if error: return error
@@ -894,9 +1386,10 @@ def add_text_result(report_id):
 @org_bp.patch("/health-data/<int:report_id>/text-results/<int:result_id>")
 @roles_required(ROLE_INSTITUTION_ADMIN)
 def update_text_result(report_id, result_id):
-    report, error = scoped_report(report_id)
+    report, error = scoped_editable_report(report_id)
     if error: return error
-    if report.status != "draft": return {"message": "locked health data is immutable"}, 409
+    if report.status not in {"draft", "pending_review"}:
+        return {"message": "published health data is immutable"}, 409
     row = ReportTextResult.query.filter_by(id=result_id, report_id=report.id).first()
     if not row: return {"message": "text result not found"}, 404
     payload = request.get_json(silent=True) or {}
@@ -916,9 +1409,10 @@ def update_text_result(report_id, result_id):
 @org_bp.delete("/health-data/<int:report_id>/text-results/<int:result_id>")
 @roles_required(ROLE_INSTITUTION_ADMIN)
 def delete_text_result(report_id, result_id):
-    report, error = scoped_report(report_id)
+    report, error = scoped_editable_report(report_id)
     if error: return error
-    if report.status != "draft": return {"message": "locked health data is immutable"}, 409
+    if report.status not in {"draft", "pending_review"}:
+        return {"message": "published health data is immutable"}, 409
     row = ReportTextResult.query.filter_by(id=result_id, report_id=report.id).first()
     if not row: return {"message": "text result not found"}, 404
     db.session.delete(row); db.session.commit(); return {"message": "text result deleted"}, 200
@@ -973,9 +1467,10 @@ def list_report_asset_types():
 @org_bp.post("/health-data/<int:report_id>/assets")
 @roles_required(ROLE_INSTITUTION_ADMIN)
 def add_asset(report_id):
-    report, error = scoped_report(report_id)
+    report, error = scoped_editable_report(report_id)
     if error: return error
-    if report.status != "draft": return {"message": "locked health data is immutable"}, 409
+    if report.status not in {"draft", "pending_review"}:
+        return {"message": "published health data is immutable"}, 409
     upload = request.files.get("file")
     if not upload or not upload.filename: return {"message": "file is required"}, 400
     extension = Path(upload.filename).suffix.lower()
@@ -1017,9 +1512,10 @@ def add_asset(report_id):
 @org_bp.patch("/health-data/<int:report_id>/assets/<int:asset_id>")
 @roles_required(ROLE_INSTITUTION_ADMIN)
 def update_asset(report_id, asset_id):
-    report, error = scoped_report(report_id)
+    report, error = scoped_editable_report(report_id)
     if error: return error
-    if report.status != "draft": return {"message": "locked health data is immutable"}, 409
+    if report.status not in {"draft", "pending_review"}:
+        return {"message": "published health data is immutable"}, 409
     row = ReportAsset.query.filter_by(id=asset_id, report_id=report.id).first()
     if not row: return {"message": "asset not found"}, 404
     payload = request.get_json(silent=True) or {}
@@ -1051,9 +1547,10 @@ def update_asset(report_id, asset_id):
 @org_bp.delete("/health-data/<int:report_id>/assets/<int:asset_id>")
 @roles_required(ROLE_INSTITUTION_ADMIN)
 def delete_asset(report_id, asset_id):
-    report, error = scoped_report(report_id)
+    report, error = scoped_editable_report(report_id)
     if error: return error
-    if report.status != "draft": return {"message": "locked health data is immutable"}, 409
+    if report.status not in {"draft", "pending_review"}:
+        return {"message": "published health data is immutable"}, 409
     row = ReportAsset.query.filter_by(id=asset_id, report_id=report.id).first()
     if not row: return {"message": "asset not found"}, 404
     key = row.storage_key; db.session.delete(row); db.session.commit()
@@ -1112,15 +1609,28 @@ def ocr_report():
     return {"item": report.to_dict(include_indicators=True), "ocr": {"candidate_mappings": admitted_candidates, "excluded": excluded, "diagnostics": report.ocr_diagnostics}}, 201
 
 
-@org_bp.post("/reports/<int:report_id>/lock")
-@roles_required(ROLE_INSTITUTION_ADMIN)
-def lock_report(report_id):
-    report, error = scoped_report(report_id)
-    if error: return error
-    if report.status != "draft": return {"message": "only draft reports can be locked"}, 409
-    if not report.indicators and not report.text_results and not report.assets: return {"message": "at least one indicator, text result or asset is required"}, 400
+def _doctor_name(payload, field):
+    value = str(payload.get(field) or "").strip()
+    if not value:
+        return None, ({"message": f"{field} is required"}, 400)
+    if len(value) > 80:
+        return None, ({"message": f"{field} cannot exceed 80 characters"}, 400)
+    return value, None
+
+
+def _report_state_conflict(message):
+    return {
+        "message": message,
+        "code": "REPORT_STATE_CONFLICT",
+    }, 409
+
+
+def _review_validation_error(report):
+    if not report.indicators and not report.text_results and not report.assets:
+        return {"message": "at least one indicator, text result or asset is required"}, 400
     try: validate_report_domains(report)
-    except DomainAdmissionError as exc: return {"message": str(exc), "code": "DOMAIN_NOT_ALLOWED"}, 400
+    except DomainAdmissionError as exc:
+        return {"message": str(exc), "code": "DOMAIN_NOT_ALLOWED"}, 400
     missing_domains = missing_conclusion_domains(report)
     if missing_domains:
         return {
@@ -1145,29 +1655,142 @@ def lock_report(report_id):
         return {"message": f"缺少必需检查附件：{'、'.join(missing)}", "code": "REQUIRED_ASSET_MISSING"}, 409
     if find_subject_user(report) is None:
         return {"message": "registered user not found or identity does not match"}, 409
-    temp_url = report.temporary_file_url
-    report.status = "locked"; report.locked_at = datetime.now(timezone.utc); report.temporary_file_url = None
-    if report.ocr_diagnostics: report.ocr_diagnostics = {key: value for key, value in report.ocr_diagnostics.items() if key not in {"raw_text", "fields", "provider_response"}}
-    db.session.commit(); delete_report_urls([temp_url])
+    if report.appointment is not None and report.appointment.status != "awaiting_report":
+        return _report_state_conflict("appointment is not awaiting a report")
+    return None
+
+
+def _submit_report_for_review(report_id):
+    report, error = scoped_report(report_id, for_update=True)
+    if error:
+        return error
+    if report.status != "draft":
+        return _report_state_conflict(
+            "only draft reports can be submitted for review"
+        )
+    payload = request.get_json(silent=True) or {}
+    doctor_name, error = _doctor_name(payload, "upload_doctor_name")
+    if error:
+        return error
+    if not report.indicators and not report.text_results and not report.assets:
+        return {"message": "at least one indicator, text result or asset is required"}, 400
+    submitted_at = datetime.now(timezone.utc)
+    updated = InstitutionReport.query.filter(
+        InstitutionReport.id == report.id,
+        InstitutionReport.status == "draft",
+    ).update(
+        {
+            InstitutionReport.status: "pending_review",
+            InstitutionReport.upload_doctor_name: doctor_name,
+            InstitutionReport.submitted_for_review_at: submitted_at,
+        },
+        synchronize_session=False,
+    )
+    if updated != 1:
+        db.session.rollback()
+        return _report_state_conflict(
+            "report state changed; reload and retry"
+        )
+    if report.appointment_id is not None:
+        db.session.add(AppointmentEvent(
+            appointment_id=report.appointment_id,
+            event_type="pending_review",
+            status_snapshot=report.appointment.status,
+            message=f"上传医生{doctor_name}已确认，报告待复核",
+            actor_user_id=g.current_user.id,
+            occurred_at=submitted_at,
+        ))
+    db.session.commit()
+    db.session.refresh(report)
     return {"item": report.to_dict(include_indicators=True)}, 200
 
 
-@org_bp.post("/reports/<int:report_id>/submit")
+@org_bp.post("/reports/<int:report_id>/submit-review")
 @roles_required(ROLE_INSTITUTION_ADMIN)
-def submit(report_id):
-    report, error = scoped_report(report_id)
-    if error: return error
+def submit_report_for_review(report_id):
+    return _submit_report_for_review(report_id)
+
+
+@org_bp.post("/reports/<int:report_id>/lock")
+@roles_required(ROLE_INSTITUTION_ADMIN)
+def legacy_lock_report(report_id):
+    del report_id
+    return {
+        "message": "报告流程已升级，请使用待复核提交接口并填写上传医生姓名",
+        "code": "REPORT_WORKFLOW_UPGRADED",
+    }, 410
+
+
+def _review_and_publish_report(report_id):
+    report, error = scoped_report(report_id, for_update=True)
+    if error:
+        return error
+    if report.status != "pending_review":
+        return _report_state_conflict(
+            "only reports pending review can be published"
+        )
+    payload = request.get_json(silent=True) or {}
+    doctor_name, error = _doctor_name(payload, "review_doctor_name")
+    if error:
+        return error
+    validation_error = _review_validation_error(report)
+    if validation_error:
+        return validation_error
+    temp_url = report.temporary_file_url
     try:
-        submit_report(report)
+        now = datetime.now(timezone.utc)
+        owner = find_subject_user(report)
+        if owner is None:
+            return {
+                "message": "registered user not found or identity does not match"
+            }, 409
+        sanitized_diagnostics = report.ocr_diagnostics
+        if sanitized_diagnostics:
+            sanitized_diagnostics = {
+                key: value
+                for key, value in sanitized_diagnostics.items()
+                if key not in {"raw_text", "fields", "provider_response"}
+            }
+        # The row lock prevents concurrent publication on openGauss. The
+        # compare-and-set is still required because SQLite does not implement
+        # SELECT FOR UPDATE and because it makes the state transition explicit.
+        updated = InstitutionReport.query.filter(
+            InstitutionReport.id == report.id,
+            InstitutionReport.institution_id == report.institution_id,
+            InstitutionReport.status == "pending_review",
+        ).update(
+            {
+                InstitutionReport.status: "published",
+                InstitutionReport.review_doctor_name: doctor_name,
+                InstitutionReport.reviewed_by_user_id: g.current_user.id,
+                InstitutionReport.reviewed_by_username_snapshot:
+                    g.current_user.username,
+                InstitutionReport.reviewed_at: now,
+                InstitutionReport.locked_at: now,
+                InstitutionReport.temporary_file_url: None,
+                InstitutionReport.ocr_diagnostics: sanitized_diagnostics,
+                InstitutionReport.matched_user_id: owner.id,
+                InstitutionReport.submitted_at: now,
+                InstitutionReport.published_at: now,
+            },
+            synchronize_session=False,
+        )
+        if updated != 1:
+            db.session.rollback()
+            return _report_state_conflict(
+                "report state changed; reload and retry"
+            )
         if report.appointment is not None:
-            if report.appointment.status != "awaiting_report":
-                raise ValueError("appointment is not awaiting a report")
             report.appointment.status = "fulfilled"
-            report.appointment.fulfilled_at = datetime.now(timezone.utc)
-            db.session.add(AppointmentEvent(appointment_id=report.appointment.id, event_type="archived",
-                status_snapshot="fulfilled", message="健康数据已归档", actor_user_id=g.current_user.id,
-                occurred_at=report.appointment.fulfilled_at))
-        owner = report.owner
+            report.appointment.fulfilled_at = now
+            db.session.add(AppointmentEvent(
+                appointment_id=report.appointment.id,
+                event_type="report_published",
+                status_snapshot="fulfilled",
+                message=f"报告经{doctor_name}复核后发布",
+                actor_user_id=g.current_user.id,
+                occurred_at=now,
+            ))
         if owner is not None:
             enqueue_user_notification(
                 owner,
@@ -1187,7 +1810,33 @@ def submit(report_id):
                 },
             )
         db.session.commit()
-    except ValueError as exc: db.session.rollback(); return {"message": str(exc)}, 409
-    except IntegrityError: db.session.rollback(); return {"message": "report publishing conflict; reload and retry"}, 409
+    except ValueError as exc:
+        db.session.rollback()
+        return _report_state_conflict(str(exc))
+    except (IntegrityError, OperationalError):
+        db.session.rollback()
+        return _report_state_conflict(
+            "report publishing conflict; reload and retry"
+        )
+    delete_report_urls([temp_url])
     db.session.refresh(report)
-    return {"item": report.to_dict(include_indicators=True), "match_result": "matched"}, 200
+    return {
+        "item": report.to_dict(include_indicators=True),
+        "match_result": "matched",
+    }, 200
+
+
+@org_bp.post("/reports/<int:report_id>/review")
+@roles_required(ROLE_INSTITUTION_ADMIN)
+def review_and_publish_report(report_id):
+    return _review_and_publish_report(report_id)
+
+
+@org_bp.post("/reports/<int:report_id>/submit")
+@roles_required(ROLE_INSTITUTION_ADMIN)
+def legacy_submit_report(report_id):
+    del report_id
+    return {
+        "message": "报告流程已升级，请使用复核接口并填写复核医生姓名",
+        "code": "REPORT_WORKFLOW_UPGRADED",
+    }, 410

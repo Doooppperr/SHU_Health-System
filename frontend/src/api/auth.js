@@ -24,6 +24,10 @@ export function refresh(token) {
   );
 }
 
+export function logout() {
+  return http.post("/auth/logout");
+}
+
 export function getMe() {
   return http.get("/users/me");
 }
@@ -44,6 +48,6 @@ export function confirmPasswordChange(payload) {
   return http.post("/auth/password-change/confirm", payload);
 }
 
-export function changeAccountEmail(email) {
-  return http.put("/auth/email", { email });
+export function changeAccountEmail(payload) {
+  return http.put("/auth/email", payload);
 }

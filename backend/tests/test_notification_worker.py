@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import threading
 from uuid import uuid4
 
 from app.extensions import db
@@ -172,3 +173,97 @@ def test_password_email_uses_bound_recipient_when_production_redirect_is_empty(a
 
     assert sent_messages[0]["To"] == "bound-user@example.test"
     assert "123456" in sent_messages[0].get_content()
+
+
+def test_notification_start_gate_waits_without_claiming_work(tmp_path):
+    gate = tmp_path / "notification-worker.enabled"
+    sleeps = []
+
+    def release_gate(seconds):
+        sleeps.append(seconds)
+        gate.write_text("", encoding="utf-8")
+
+    notification_worker.wait_for_start_gate(gate, sleep=release_gate)
+
+    assert sleeps == [1]
+    assert gate.is_file()
+
+
+def test_notification_config_preflight_executes_sql_without_claiming_outbox(app):
+    with app.app_context():
+        row = _pending_outbox()
+        db.session.add(row)
+        db.session.commit()
+        row_id = row.id
+
+    notification_worker.check_config(app)
+
+    with app.app_context():
+        row = db.session.get(NotificationOutbox, row_id)
+        assert row.status == "pending"
+        assert row.attempts == 0
+
+
+def test_stale_sending_claim_is_recovered_and_retried(app, monkeypatch):
+    sent_ids = []
+    monkeypatch.setattr(
+        notification_worker,
+        "_send",
+        lambda _app, row: sent_ids.append(row.id) or f"recovered-{row.id}",
+    )
+    with app.app_context():
+        row = _pending_outbox()
+        row.status = "sending"
+        row.attempts = 1
+        row.next_attempt_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        db.session.add(row)
+        db.session.commit()
+        row_id = row.id
+
+        assert notification_worker.run_batch(app) == (1, 1)
+        row = db.session.get(NotificationOutbox, row_id)
+        assert row.status == "sent"
+        assert row.attempts == 2
+        assert sent_ids == [row_id]
+
+
+def test_stop_request_finishes_current_delivery_before_exiting_batch(
+    app,
+    monkeypatch,
+):
+    stop_requested = threading.Event()
+    sent_ids = []
+
+    def send_then_stop(_app, row):
+        sent_ids.append(row.id)
+        stop_requested.set()
+        return f"stopped-{row.id}"
+
+    monkeypatch.setattr(notification_worker, "_send", send_then_stop)
+    with app.app_context():
+        first = _pending_outbox()
+        second = _pending_outbox()
+        db.session.add_all([first, second])
+        db.session.commit()
+        first_id, second_id = first.id, second.id
+
+        assert notification_worker.run_batch(
+            app,
+            stop_requested=stop_requested,
+        ) == (1, 1)
+        assert sent_ids == [first_id]
+        assert db.session.get(NotificationOutbox, first_id).status == "sent"
+        assert db.session.get(NotificationOutbox, second_id).status == "pending"
+
+
+def test_start_gate_wait_can_exit_on_stop_request(tmp_path):
+    stop_requested = threading.Event()
+    stop_requested.set()
+
+    assert notification_worker.wait_for_start_gate(
+        tmp_path / "missing-gate",
+        stop_requested=stop_requested,
+        sleep=lambda _seconds: (_ for _ in ()).throw(
+            AssertionError("stopped gate wait must not sleep")
+        ),
+    ) is False

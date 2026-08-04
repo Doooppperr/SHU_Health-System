@@ -43,7 +43,18 @@ def migrate(database_url: str) -> None:
                 for name in CORE_TABLES
                 if name in inspect(connection).get_table_names()
             }
-            db.metadata.create_all(bind=connection, checkfirst=True)
+            # Keep this historical migration revision-scoped. Importing the
+            # current application metadata must not create tables belonging to
+            # a later schema before Alembic reaches that revision.
+            db.metadata.create_all(
+                bind=connection,
+                tables=[
+                    db.metadata.tables[name]
+                    for name in REQUIRED_V11_TABLES
+                    if name in db.metadata.tables
+                ],
+                checkfirst=True,
+            )
             if "alembic_version" in inspect(connection).get_table_names():
                 connection.execute(
                     text(

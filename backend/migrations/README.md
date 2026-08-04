@@ -13,21 +13,32 @@ termination responsibility, in-app notifications, structured report-asset
 slots, reference rules and directional indicator results.
 HealthDoc 6.0 adds schema v11 encrypted Agent threads/actions, redacted tool
 events, idempotent executions, support handoffs and OAuth client/token state.
+The sixth acceptance round adds schema v12 public catalog access, one-account
+branches, one-time identity completion, bidirectional linked accounts, secure
+proxy-booking participant tokens, report review, complaint workflows, comment
+sanctions/appeals and institution audience-insight caches.
 
-The current production baseline is schema v11. Production openGauss/GaussDB
+The current production baseline is schema v12. Production openGauss/GaussDB
 deployments use Flask-Migrate/Alembic and must be upgraded during a maintenance
-window after backing up the database, permanent uploads and environment file:
+window after stopping writers and cold-backing up the database, permanent
+uploads, current release, environment file and Apache configuration:
 
 ```powershell
 $env:FLASK_APP = "wsgi:app"
 $env:HEALTHDOC_SCHEMA_MIGRATION = "1"
-flask db upgrade 20260729_schema_v11
+flask db upgrade 20260730_schema_v12
 ```
 
-The v11 revision depends on the v10 revision, so Alembic applies every missing revision when an
-older production database requires them. Never use `db.create_all()` as a
-replacement for production migration.
+The v12 revision depends on v11, so Alembic applies every missing revision when
+an older production database requires them. It transactionally promotes either
+legacy friend-authorization flag into one bidirectional relationship, remaps
+historical booking/waitlist relation references before removing reverse
+duplicates, and preserves inactive duplicate institution-account history.
+Never use `db.create_all()` as a replacement for production migration.
 
-SQLite uses `scripts/upgrade_local_database.py` and `PRAGMA user_version=11`;
-do not run the Alembic revision against the local SQLite file. The synthetic
-demo reset is also not a migration tool and must never target production.
+SQLite uses `scripts/upgrade_local_database.py` and
+`PRAGMA user_version=12`; do not run the Alembic revision directly against the
+local SQLite file. `scripts/reset_v12_demo_data.py` rebuilds only synthetic
+acceptance data; it is not a migration tool and must never target production.
+The older `reset_v10_demo_data.py` filename remains only as a compatibility
+wrapper.

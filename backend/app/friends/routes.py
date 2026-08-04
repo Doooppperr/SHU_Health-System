@@ -1,17 +1,34 @@
-from flask import request
+from flask import g, request
 from datetime import datetime, timezone
-from flask_jwt_extended import get_jwt_identity, jwt_required, verify_jwt_in_request
+from flask_jwt_extended import (
+    get_jwt,
+    get_jwt_identity,
+    jwt_required,
+    verify_jwt_in_request,
+)
+from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.friends import friends_bp
 from app.models import FriendRelation, User
+from app.services.delegation import (
+    revoke_relation_sessions,
+    start_delegation,
+)
 from app.services.permissions import ROLE_USER, get_current_user, role_error
+from app.services.user_access import profile_completion_error
 
 
 @friends_bp.before_request
 def _require_regular_user_for_friends():
     verify_jwt_in_request()
-    return role_error(get_current_user(), ROLE_USER)
+    user = get_current_user()
+    error = role_error(user, ROLE_USER)
+    if error:
+        return error
+    g.current_user = user
+    return None
 
 
 def _current_user_id() -> int:
@@ -41,30 +58,224 @@ def _get_relation_visible_to_user(relation_id: int, user_id: int):
     return relation
 
 
+def _require_completed_identity():
+    return profile_completion_error(g.current_user)
+
+
+def _relationship_state_conflict():
+    db.session.rollback()
+    return {
+        "message": "亲友关联状态已经发生变化，请刷新后重试",
+        "code": "RELATIONSHIP_STATE_CONFLICT",
+    }, 409
+
+
+def _activate_relation_cas(relation, user_id, when):
+    """Accept one exact pending revision without reviving a concurrent revoke."""
+    result = db.session.execute(
+        update(FriendRelation)
+        .where(
+            FriendRelation.id == relation.id,
+            FriendRelation.status == "pending",
+            FriendRelation.friend_user_id == user_id,
+            FriendRelation.authorization_version == relation.authorization_version,
+            FriendRelation.booking_authorization_version
+            == relation.booking_authorization_version,
+        )
+        .values(
+            status="active",
+            auth_status=True,
+            reverse_auth_status=True,
+            booking_auth_status=True,
+            reverse_booking_auth_status=True,
+            booking_authorized_at=when,
+            reverse_booking_authorized_at=when,
+            accepted_at=when,
+            revoked_at=None,
+            authorization_version=FriendRelation.authorization_version + 1,
+            booking_authorization_version=(
+                FriendRelation.booking_authorization_version + 1
+            ),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount == 1
+
+
+def _revoke_relation_cas(relation, user_id, when):
+    """Revoke one exact pending/active revision with an atomic version bump."""
+    if relation.status not in {"pending", "active"}:
+        return False
+    result = db.session.execute(
+        update(FriendRelation)
+        .where(
+            FriendRelation.id == relation.id,
+            FriendRelation.status == relation.status,
+            db.or_(
+                FriendRelation.user_id == user_id,
+                FriendRelation.friend_user_id == user_id,
+            ),
+            FriendRelation.authorization_version == relation.authorization_version,
+            FriendRelation.booking_authorization_version
+            == relation.booking_authorization_version,
+        )
+        .values(
+            status="revoked",
+            auth_status=False,
+            reverse_auth_status=False,
+            booking_auth_status=False,
+            reverse_booking_auth_status=False,
+            booking_authorized_at=None,
+            reverse_booking_authorized_at=None,
+            revoked_at=when,
+            authorization_version=FriendRelation.authorization_version + 1,
+            booking_authorization_version=(
+                FriendRelation.booking_authorization_version + 1
+            ),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount == 1
+
+
+def _reset_relation_pending_cas(
+    relation,
+    *,
+    requester_id,
+    target_id,
+    relation_name,
+    when,
+):
+    """Reapply from one exact revoked revision and invalidate stale writers."""
+    result = db.session.execute(
+        update(FriendRelation)
+        .where(
+            FriendRelation.id == relation.id,
+            FriendRelation.status == "revoked",
+            FriendRelation.authorization_version == relation.authorization_version,
+            FriendRelation.booking_authorization_version
+            == relation.booking_authorization_version,
+        )
+        .values(
+            user_id=int(requester_id),
+            friend_user_id=int(target_id),
+            pair_key=FriendRelation.canonical_pair_key(requester_id, target_id),
+            relation_name=relation_name,
+            friend_relation_name=None,
+            status="pending",
+            auth_status=False,
+            reverse_auth_status=False,
+            booking_auth_status=False,
+            reverse_booking_auth_status=False,
+            booking_authorized_at=None,
+            reverse_booking_authorized_at=None,
+            accepted_at=None,
+            revoked_at=None,
+            created_at=when,
+            authorization_version=FriendRelation.authorization_version + 1,
+            booking_authorization_version=(
+                FriendRelation.booking_authorization_version + 1
+            ),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount == 1
+
+
+def _revoke_relation(relation, user_id, reason):
+    if not _revoke_relation_cas(
+        relation,
+        user_id,
+        datetime.now(timezone.utc),
+    ):
+        return _relationship_state_conflict()
+    revoke_relation_sessions(relation.id, reason)
+    db.session.commit()
+    db.session.refresh(relation)
+    return {
+        "message": "亲友关联已撤销；如需再次关联，请重新发起申请",
+        "item": {
+            **relation.to_dict(viewer_id=user_id),
+            "revoked_by_user_id": user_id,
+        },
+    }, 200
+
+
+def _transition_relationship(relation, user_id, requested_active):
+    if relation.status == "revoked":
+        return {
+            "message": "该亲友关联已撤销，请重新发起关联申请",
+            "code": "FRIEND_RELATION_REAPPLY_REQUIRED",
+        }, 409
+    if relation.is_active:
+        if requested_active:
+            return {"item": relation.to_dict(viewer_id=user_id)}, 200
+        return _revoke_relation(
+            relation,
+            user_id,
+            "active friend relationship revoked",
+        )
+
+    if not requested_active:
+        return _revoke_relation(
+            relation,
+            user_id,
+            "pending friend request cancelled or rejected",
+        )
+    if relation.friend_user_id != user_id:
+        return {
+            "message": "只有收到申请的一方可以接受亲友关联",
+            "code": "FRIEND_REQUEST_ACCEPT_FORBIDDEN",
+        }, 403
+
+    if not _activate_relation_cas(
+        relation,
+        user_id,
+        datetime.now(timezone.utc),
+    ):
+        return _relationship_state_conflict()
+    db.session.commit()
+    db.session.refresh(relation)
+    return {"item": relation.to_dict(viewer_id=user_id)}, 200
+
+
 @friends_bp.get("")
 @jwt_required()
 def list_friends():
     user_id = _current_user_id()
-    outgoing = (
-        FriendRelation.query.filter_by(user_id=user_id)
+    rows = (
+        FriendRelation.query.filter(
+            db.or_(
+                FriendRelation.user_id == user_id,
+                FriendRelation.friend_user_id == user_id,
+            )
+        )
         .order_by(FriendRelation.created_at.desc(), FriendRelation.id.desc())
         .all()
     )
-    incoming = (
-        FriendRelation.query.filter_by(friend_user_id=user_id)
-        .order_by(FriendRelation.created_at.desc(), FriendRelation.id.desc())
-        .all()
-    )
-
     return {
-        "outgoing": [item.to_dict(viewer_id=user_id) for item in outgoing],
-        "incoming": [item.to_dict(viewer_id=user_id) for item in incoming],
+        "items": [item.to_dict(viewer_id=user_id) for item in rows],
+        # Compatibility keys for clients released before the bidirectional
+        # relationship representation.
+        "outgoing": [
+            item.to_dict(viewer_id=user_id)
+            for item in rows
+            if item.user_id == user_id
+        ],
+        "incoming": [
+            item.to_dict(viewer_id=user_id)
+            for item in rows
+            if item.friend_user_id == user_id
+        ],
     }, 200
 
 
 @friends_bp.post("")
 @jwt_required()
 def add_friend():
+    error = _require_completed_identity()
+    if error:
+        return error
     user_id = _current_user_id()
     payload = request.get_json(silent=True) or {}
 
@@ -84,7 +295,7 @@ def add_friend():
         role="user",
         is_active=True,
     ).first()
-    if target_user is None or not (target_user.real_name or "").strip():
+    if target_user is None or not target_user.profile_completed:
         # Keep disabled, non-user, missing and incomplete targets
         # indistinguishable so this endpoint cannot be used as an account
         # directory. A valid target is only disclosed through the intended
@@ -94,98 +305,177 @@ def add_friend():
     if target_user.id == user_id:
         return {"message": "不能将自己的账号添加为亲友"}, 400
 
-    existing = FriendRelation.query.filter_by(user_id=user_id, friend_user_id=target_user.id).first()
+    existing = FriendRelation.query.filter(
+        db.or_(
+            db.and_(
+                FriendRelation.user_id == user_id,
+                FriendRelation.friend_user_id == target_user.id,
+            ),
+            db.and_(
+                FriendRelation.user_id == target_user.id,
+                FriendRelation.friend_user_id == user_id,
+            ),
+        )
+    ).first()
     if existing is not None:
-        message = "该亲友已经添加并获得授权" if existing.auth_status else "该亲友已经添加，正在等待对方授权"
-        return {"message": message}, 409
+        if existing.status == "revoked":
+            if not _reset_relation_pending_cas(
+                existing,
+                requester_id=user_id,
+                target_id=target_user.id,
+                relation_name=relation_name,
+                when=datetime.now(timezone.utc),
+            ):
+                return _relationship_state_conflict()
+            db.session.commit()
+            db.session.refresh(existing)
+            return {
+                "item": existing.to_dict(viewer_id=user_id),
+                "message": "亲友关联申请已重新发起",
+            }, 201
+        return {
+            "message": "双方已经建立亲友关系，无需重复添加",
+            "code": "FRIEND_RELATION_EXISTS",
+            "item": existing.to_dict(viewer_id=user_id),
+        }, 409
 
     relation = FriendRelation(
         user_id=user_id,
         friend_user_id=target_user.id,
+        pair_key=FriendRelation.canonical_pair_key(user_id, target_user.id),
         relation_name=relation_name,
         auth_status=False,
     )
     db.session.add(relation)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return {
+            "message": "双方已经存在亲友关联，请刷新后重试",
+            "code": "FRIEND_RELATION_EXISTS",
+        }, 409
 
-    return {"item": relation.to_dict()}, 201
+    return {"item": relation.to_dict(viewer_id=user_id)}, 201
 
 
 @friends_bp.put("/<int:relation_id>")
 @jwt_required()
 def rename_relation(relation_id: int):
+    error = _require_completed_identity()
+    if error:
+        return error
     user_id = _current_user_id()
     relation = _get_relation_visible_to_user(relation_id, user_id)
     if relation is None:
         return {"message": "friend relation not found"}, 404
 
-    if relation.user_id != user_id:
-        return {"message": "只有亲友关系的添加者可以修改关系名称"}, 403
-
     payload = request.get_json(silent=True) or {}
-    relation_name = (payload.get("relation_name") or "").strip()
+    relation_name = (
+        payload.get("my_remark")
+        if "my_remark" in payload
+        else payload.get("relation_name")
+    )
+    relation_name = str(relation_name or "").strip()
     if not relation_name:
         return {"message": "relation_name is required"}, 400
 
     if len(relation_name) > 80:
         return {"message": "relation_name must be <= 80 characters"}, 400
 
-    relation.relation_name = relation_name
+    if relation.user_id == user_id:
+        relation.relation_name = relation_name
+    else:
+        relation.friend_relation_name = relation_name
     db.session.commit()
-    return {"item": relation.to_dict()}, 200
+    return {"item": relation.to_dict(viewer_id=user_id)}, 200
 
 
 @friends_bp.put("/<int:relation_id>/authorization")
 @jwt_required()
 def update_authorization(relation_id: int):
+    error = _require_completed_identity()
+    if error:
+        return error
     user_id = _current_user_id()
     relation = _get_relation_visible_to_user(relation_id, user_id)
     if relation is None:
         return {"message": "friend relation not found"}, 404
 
-    if relation.friend_user_id != user_id:
-        return {"message": "只有被添加的亲友本人可以修改授权"}, 403
-
     payload = request.get_json(silent=True) or {}
-    auth_status = _parse_bool(payload.get("auth_status"))
+    raw_status = (
+        payload.get("health_view_granted_by_me")
+        if "health_view_granted_by_me" in payload
+        else payload.get("auth_status")
+    )
+    auth_status = _parse_bool(raw_status)
     if auth_status is None:
         return {"message": "授权状态不正确"}, 400
-    if auth_status and not (relation.friend_user.real_name or "").strip():
-        return {"message": "请先完善真实姓名再接受亲友授权"}, 409
-
-    relation.auth_status = auth_status
-    db.session.commit()
-    return {"item": relation.to_dict()}, 200
+    return _transition_relationship(relation, user_id, auth_status)
 
 
 @friends_bp.put("/<int:relation_id>/booking-authorization")
 @jwt_required()
 def update_booking_authorization(relation_id: int):
-    """The prospective examinee explicitly grants/revokes proxy-booking only."""
+    """Compatibility endpoint mapped to the single relationship lifecycle."""
+    error = _require_completed_identity()
+    if error:
+        return error
     user_id = _current_user_id()
     relation = _get_relation_visible_to_user(relation_id, user_id)
     if relation is None:
         return {"message": "friend relation not found"}, 404
-    if relation.friend_user_id != user_id:
-        return {"message": "只有被添加的亲友本人可以修改代预约授权"}, 403
     payload = request.get_json(silent=True) or {}
-    allowed = _parse_bool(payload.get("booking_auth_status"))
+    raw_status = (
+        payload.get("booking_granted_by_me")
+        if "booking_granted_by_me" in payload
+        else payload.get("booking_auth_status")
+    )
+    allowed = _parse_bool(raw_status)
     if allowed is None:
         return {"message": "代预约授权状态不正确"}, 400
-    relation.booking_auth_status = allowed
-    relation.booking_authorized_at = datetime.now(timezone.utc) if allowed else None
+    return _transition_relationship(relation, user_id, allowed)
+
+
+@friends_bp.post("/<int:relation_id>/accept")
+@jwt_required()
+def accept_relation(relation_id: int):
+    error = _require_completed_identity()
+    if error:
+        return error
+    user_id = _current_user_id()
+    relation = _get_relation_visible_to_user(relation_id, user_id)
+    if relation is None:
+        return {"message": "friend relation not found"}, 404
+    return _transition_relationship(relation, user_id, True)
+
+
+@friends_bp.post("/<int:relation_id>/switch-session")
+@jwt_required()
+def switch_session(relation_id: int):
+    error = _require_completed_identity()
+    if error:
+        return error
+    user_id = _current_user_id()
+    relation = _get_relation_visible_to_user(relation_id, user_id)
+    if relation is None:
+        return {"message": "friend relation not found"}, 404
+    result, error = start_delegation(g.current_user, relation, get_jwt())
+    if error:
+        return error
     db.session.commit()
-    return {"item": relation.to_dict()}, 200
+    return result, 200
 
 
 @friends_bp.delete("/<int:relation_id>")
 @jwt_required()
 def delete_relation(relation_id: int):
+    error = _require_completed_identity()
+    if error:
+        return error
     user_id = _current_user_id()
     relation = _get_relation_visible_to_user(relation_id, user_id)
     if relation is None:
         return {"message": "friend relation not found"}, 404
 
-    db.session.delete(relation)
-    db.session.commit()
-    return {"message": "亲友关系已删除"}, 200
+    return _revoke_relation(relation, user_id, "friend relation deleted")

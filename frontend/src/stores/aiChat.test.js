@@ -484,4 +484,78 @@ describe("AI chat store", () => {
     expect(history[1].content.startsWith("开头")).toBe(true);
     expect(history[1].content.endsWith("结尾")).toBe(true);
   });
+
+  it("redacts health identity codes before chat history, summary, stream state, and storage", async () => {
+    const inputCode = "HID-8K3M2Q7A";
+    const historyCode = "hid-5r9t4w2c";
+    const outputCode = "HID-7N2P6X8D";
+    api.streamAiChat.mockImplementationOnce(async (_payload, options) => {
+      options.onEvent({ event: "delta", text: "回复 HID-7N2" });
+      options.onEvent({ event: "delta", text: "P6X8D 完成" });
+      options.onEvent({
+        event: "done",
+        decision: "answer",
+        source: "model",
+        summary: `服务端摘要 ${inputCode}`,
+      });
+    });
+    const store = useAiChatStore();
+    store.initialize(10);
+    store.messages = [
+      { id: "old-user", role: "user", content: `旧问题 ${historyCode}` },
+      { id: "old-assistant", role: "assistant", content: `旧回答 ${inputCode}` },
+    ];
+    store.summary = `旧摘要 ${historyCode}`;
+
+    const assistant = await store.sendMessage(`新问题 ${inputCode}`, true);
+
+    const requestPayload = JSON.stringify(api.streamAiChat.mock.calls[0][0]);
+    const persisted = sessionStorage.getItem(`${AI_SESSION_PREFIX}user-10`);
+    for (const rawValue of [inputCode, historyCode, outputCode]) {
+      expect(requestPayload).not.toContain(rawValue);
+      expect(persisted).not.toContain(rawValue);
+    }
+    expect(store.messages.at(-2).content).toContain("[健康身份码已脱敏]");
+    expect(assistant.content).toBe("回复 [健康身份码已脱敏] 完成");
+    expect(store.summary).toBe("服务端摘要 [健康身份码已脱敏]");
+    expect(requestPayload).toContain("[健康身份码已脱敏]");
+    expect(persisted).toContain("[健康身份码已脱敏]");
+  });
+
+  it("scrubs a current-schema legacy session as soon as it is hydrated", () => {
+    const rawCode = "HID-4V8J3L5F";
+    const key = `${AI_SESSION_PREFIX}user-10`;
+    sessionStorage.setItem(
+      key,
+      JSON.stringify({
+        version: 4,
+        messages: [
+          { id: "user", role: "user", content: `问题 ${rawCode}` },
+          {
+            id: "assistant",
+            role: "assistant",
+            content: `回答 ${rawCode}`,
+            contextSources: [{ label: rawCode }],
+          },
+        ],
+        summary: `摘要 ${rawCode}`,
+        isOpen: true,
+        lastModel: rawCode,
+        activeRecordContext: {
+          owner_id: 10,
+          owner_name: rawCode,
+          anchor_record_ids: [7],
+          scope_mode: "selected_records",
+          display_summary: rawCode,
+        },
+      })
+    );
+
+    const store = useAiChatStore();
+    store.initialize(10);
+
+    expect(JSON.stringify(store.$state)).not.toContain(rawCode);
+    expect(sessionStorage.getItem(key)).not.toContain(rawCode);
+    expect(sessionStorage.getItem(key)).toContain("[健康身份码已脱敏]");
+  });
 });

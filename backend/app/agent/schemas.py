@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class StrictToolArgs(BaseModel):
@@ -66,6 +66,18 @@ class BookingIntake(StrictToolArgs):
     weight_kg: float = Field(ge=20, le=300)
 
 
+class BookingParticipantSpec(StrictToolArgs):
+    type: Literal[
+        "self",
+        "linked_account",
+        "health_code_token",
+    ]
+    relation_id: int | None = None
+    participant_token: str | None = Field(default=None, max_length=200)
+    height_cm: float | None = Field(default=None, ge=80, le=250)
+    weight_kg: float | None = Field(default=None, ge=20, le=300)
+
+
 class BookingDraftArgs(StrictToolArgs):
     institution_id: int
     package_id: int
@@ -76,11 +88,22 @@ class BookingDraftArgs(StrictToolArgs):
         description="本人预约时传空数组；服务端会绑定当前登录用户。",
     )
     participant_intakes: list[BookingIntake] = Field(
-        min_length=1,
+        default_factory=list,
         max_length=5,
-        description="必须包含每位受检者的身高和体重；本人 user_id 可留空。",
+        description="旧版本人预约资料；新版 participants 可由服务端安全读取最新值。",
+    )
+    participants: list[BookingParticipantSpec] = Field(
+        default_factory=list,
+        max_length=5,
+        description="受检者来源：self、linked_account 或 health_code_token。",
     )
     notice_confirmed: bool = False
+
+    @model_validator(mode="after")
+    def require_participant_input(self):
+        if not self.participants and not self.participant_intakes:
+            raise ValueError("必须提供受检者或本人身高体重资料")
+        return self
 
 
 class CancellationDraftArgs(StrictToolArgs):
@@ -92,6 +115,10 @@ class WaitlistDraftArgs(StrictToolArgs):
     package_id: int
     appointment_date: date
     participant_user_ids: list[int] = Field(default_factory=list, max_length=5)
+    participants: list[BookingParticipantSpec] = Field(
+        default_factory=list,
+        max_length=5,
+    )
 
 
 class SupportHandoffDraftArgs(StrictToolArgs):

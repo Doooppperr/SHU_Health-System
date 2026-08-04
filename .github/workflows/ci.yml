@@ -37,6 +37,11 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - run: python -m pip check
       - run: python -m pytest -q
+      - name: Validate tracked schema-v12 acceptance snapshot
+        run: >-
+          python scripts/validate_v12_demo.py
+          --database instance/health_system.db
+          --upload-dir uploads
 
   frontend:
     runs-on: ubuntu-latest

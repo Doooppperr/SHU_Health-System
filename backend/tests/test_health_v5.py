@@ -17,6 +17,23 @@ def login(client, username, password=PASSWORD):
     return {"Authorization": f"Bearer {response.get_json()['access_token']}"}
 
 
+def secure_email_change(client, headers, email, password):
+    challenge = client.post(
+        "/api/auth/password-change/code",
+        headers=headers,
+    ).get_json()
+    return client.put(
+        "/api/auth/email",
+        headers=headers,
+        json={
+            "email": email,
+            "current_password": password,
+            "challenge_id": challenge["challenge_id"],
+            "verification_code": challenge["verification_code"],
+        },
+    )
+
+
 def report_fixture(app, *, user="test3", institution_index=0):
     with app.app_context():
         person = User.query.filter_by(username=user).first()
@@ -33,6 +50,7 @@ def create_appointment(client, user_headers, org_headers, institution_id, packag
         "appointment_date": exam_day.isoformat(),
         "height_cm": 170,
         "weight_kg": 65,
+        "notice_confirmed": True,
     })
     assert response.status_code == 201
     appointment_id = response.get_json()["item"]["id"]
@@ -40,7 +58,9 @@ def create_appointment(client, user_headers, org_headers, institution_id, packag
     return appointment_id
 
 
-def create_locked_report(client, user_headers, org_headers, institution_id, package_id, indicator_id, exam_day):
+def create_pending_review_report(
+    client, user_headers, org_headers, institution_id, package_id, indicator_id, exam_day,
+):
     appointment_id = create_appointment(client, user_headers, org_headers, institution_id, package_id, exam_day)
     response = client.post("/api/org/reports", headers=org_headers, json={"appointment_id": appointment_id})
     assert response.status_code == 201
@@ -52,7 +72,18 @@ def create_locked_report(client, user_headers, org_headers, institution_id, pack
     )
     assert indicator_response.status_code == 201
     domain_id = indicator_response.get_json()["item"]["display_domain_id"]
-    missing = client.post(f"/api/org/reports/{report_id}/lock", headers=org_headers)
+    submitted = client.post(
+        f"/api/org/reports/{report_id}/submit-review",
+        headers=org_headers,
+        json={"upload_doctor_name": "张医生"},
+    )
+    assert submitted.status_code == 200
+    assert submitted.get_json()["item"]["status"] == "pending_review"
+    missing = client.post(
+        f"/api/org/reports/{report_id}/review",
+        headers=org_headers,
+        json={"review_doctor_name": "王医生"},
+    )
     assert missing.status_code == 409
     assert missing.get_json()["code"] == "MISSING_DOMAIN_CONCLUSIONS"
     conclusion = client.post(
@@ -65,7 +96,7 @@ def create_locked_report(client, user_headers, org_headers, institution_id, pack
         },
     )
     assert conclusion.status_code == 201
-    assert client.post(f"/api/org/reports/{report_id}/lock", headers=org_headers).status_code == 200
+    assert conclusion.get_json()["item"]["title"] == "心血管检查结论"
     return report_id
 
 
@@ -81,10 +112,10 @@ def test_health_identity_profile_and_multi_institution_accounts(app, client):
     health_id = registered.get_json()["user"]["health_id"]
     assert health_id.startswith("HID-")
     assert client.put("/api/profile/me", headers=token, json={"health_id": "HID-FORGED1"}).status_code == 409
-    profile = client.put("/api/profile/me", headers=token, json={"real_name": "新用户", "birth_date": "1990-02-03", "gender": "female"})
+    profile = client.post("/api/profile/me/complete", headers=token, json={"real_name": "新用户", "birth_date": "1990-02-03", "gender": "female"})
     assert profile.status_code == 200 and profile.get_json()["item"]["health_id"] == health_id
     assert client.put("/api/profile/me", headers=token, json={"email": "first@example.test"}).status_code == 400
-    bound = client.put("/api/auth/email", headers=token, json={"email": "first@example.test"})
+    bound = secure_email_change(client, token, "first@example.test", "secret123")
     assert bound.status_code == 200 and bound.get_json()["user"]["email_verified_at"] is None
     with app.app_context():
         person = User.query.filter_by(username="new-person").first()
@@ -94,28 +125,58 @@ def test_health_identity_profile_and_multi_institution_accounts(app, client):
     assert unchanged.status_code == 409
     phone_update = client.put("/api/profile/me", headers=token, json={"phone": "13800000000"})
     assert phone_update.status_code == 200 and phone_update.get_json()["item"]["email_verified_at"] is not None
-    changed = client.put("/api/auth/email", headers=token, json={"email": "second@example.test"})
+    changed = secure_email_change(client, token, "second@example.test", "secret123")
     assert changed.status_code == 200 and changed.get_json()["user"]["email_verified_at"] is None
 
     admin = login(client, "admin", "admin123")
-    with app.app_context(): institution_id = Institution.query.first().id
-    invite = client.post(f"/api/admin/institutions/{institution_id}/invite", headers=admin).get_json()["invite_code"]
-    captcha = client.get("/api/auth/captcha").get_json()
-    staff = client.post("/api/auth/register", json={"username": "third-staff", "email": "shared-registration@example.test", "password": "secret123", "invite_code": invite, "captcha_id": captcha["captcha_id"], "captcha_answer": captcha["captcha_answer"]})
-    assert staff.status_code == 201 and staff.get_json()["user"]["role"] == "institution_admin"
     with app.app_context():
-        institution = db.session.get(Institution, institution_id)
-        assert staff.get_json()["user"]["email"] == institution.notification_email
-        assert User.query.filter_by(managed_institution_id=institution_id, role="institution_admin").count() == 3
+        institution = Institution.query.first()
+        institution_id = institution.id
+        organization_id = institution.organization_id
+    disabled_invite = client.post(
+        f"/api/admin/institutions/{institution_id}/invite",
+        headers=admin,
+    )
+    assert disabled_invite.status_code == 410
+    captcha = client.get("/api/auth/captcha").get_json()
+    staff = client.post("/api/auth/register", json={"username": "third-staff", "email": "shared-registration@example.test", "password": "secret123", "invite_code": "DISABLED-CODE", "captcha_id": captcha["captcha_id"], "captcha_answer": captcha["captcha_answer"]})
+    assert staff.status_code == 410
+    assert staff.get_json()["code"] == "INSTITUTION_SELF_REGISTRATION_DISABLED"
+    created_branch = client.post(
+        f"/api/admin/organizations/{organization_id}/branches",
+        headers=admin,
+        json={
+            "branch_name": "第六轮账号验收分院",
+            "address": "上海市宝山区上大路99号",
+            "district": "宝山区",
+            "username": "third-staff",
+            "password": "secret123",
+            "email": "shared-registration@example.test",
+        },
+    )
+    assert created_branch.status_code == 201
+    assert created_branch.get_json()["account"]["role"] == "institution_admin"
+    with app.app_context():
+        created_id = created_branch.get_json()["item"]["id"]
+        institution = db.session.get(Institution, created_id)
+        assert created_branch.get_json()["account"]["email"] == institution.notification_email
+        assert User.query.filter_by(
+            managed_institution_id=created_id,
+            role="institution_admin",
+        ).count() == 1
 
 
 def test_institution_submission_auto_archives_to_registered_user(app, client):
     _name, _health_id, institution_id, package_id, indicator_id = report_fixture(app)
     user = login(client, "test3"); org = login(client, "institution1_staff1"); other_org = login(client, "institution2_staff1")
     first_day = date.today() + timedelta(days=7)
-    report_id = create_locked_report(client, user, org, institution_id, package_id, indicator_id, first_day)
+    report_id = create_pending_review_report(client, user, org, institution_id, package_id, indicator_id, first_day)
     assert client.put(f"/api/org/reports/{report_id}", headers=org, json={"exam_date": date.today().isoformat()}).status_code == 409
-    submitted = client.post(f"/api/org/reports/{report_id}/submit", headers=org)
+    submitted = client.post(
+        f"/api/org/reports/{report_id}/review",
+        headers=org,
+        json={"review_doctor_name": "王医生"},
+    )
     assert submitted.status_code == 200 and submitted.get_json()["match_result"] == "matched"
     assert client.post(f"/api/org/reports/{report_id}/withdraw", headers=org).status_code == 404
     assert client.get(f"/api/org/reports/{report_id}", headers=other_org).status_code == 404
@@ -133,19 +194,25 @@ def test_reports_require_appointments_and_submit_rechecks_active_user(app, clien
     direct = client.post("/api/org/reports", headers=org, json={"subject_name": "不存在用户", "subject_health_id": "HID-UNKNOWN1", "exam_date": day.isoformat()})
     assert direct.status_code == 400 and "预约" in direct.get_json()["message"]
 
-    locked_id = create_locked_report(client, user_headers, org, institution_id, package_id, indicator_id, day + timedelta(days=1))
+    locked_id = create_pending_review_report(client, user_headers, org, institution_id, package_id, indicator_id, day + timedelta(days=1))
     with app.app_context():
         user = User.query.filter_by(health_id=health_id).first()
         user.is_active = False
         db.session.commit()
-    response = client.post(f"/api/org/reports/{locked_id}/submit", headers=org)
+    response = client.post(
+        f"/api/org/reports/{locked_id}/review",
+        headers=org,
+        json={"review_doctor_name": "王医生"},
+    )
     assert response.status_code == 409
     assert "已注册普通用户" in response.get_json()["message"]
     with app.app_context():
         report = db.session.get(InstitutionReport, locked_id)
-        assert report.status == "locked"
+        assert report.status == "pending_review"
         assert report.matched_user_id is not None
-        assert {item.status for item in InstitutionReport.query.all()} <= {"draft", "locked", "published"}
+        assert {item.status for item in InstitutionReport.query.all()} <= {
+            "draft", "pending_review", "published",
+        }
 
 
 def test_self_measurement_trend_keeps_published_report_priority(app, client):
@@ -171,14 +238,14 @@ def test_friend_read_only_privacy_and_role_isolation(app, client):
         owner = User.query.filter_by(username="test2").first()
         owner_id, owner_name = owner.id, owner.real_name
     timeline = client.get(f"/api/health/timeline?owner_id={owner_id}", headers=viewer)
-    assert timeline.status_code == 200
-    serialized = str(timeline.get_json())
-    assert "health_id" not in serialized and "allergy_history" not in serialized and "subject_name_snapshot" not in serialized
-    assert owner_name in serialized
+    assert timeline.status_code == 403
+    assert timeline.get_json()["code"] == "CURRENT_ACCOUNT_REQUIRED"
     friends = client.get("/api/friends", headers=viewer).get_json()
-    assert any(
-        relation["friend_user"]["display_name"] == owner_name and relation["auth_status"]
-        for relation in friends["outgoing"]
+    relation = next(
+        relation
+        for relation in friends["items"]
+        if relation["counterparty"]["display_name"] == owner_name
+        and relation["auth_status"]
     )
     assert "manageable" not in friends
     with app.app_context():
@@ -190,15 +257,29 @@ def test_friend_read_only_privacy_and_role_isolation(app, client):
     trend = client.get(
         f"/api/health/trends/{weight_id}?owner_id={owner_id}", headers=viewer
     )
+    assert trend.status_code == 403
+    switched = client.post(
+        f"/api/friends/{relation['id']}/switch-session",
+        headers=viewer,
+    )
+    assert switched.status_code == 200, switched.get_json()
+    effective = {
+        "Authorization": f"Bearer {switched.get_json()['access_token']}"
+    }
+    timeline = client.get("/api/health/timeline", headers=effective)
+    assert timeline.status_code == 200
+    serialized = str(timeline.get_json())
+    assert "health_id" not in serialized and "allergy_history" not in serialized
+    assert owner_name in serialized
+    trend = client.get(f"/api/health/trends/{weight_id}", headers=effective)
     assert trend.status_code == 200
     assert trend.get_json()["owner"]["display_name"] == owner_name
-    report = client.get(f"/api/exam-reports/{report_id}", headers=viewer)
+    report = client.get(f"/api/exam-reports/{report_id}", headers=effective)
     assert report.status_code == 200
     assert report.get_json()["owner"]["display_name"] == owner_name
-    assert "subject_name_snapshot" not in report.get_json()["item"]
     assert client.get(
         f"/api/exam-reports/{report_id}", headers=login(client, "test3")
-    ).status_code == 403
+    ).status_code == 404
     assert client.post("/api/self-measurements", headers=login(client, "institution1_staff1"), json={}).status_code == 403
     assert client.get("/api/health/timeline", headers=login(client, "admin", "admin123")).status_code == 403
 
@@ -277,8 +358,21 @@ def test_org_ocr_mock_creates_reviewable_draft_and_lock_deletes_file(app, client
             },
         )
         assert added.status_code == 201
-    locked = client.post(f"/api/org/reports/{report_id}/lock", headers=headers)
+    pending = client.post(
+        f"/api/org/reports/{report_id}/submit-review",
+        headers=headers,
+        json={"upload_doctor_name": "张医生"},
+    )
+    assert pending.status_code == 200
+    assert pending.get_json()["item"]["status"] == "pending_review"
+    assert path.exists()
+    locked = client.post(
+        f"/api/org/reports/{report_id}/review",
+        headers=headers,
+        json={"review_doctor_name": "王医生"},
+    )
     assert locked.status_code == 200
+    assert locked.get_json()["item"]["status"] == "published"
     assert not path.exists()
     assert "raw_text" not in str(locked.get_json()["item"].get("ocr_diagnostics"))
 

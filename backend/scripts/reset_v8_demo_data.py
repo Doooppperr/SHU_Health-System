@@ -1,7 +1,6 @@
-"""Canonical schema-v8 demo reset command.
+"""Historical schema-v8 compatibility wrapper for the current demo reset.
 
-The old reset_v7_demo_data module remains as an import-compatible entry point
-for existing local automation while this wrapper exposes the current name.
+New documentation and automation should call ``reset_v12_demo_data.py``.
 """
 
 from reset_v7_demo_data import main

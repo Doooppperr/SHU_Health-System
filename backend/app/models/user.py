@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 import bcrypt
+from sqlalchemy.orm import synonym
 
 from app.extensions import db
 from app.services.account_email import effective_account_email
@@ -13,12 +14,17 @@ def utc_now():
 class User(db.Model):
     __tablename__ = "users"
     __table_args__ = (
+        db.UniqueConstraint(
+            "managed_institution_id",
+            name="uq_users_managed_institution",
+        ),
         db.CheckConstraint(
             "role in ('user', 'institution_admin', 'admin')",
             name="ck_users_role",
         ),
         db.CheckConstraint(
-            "(role = 'institution_admin' and managed_institution_id is not null) "
+            "(role = 'institution_admin' and "
+            "(managed_institution_id is not null or is_active = false)) "
             "or (role in ('user', 'admin') and managed_institution_id is null)",
             name="ck_users_role_institution_binding",
         ),
@@ -53,9 +59,34 @@ class User(db.Model):
     real_name = db.Column(db.String(80), nullable=True)
     birth_date = db.Column(db.Date, nullable=True)
     gender = db.Column(db.String(20), nullable=True)
+    identity_completed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    # Rolling API compatibility for v11 clients and older application code.
+    # The persisted v12 column is ``identity_completed_at``.
+    profile_completed_at = synonym("identity_completed_at")
+    allow_health_id_proxy_booking = db.Column(
+        db.Boolean,
+        nullable=False,
+        default=True,
+        server_default=db.true(),
+    )
+    # API/model compatibility for clients built during the v12 development
+    # window. The persisted column uses the finalized product language.
+    health_id_booking_enabled = synonym("allow_health_id_proxy_booking")
+    booking_authorization_version = db.Column(
+        db.Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
     allergy_history = db.Column(db.Text, nullable=True)
     medical_history = db.Column(db.Text, nullable=True)
     is_active = db.Column(db.Boolean, nullable=False, default=True, server_default=db.true())
+    must_change_initial_password = db.Column(
+        db.Boolean,
+        nullable=False,
+        default=False,
+        server_default=db.false(),
+    )
     token_version = db.Column(db.Integer, nullable=False, default=0, server_default="0")
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utc_now)
 
@@ -81,6 +112,17 @@ class User(db.Model):
     def check_password(self, password: str) -> bool:
         return bcrypt.checkpw(password.encode("utf-8"), self.password_hash.encode("utf-8"))
 
+    @property
+    def profile_completed(self) -> bool:
+        """Only an explicitly confirmed or migrated identity is usable."""
+        return bool(
+            self.role == "user"
+            and self.identity_completed_at is not None
+            and (self.real_name or "").strip()
+            and self.birth_date is not None
+            and self.gender in {"male", "female", "other", "undisclosed"}
+        )
+
     def to_dict(self, *, include_profile: bool = True) -> dict:
         institution = None
         if self.managed_institution is not None:
@@ -99,6 +141,7 @@ class User(db.Model):
             "phone": self.phone,
             "role": self.role,
             "is_active": self.is_active,
+            "must_change_initial_password": self.must_change_initial_password,
             "managed_institution_id": self.managed_institution_id,
             "managed_institution": institution,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -109,6 +152,20 @@ class User(db.Model):
                 real_name=self.real_name,
                 birth_date=self.birth_date.isoformat() if self.birth_date else None,
                 gender=self.gender,
+                identity_completed=self.profile_completed,
+                identity_completed_at=(
+                    self.identity_completed_at.isoformat()
+                    if self.identity_completed_at
+                    else None
+                ),
+                profile_completed=self.profile_completed,
+                profile_completed_at=(
+                    self.identity_completed_at.isoformat()
+                    if self.identity_completed_at
+                    else None
+                ),
+                allow_health_id_proxy_booking=self.allow_health_id_proxy_booking,
+                health_id_booking_enabled=self.allow_health_id_proxy_booking,
                 allergy_history=self.allergy_history,
                 medical_history=self.medical_history,
             )

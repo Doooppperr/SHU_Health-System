@@ -2,10 +2,43 @@ from __future__ import annotations
 
 from app.extensions import db
 from app.models import (
-    HealthDomain, Package, PackageChangeRequest, PackageVersion, PackageVersionDomain,
+    HealthDomain, Institution, Package, PackageChangeRequest, PackageVersion, PackageVersionDomain,
     PackageVersionAssetRequirement, ReportAssetType,
 )
 from app.services.institution_management import ManagementValidationError, apply_package_payload
+
+
+def _claim_package_change_slot(package):
+    """Serialize pending-review creation for one existing package.
+
+    The no-op UPDATE is intentional.  It takes a database write/row lock until
+    the caller commits, including on SQLite where ``FOR UPDATE`` is ignored.
+    A waiter therefore checks for an existing pending request only after the
+    winning transaction has committed it.
+    """
+    claimed = Package.query.filter(
+        Package.id == package.id,
+        Package.institution_id == package.institution_id,
+    ).update({Package.is_active: Package.is_active}, synchronize_session=False)
+    if claimed != 1:
+        raise ManagementValidationError("package no longer exists")
+
+
+def _claim_institution_package_creation_slot(institution):
+    """Serialize pending package creations within one institution.
+
+    New-package requests do not have a ``package_id`` that can be protected by
+    the package-level slot.  Claiming the owning institution makes the
+    same-name lookup and insert one critical section on SQLite and openGauss.
+    """
+    claimed = Institution.query.filter(
+        Institution.id == institution.id,
+    ).update(
+        {Institution.is_active: Institution.is_active},
+        synchronize_session=False,
+    )
+    if claimed != 1:
+        raise ManagementValidationError("institution no longer exists")
 
 
 def _package_data(package):
@@ -77,9 +110,12 @@ def create_change_request(institution, requester, action, *, package=None, paylo
     if action != "create" and package is None:
         raise ManagementValidationError("package is required")
     if package is not None:
+        _claim_package_change_slot(package)
         pending = PackageChangeRequest.query.filter_by(package_id=package.id, status="pending").first()
         if pending:
             raise ManagementValidationError("该套餐已有待审核申请，请先撤回或等待审核")
+    else:
+        _claim_institution_package_creation_slot(institution)
 
     before_data = _package_data(package) if package is not None else None
     proposed_data = None

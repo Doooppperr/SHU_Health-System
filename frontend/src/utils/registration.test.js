@@ -20,12 +20,12 @@ describe("registration payload", () => {
     expect(payload.captcha_answer).toBe("a1b2");
   });
 
-  it("sends the trimmed invitation code only for staff registration", () => {
+  it("never sends an invitation code even if a removed staff mode is passed", () => {
     expect(buildRegistrationPayload("staff", form)).toMatchObject({
-      invite_code: "ABCD-EFGH-IJKL-MNPQ",
       email: "staff@example.com",
       phone: "13800000000",
     });
+    expect(buildRegistrationPayload("staff", form)).not.toHaveProperty("invite_code");
   });
 
   it("always includes the normalized mandatory email while omitting a blank optional phone", () => {

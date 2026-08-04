@@ -3,12 +3,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
   login: vi.fn(),
+  logout: vi.fn(),
   refresh: vi.fn(),
+}));
+const friendsApi = vi.hoisted(() => ({
+  switchFriendSession: vi.fn(),
 }));
 
 vi.mock("../api/auth", () => ({
   getMe: vi.fn(),
   login: api.login,
+  logout: api.logout,
   refresh: api.refresh,
   register: vi.fn(),
 }));
@@ -16,6 +21,7 @@ vi.mock("../api/auth", () => ({
 vi.mock("../utils/aiSession", () => ({
   clearAllAiSessionStorage: vi.fn(),
 }));
+vi.mock("../api/friends", () => friendsApi);
 
 import { useAuthStore } from "./auth";
 
@@ -24,7 +30,9 @@ beforeEach(() => {
   window.localStorage.clear();
   window.sessionStorage.clear();
   api.login.mockReset();
+  api.logout.mockReset();
   api.refresh.mockReset();
+  friendsApi.switchFriendSession.mockReset();
 });
 
 describe("auth tab isolation", () => {
@@ -102,6 +110,34 @@ describe("auth tab isolation", () => {
 
     expect(sessionStorage.getItem("health-system-auth")).toBeNull();
     expect(store.user).toBeNull();
+  });
+
+  it("uses delegated tokens and clears the complete login chain on exit", async () => {
+    friendsApi.switchFriendSession.mockResolvedValue({
+      data: {
+        access_token: "delegated-access",
+        refresh_token: "delegated-refresh",
+        user: { id: 12, username: "relative", role: "user" },
+        session: { actor: { id: 1 }, subject: { id: 12 }, depth: 1 },
+      },
+    });
+    api.logout.mockResolvedValue({
+      data: { message: "delegation ended", redirect_to: "/login" },
+    });
+    const store = useAuthStore();
+    store.accessToken = "actor-access";
+    store.refreshToken = "actor-refresh";
+    store.user = { id: 1, username: "actor", role: "user" };
+
+    await store.switchToFriend({ id: 7, counterparty: { username: "relative" } });
+    expect(store.accessToken).toBe("delegated-access");
+    expect(store.delegation).toEqual(expect.objectContaining({ relationId: 7 }));
+
+    await store.returnToOwnAccount();
+    expect(api.logout).toHaveBeenCalledOnce();
+    expect(store.accessToken).toBe("");
+    expect(store.user).toBeNull();
+    expect(sessionStorage.getItem("health-system-auth")).toBeNull();
   });
 });
 

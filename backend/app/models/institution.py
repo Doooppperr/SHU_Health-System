@@ -37,6 +37,7 @@ class Institution(db.Model):
     daily_appointment_limit = db.Column(db.Integer, nullable=True)
     notification_email = db.Column(db.String(120), nullable=True)
     notification_enabled = db.Column(db.Boolean, nullable=False, default=True, server_default=db.true())
+    account_deactivated_at = db.Column(db.DateTime(timezone=True), nullable=True)
     is_active = db.Column(
         db.Boolean,
         nullable=False,
@@ -102,6 +103,7 @@ class Institution(db.Model):
             "is_active": self.is_active,
             "daily_appointment_limit": self.daily_appointment_limit,
             "notification_email": self.notification_email,
+            "account_deactivated_at": self.account_deactivated_at.isoformat() if self.account_deactivated_at else None,
             "package_count": active_package_count,
             "total_package_count": len(self.packages),
         }
@@ -246,6 +248,7 @@ class Appointment(db.Model):
             "termination_party": self.termination_party,
             "termination_reason_code": self.termination_reason_code,
             "termination_reason_text": self.termination_reason_text,
+            "events": [event.to_dict() for event in self.events],
         }
         if include_user:
             payload["user"] = {

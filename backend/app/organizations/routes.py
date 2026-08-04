@@ -5,6 +5,7 @@ from sqlalchemy import and_, or_
 from app.extensions import db
 from app.models import Institution, Organization
 from app.organizations import organizations_bp
+from app.public_api.routes import public_branch_payload
 
 
 def _escaped_like_pattern(value: str) -> str:
@@ -50,8 +51,20 @@ def list_organizations():
     rows = query.order_by(Organization.id).all()
     items = []
     for row in rows:
-        payload = row.to_dict(include_branches=True)
-        branches = [branch for branch in payload["branches"] if branch["is_active"]]
+        branches = [
+            public_branch_payload(branch)
+            for branch in row.branches
+            if branch.is_active
+        ]
+        payload = {
+            "id": row.id,
+            "name": row.name,
+            "description": row.description,
+            "service_features": list(row.service_features or []),
+            "branch_count": len(branches),
+            "active_branch_count": len(branches),
+            "branches": branches,
+        }
         organization_matches = _contains(row.name, term) or _contains(row.description, term)
         if term and not organization_matches:
             branches = [branch for branch in branches if _branch_matches(branch, term)]
@@ -69,6 +82,18 @@ def get_organization(organization_id):
     row = db.session.get(Organization, organization_id)
     if row is None or not row.is_active:
         return {"message": "organization not found"}, 404
-    payload = row.to_dict(include_branches=True)
-    payload["branches"] = [branch for branch in payload["branches"] if branch["is_active"]]
+    branches = [
+        public_branch_payload(branch)
+        for branch in row.branches
+        if branch.is_active
+    ]
+    payload = {
+        "id": row.id,
+        "name": row.name,
+        "description": row.description,
+        "service_features": list(row.service_features or []),
+        "branch_count": len(branches),
+        "active_branch_count": len(branches),
+        "branches": branches,
+    }
     return {"item": payload}, 200

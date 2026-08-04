@@ -4,6 +4,7 @@ import { dashboardRouteForRole } from "../utils/roles";
 
 const lazy = (path) => () => import(/* @vite-ignore */ path);
 const WorkspaceLayout = () => import("../layouts/WorkspaceLayout.vue");
+const PublicCatalogLayout = () => import("../layouts/PublicCatalogLayout.vue");
 const userMeta = { requiresAuth: true, roles: ["user"], workspace: "user" };
 const orgMeta = { requiresAuth: true, roles: ["institution_admin"], workspace: "org" };
 const adminMeta = { requiresAuth: true, roles: ["admin"], workspace: "admin" };
@@ -13,6 +14,10 @@ const routes = [
   { path: "/login", name: "login", component: () => import("../views/LoginView.vue"), meta: { guestOnly: true, title: "登录" } },
   { path: "/forgot-password", name: "forgot-password", component: () => import("../views/ForgotPasswordView.vue"), meta: { guestOnly: true, title: "找回密码" } },
   { path: "/register", name: "register", component: () => import("../views/RegisterView.vue"), meta: { guestOnly: true, title: "注册" } },
+  { path: "/explore", component: PublicCatalogLayout, children: [
+    { path: "institutions", name: "public-institutions", component: () => import("../views/PublicInstitutionListView.vue"), meta: { title: "浏览体检机构" } },
+    { path: "institutions/:id", name: "public-institution-detail", component: () => import("../views/PublicInstitutionDetailView.vue"), meta: { title: "机构与套餐详情" } },
+  ] },
   { path: "/oauth-consent", name: "oauth-consent", component: () => import("../views/OAuthConsentView.vue"), meta: { requiresAuth: true, roles: ["user"], title: "外部 Agent 授权" } },
   { path: "/agent-actions/:id", name: "agent-action", component: () => import("../views/AgentActionView.vue"), meta: { requiresAuth: true, roles: ["user"], title: "Agent 操作确认" } },
   { path: "/workspace", component: WorkspaceLayout, meta: userMeta, children: [
@@ -38,6 +43,7 @@ const routes = [
     { path: "profile", name: "org-profile", component: () => import("../views/org/OrgProfileView.vue"), meta: { title: "机构资料" } },
     { path: "gallery", name: "org-gallery", redirect: { name: "org-profile", query: { section: "gallery" } } },
     { path: "comments", name: "org-comments", component: () => import("../views/org/OrgCommentsView.vue"), meta: { title: "用户评价" } },
+    { path: "complaints", name: "org-complaints", component: () => import("../views/org/OrgComplaintsView.vue"), meta: { title: "投诉处理" } },
     { path: "packages", name: "org-packages", component: () => import("../views/org/OrgPackagesView.vue"), meta: { title: "体检套餐" } },
     { path: "package-reviews", name: "org-package-reviews", component: () => import("../views/org/OrgPackageReviewsView.vue"), meta: { title: "信息审核" } },
   ] },
@@ -45,11 +51,11 @@ const routes = [
     { path: "", redirect: { name: "admin-dashboard" } },
     { path: "dashboard", name: "admin-dashboard", component: () => import("../views/admin/AdminDashboardView.vue"), meta: { title: "系统运营总览" } },
     { path: "institutions", name: "admin-institutions", component: () => import("../views/admin/AdminInstitutionsView.vue"), meta: { title: "机构管理" } },
-    { path: "invites", name: "admin-invites", component: () => import("../views/admin/AdminInvitesView.vue"), meta: { title: "邀请码管理" } },
     { path: "users", name: "admin-users", component: () => import("../views/admin/AdminUsersView.vue"), meta: { title: "账号管理" } },
     { path: "comments", name: "admin-comments", component: () => import("../views/CommentModerationView.vue"), meta: { title: "评论审核" } },
     { path: "package-reviews", name: "admin-package-reviews", component: () => import("../views/admin/AdminPackageReviewsView.vue"), meta: { title: "机构审核记录" } },
     { path: "agent-ops", name: "admin-agent-ops", component: () => import("../views/admin/AdminAgentOpsView.vue"), meta: { title: "Agent 安全运营" } },
+    { path: "complaints", name: "admin-complaints", component: () => import("../views/admin/AdminComplaintsView.vue"), meta: { title: "投诉记录" } },
   ] },
   { path: "/403", name: "forbidden", component: () => import("../views/ForbiddenView.vue"), meta: { title: "无权访问" } },
   { path: "/:pathMatch(.*)*", name: "not-found", component: () => import("../views/NotFoundView.vue"), meta: { title: "页面不存在" } },

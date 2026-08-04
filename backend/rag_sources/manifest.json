@@ -7,10 +7,10 @@
       "path": "rag_sources/system_public.md",
       "title": "HealthDoc 用户功能说明",
       "publisher": "HealthDoc",
-      "version": "2026-07",
+      "version": "2026-07-v12",
       "audience": "public",
       "category": "system_usage",
-      "approved_sha256": "f2de6eb85402b68ed747153ae684df721228ad276b96b309edd6f4c642d48f1f",
+      "approved_sha256": "9446e35989e247fc2a1f685f392a72ffe7fd7a3c061fca511d9f3b830264d5c4",
       "indicator_codes": []
     },
     {

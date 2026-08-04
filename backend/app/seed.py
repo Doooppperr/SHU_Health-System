@@ -12,6 +12,10 @@ from app.models import (
     PackageVersionDomain, ReportAssetType, ReportIndicator, SelfMeasurement, User,
 )
 from app.catalog_v10 import ASSET_TYPE_SEEDS, V10_INDICATOR_CATEGORIES, V10_INDICATOR_SEEDS
+from app.services.password_challenges import (
+    increment_user_security_epochs,
+    revoke_account_security_artifacts,
+)
 import uuid
 
 
@@ -744,6 +748,7 @@ def seed_demo_data():
             real_name=real_name,
             birth_date=date(1983 + index * 5, index, min(index * 4, 28)),
             gender=gender,
+            identity_completed_at=datetime.now(timezone.utc),
             allergy_history=allergy,
             medical_history=history,
             email=f"{username}@example.test",
@@ -756,19 +761,19 @@ def seed_demo_data():
     staff_by_institution = []
     for institution_index, institution in enumerate(institutions, start=1):
         institution_staff = []
-        for staff_index in (1, 2):
-            user = User(
-                username=f"institution{institution_index}_staff{staff_index}",
-                role="institution_admin",
-                managed_institution_id=institution.id,
-                email=f"institution{institution_index}-staff{staff_index}@example.test",
-            )
-            user.set_password(password)
-            db.session.add(user)
-            institution_staff.append(user)
+        user = User(
+            username=f"institution{institution_index}_staff1",
+            role="institution_admin",
+            managed_institution_id=institution.id,
+            email=f"institution{institution_index}-staff1@example.test",
+        )
+        user.set_password(password)
+        db.session.add(user)
+        institution_staff.append(user)
         staff_by_institution.append(institution_staff)
     db.session.flush()
 
+    now = datetime.now(timezone.utc)
     for viewer, owner, relation_name, authorized in (
         (people[0], people[1], "家人", True),
         (people[0], people[2], "父母", True),
@@ -778,12 +783,20 @@ def seed_demo_data():
         db.session.add(FriendRelation(
             user_id=viewer.id,
             friend_user_id=owner.id,
+            pair_key=FriendRelation.canonical_pair_key(viewer.id, owner.id),
             relation_name=relation_name,
+            friend_relation_name="亲友" if authorized else None,
+            status="active" if authorized else "pending",
             auth_status=authorized,
+            reverse_auth_status=authorized,
+            booking_auth_status=authorized,
+            reverse_booking_auth_status=authorized,
+            booking_authorized_at=now if authorized else None,
+            reverse_booking_authorized_at=now if authorized else None,
+            accepted_at=now if authorized else None,
         ))
 
     indicators = {row.code: row for row in IndicatorDict.query.all()}
-    now = datetime.now(timezone.utc)
     today = date.today()
     for index, person in enumerate(people, start=1):
         _seed_self_measurements(person, index, indicators, now)
@@ -807,7 +820,7 @@ def seed_demo_data():
             _seed_published_report(
                 user=person,
                 institution=recent_institution,
-                staff_user=staff_by_institution[recent_institution_index][1],
+                staff_user=staff_by_institution[recent_institution_index][0],
                 package=recent_institution.packages[index % len(recent_institution.packages)],
                 exam_day=today - timedelta(days=8 + index * 2),
                 indicators=indicators,
@@ -891,7 +904,11 @@ def seed_admin_user():
 
     admin = User.query.filter_by(username=default_admin_username).first()
     if admin is not None:
-        password_changed = False
+        # Startup seeding must never undo an explicit account suspension.  It
+        # may repair the reserved administrator's authentication invariants,
+        # but every such repair must invalidate credentials issued against the
+        # previous password/role/binding state.
+        authentication_state_changed = False
         if require_secure_admin and admin.check_password("admin123"):
             if (
                 len(configured_admin_password) < 12
@@ -902,16 +919,15 @@ def seed_admin_user():
                     "Set DEFAULT_ADMIN_PASSWORD to at least 12 characters in backend/.env."
                 )
             admin.set_password(configured_admin_password)
-            password_changed = True
+            authentication_state_changed = True
         if admin.role != "admin" or admin.managed_institution_id is not None or admin.health_id is not None:
             admin.role = "admin"
             admin.managed_institution_id = None
             admin.health_id = None
-            password_changed = True
-        if not admin.is_active:
-            admin.is_active = True
-            password_changed = True
-        if password_changed:
+            authentication_state_changed = True
+        if authentication_state_changed:
+            increment_user_security_epochs(admin.id)
+            revoke_account_security_artifacts(admin.id)
             db.session.commit()
         return
 

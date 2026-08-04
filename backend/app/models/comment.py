@@ -16,10 +16,18 @@ class Comment(db.Model):
     content = db.Column(db.Text, nullable=False)
     rating = db.Column(db.Integer, nullable=False)
     is_visible = db.Column(db.Boolean, nullable=False, default=False)
+    hidden_reason = db.Column(db.String(500), nullable=True)
+    moderated_by_user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    moderated_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
-    user = db.relationship("User")
+    user = db.relationship("User", foreign_keys=[user_id])
     institution = db.relationship("Institution")
+    moderator = db.relationship("User", foreign_keys=[moderated_by_user_id])
     reply = db.relationship("CommentReply", back_populates="comment", uselist=False, cascade="all, delete-orphan")
 
     def to_dict(self, *, include_unapproved_reply=False):
@@ -31,6 +39,13 @@ class Comment(db.Model):
             "content": self.content,
             "rating": self.rating,
             "is_visible": self.is_visible,
+            "moderation_status": "visible" if self.is_visible else "hidden",
+            "hidden_reason": self.hidden_reason,
+            "moderated_by": ({
+                "id": self.moderator.id,
+                "username": self.moderator.username,
+            } if self.moderator else None),
+            "moderated_at": self.moderated_at.isoformat() if self.moderated_at else None,
             "created_at": self.created_at.isoformat(),
             "user": {
                 "id": self.user.id,

@@ -15,7 +15,7 @@ from app.schema import CURRENT_SCHEMA_VERSION
 
 def test_schema_v7_uses_domains_booking_groups_and_private_health_assets(app):
     with app.app_context():
-        assert CURRENT_SCHEMA_VERSION == 11
+        assert CURRENT_SCHEMA_VERSION == 12
         assert {"organizations", "report_access_logs", "self_measurements", "institution_reports", "report_indicators", "appointments", "package_change_requests"} <= set(db.metadata.tables)
         assert "exam_registrations" not in db.metadata.tables
         assert "health_records" not in db.metadata.tables
@@ -48,7 +48,20 @@ def test_non_sqlite_schema_validation_uses_reflection_instead_of_sqlite_master(
 
         @staticmethod
         def get_columns(table_name):
-            return [{"name": column.name} for column in db.metadata.tables[table_name].columns]
+            reflected = []
+            for column in db.metadata.tables[table_name].columns:
+                reflected_type = column.type
+                if (
+                    isinstance(column.type, db.Date)
+                    and not isinstance(column.type, db.DateTime)
+                ):
+                    reflected_type = db.DateTime()
+                reflected.append({
+                    "name": column.name,
+                    "nullable": column.nullable,
+                    "type": reflected_type,
+                })
+            return reflected
 
         @staticmethod
         def get_check_constraints(table_name):
@@ -70,12 +83,47 @@ def test_non_sqlite_schema_validation_uses_reflection_instead_of_sqlite_master(
             ]
 
         @staticmethod
-        def get_foreign_keys(_table_name):
-            return []
+        def get_foreign_keys(table_name):
+            return [
+                {
+                    "name": constraint.name,
+                    "constrained_columns": [
+                        column.name for column in constraint.columns
+                    ],
+                    "referred_table": next(
+                        iter(constraint.elements)
+                    ).column.table.name,
+                    "referred_columns": [
+                        element.column.name
+                        for element in constraint.elements
+                    ],
+                }
+                for constraint in db.metadata.tables[table_name].constraints
+                if constraint.__visit_name__ == "foreign_key_constraint"
+            ]
 
         @staticmethod
-        def get_pk_constraint(_table_name):
-            return {}
+        def get_indexes(table_name):
+            return [
+                {
+                    "name": index.name,
+                    "column_names": [
+                        column.name for column in index.columns
+                    ],
+                    "unique": index.unique,
+                }
+                for index in db.metadata.tables[table_name].indexes
+            ]
+
+        @staticmethod
+        def get_pk_constraint(table_name):
+            return {
+                "name": db.metadata.tables[table_name].primary_key.name,
+                "constrained_columns": [
+                    column.name
+                    for column in db.metadata.tables[table_name].primary_key.columns
+                ],
+            }
 
     monkeypatch.setattr(schema_module, "inspect", lambda _connection: MetadataInspector())
 
@@ -92,26 +140,27 @@ def test_rebuild_preserves_only_admin_identity_and_password(tmp_path):
     connection.execute("INSERT INTO users VALUES (7, 'admin', 'unchanged-hash', 'a@example.com', NULL, 'admin', '2020-01-01')")
     connection.execute("INSERT INTO users VALUES (8, 'legacy-user', 'discard-me', NULL, NULL, 'user', '2020-01-01')")
     connection.commit(); connection.close()
-    backup = rebuild_database(path)
+    backup = rebuild_database(path, allow_data_loss=True)
     assert backup and backup.exists()
     connection = sqlite3.connect(path)
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 11
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 12
     assert connection.execute("SELECT id, username, password_hash FROM users").fetchall() == [(7, "admin", "unchanged-hash")]
     assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     connection.close()
 
 
-def test_deleting_institution_account_retains_report_snapshot(app, client):
+def test_institution_account_hard_delete_is_disabled_and_snapshot_is_retained(app, client):
     admin = login(client, "admin", "admin123")
     with app.app_context():
         staff = User.query.filter_by(username="institution1_staff1").first()
         report = InstitutionReport.query.filter_by(created_by_user_id=staff.id).first()
         staff_id, report_id, username = staff.id, report.id, staff.username
     response = client.delete(f"/api/admin/institution-accounts/{staff_id}", headers=admin)
-    assert response.status_code == 200
+    assert response.status_code == 410
+    assert response.get_json()["code"] == "INSTITUTION_ACCOUNT_SOFT_DEACTIVATION_REQUIRED"
     with app.app_context():
         report = db.session.get(InstitutionReport, report_id)
-        assert report.created_by_user_id is None
+        assert report.created_by_user_id == staff_id
         assert report.created_by_username_snapshot == username
 
 
@@ -119,9 +168,14 @@ def test_demo_seed_has_rich_timelines_and_complete_role_matrix(app):
     with app.app_context():
         people = User.query.filter_by(role="user").order_by(User.username).all()
         assert [user.username for user in people] == [
-            "test1", "test2", "test3", "test4", "test5"
+            "test1", "test2", "test3", "test4", "test5", "test6"
         ]
-        assert User.query.filter_by(role="institution_admin").count() == 18
+        assert User.query.filter_by(role="institution_admin", is_active=True).count() == 15
+        assert all(
+            institution.administrator is not None
+            and len(institution.administrators) == 1
+            for institution in Institution.query.all()
+        )
         assert User.query.filter_by(username="demo_admin", role="admin").count() == 1
         assert Institution.query.count() == 15
         assert Package.query.count() == 26
@@ -134,11 +188,14 @@ def test_demo_seed_has_rich_timelines_and_complete_role_matrix(app):
         assert BookingGroup.query.filter_by(party_size=3).count() >= 1
         assert WaitlistSubscription.query.count() >= 3
         assert NotificationOutbox.query.filter_by(event_type="waitlist_available").count() >= 1
-        for user in people:
+        for user in people[:5]:
             assert SelfMeasurement.query.filter_by(user_id=user.id).count() >= 10
             assert InstitutionReport.query.filter_by(
                 matched_user_id=user.id, status="published"
             ).count() >= 1
+        assert people[-1].username == "test6"
+        assert people[-1].profile_completed is False
+        assert SelfMeasurement.query.filter_by(user_id=people[-1].id).count() == 0
 
 
 def test_v5_upgrade_preserves_all_current_data(tmp_path):
@@ -152,6 +209,11 @@ def test_v5_upgrade_preserves_all_current_data(tmp_path):
     expected_requests = connection.execute("SELECT COUNT(*) FROM package_change_requests").fetchone()[0]
     expected_users = connection.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     expected_reports = connection.execute("SELECT COUNT(*) FROM institution_reports").fetchone()[0]
+    expected_report_statuses = dict(
+        connection.execute(
+            "SELECT status, COUNT(*) FROM institution_reports GROUP BY status"
+        ).fetchall()
+    )
     connection.execute("PRAGMA user_version=5")
     connection.commit()
     connection.close()
@@ -161,12 +223,17 @@ def test_v5_upgrade_preserves_all_current_data(tmp_path):
     assert backup and backup.exists()
     connection = sqlite3.connect(path)
     try:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 12
         assert connection.execute("SELECT COUNT(*) FROM appointments").fetchone()[0] == expected_appointments
         assert connection.execute("SELECT COUNT(*) FROM package_change_requests").fetchone()[0] == expected_requests
         assert connection.execute("SELECT COUNT(*) FROM users").fetchone()[0] == expected_users
         assert connection.execute("SELECT COUNT(*) FROM institution_reports").fetchone()[0] == expected_reports
-        assert connection.execute("SELECT COUNT(*) FROM institution_reports WHERE status='published'").fetchone()[0] == expected_reports
+        actual_report_statuses = dict(
+            connection.execute(
+                "SELECT status, COUNT(*) FROM institution_reports GROUP BY status"
+            ).fetchall()
+        )
+        assert actual_report_statuses == expected_report_statuses
         assert "withdrawn_at" not in {
             row[1] for row in connection.execute("PRAGMA table_info('institution_reports')")
         }

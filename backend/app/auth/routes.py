@@ -1,7 +1,9 @@
 import base64
 import hashlib
 import secrets
+import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -9,22 +11,52 @@ from flask import current_app, request
 from flask_jwt_extended import (
     create_access_token,
     create_refresh_token,
+    get_jwt,
     get_jwt_identity,
     jwt_required,
 )
-from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 
 from app.auth import auth_bp
 from app.extensions import db
-from app.models import InstitutionInvite, NotificationOutbox, PasswordVerificationChallenge, User
+from app.models import NotificationOutbox, PasswordVerificationChallenge, User
 from app.services.account_email import effective_account_email, synchronize_institution_email
 from app.services.contact import is_valid_email, normalize_email
+from app.services.password_challenges import (
+    claim_password_challenge,
+    consume_password_challenges,
+    increment_user_security_epochs,
+    reserve_password_challenge_attempt,
+    revoke_account_security_artifacts,
+)
 
 
 CAPTCHA_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 HEALTH_ID_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 _captcha_store = {}
+_password_challenge_issue_locks = {}
+_password_challenge_issue_locks_guard = threading.Lock()
+
+
+@contextmanager
+def _password_challenge_issue_guard(user_id):
+    """Serialize issuance for SQLite's local, single-process runtime.
+
+    Production openGauss uses a database row lock below. SQLite is only used
+    by local/demo and tests, where a per-account process lock supplies the
+    equivalent thread-level exclusion without taking a database-wide lock.
+    """
+
+    if db.engine.dialect.name != "sqlite":
+        yield
+        return
+    with _password_challenge_issue_locks_guard:
+        lock = _password_challenge_issue_locks.setdefault(
+            int(user_id),
+            threading.Lock(),
+        )
+    with lock:
+        yield
 
 
 def _purge_expired_captchas(now=None):
@@ -120,11 +152,6 @@ def _build_auth_payload(user, message):
     }
 
 
-def _invite_code_hash(invite_code: str) -> str:
-    normalized = invite_code.strip().upper()
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
 def _new_health_id() -> str:
     for _ in range(20):
         candidate = "HID-" + "".join(secrets.choice(HEALTH_ID_ALPHABET) for _ in range(8))
@@ -156,56 +183,102 @@ def _password_code_response(challenge_id=None, code=None):
 
 
 def _create_password_challenge(user, purpose):
-    now = datetime.now(timezone.utc)
-    ip_hash = _request_ip_hash()
-    recent = PasswordVerificationChallenge.query.filter_by(user_id=user.id, purpose=purpose).filter(
-        PasswordVerificationChallenge.created_at >= now - timedelta(seconds=60)
-    ).first()
-    hourly_account = PasswordVerificationChallenge.query.filter_by(user_id=user.id).filter(
-        PasswordVerificationChallenge.created_at >= now - timedelta(hours=1)
-    ).count()
-    hourly_ip = PasswordVerificationChallenge.query.filter_by(request_ip_hash=ip_hash).filter(
-        PasswordVerificationChallenge.created_at >= now - timedelta(hours=1)
-    ).count()
-    if recent:
-        return recent, None
-    if hourly_account >= 5 or hourly_ip >= 5:
-        active = PasswordVerificationChallenge.query.filter_by(
-            user_id=user.id, purpose=purpose, consumed_at=None
-        ).filter(PasswordVerificationChallenge.expires_at > now).order_by(
-            PasswordVerificationChallenge.created_at.desc()
-        ).first()
-        return active, None
+    user_id = int(user.id)
+    with _password_challenge_issue_guard(user_id):
+        if db.engine.dialect.name == "sqlite":
+            user = db.session.get(User, user_id, populate_existing=True)
+        else:
+            user = db.session.execute(
+                db.select(User)
+                .where(User.id == user_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ).scalar_one_or_none()
+        if (
+            user is None
+            or not user.is_active
+            or user.role not in {"user", "institution_admin"}
+            or not effective_account_email(user)
+        ):
+            db.session.rollback()
+            return None, None
 
-    PasswordVerificationChallenge.query.filter_by(
-        user_id=user.id, purpose=purpose, consumed_at=None
-    ).update({"consumed_at": now}, synchronize_session=False)
-    code = f"{secrets.randbelow(1_000_000):06d}"
-    email = effective_account_email(user)
-    challenge = PasswordVerificationChallenge(
-        user_id=user.id,
-        purpose=purpose,
-        email_snapshot=email,
-        request_ip_hash=ip_hash,
-        expires_at=now + timedelta(minutes=10),
-    )
-    challenge.set_code(code)
-    db.session.add(challenge)
-    db.session.flush()
-    db.session.add(NotificationOutbox(
-        event_type="password_verification_code",
-        idempotency_key=f"password-code:{challenge.public_id}",
-        recipient=email,
-        payload={
-            "challenge_id": challenge.public_id,
-            "verification_code": code,
-            "purpose": purpose,
-            "username": user.username,
-            "expires_minutes": 10,
-        },
-    ))
-    db.session.commit()
-    return challenge, code
+        # Recalculate every limit after acquiring the account lock. This makes
+        # the account-level five-per-hour limit authoritative. The IP count is
+        # intentionally an abuse-throttling layer rather than a cross-account
+        # security invariant, so it does not require a global lock table.
+        now = datetime.now(timezone.utc)
+        ip_hash = _request_ip_hash()
+        recent = PasswordVerificationChallenge.query.filter_by(
+            user_id=user.id,
+            purpose=purpose,
+            consumed_at=None,
+        ).filter(
+            PasswordVerificationChallenge.token_version_snapshot
+            == user.token_version,
+            PasswordVerificationChallenge.created_at
+            >= now - timedelta(seconds=60),
+            PasswordVerificationChallenge.expires_at > now,
+        ).first()
+        hourly_account = PasswordVerificationChallenge.query.filter_by(
+            user_id=user.id,
+        ).filter(
+            PasswordVerificationChallenge.created_at
+            >= now - timedelta(hours=1)
+        ).count()
+        hourly_ip = PasswordVerificationChallenge.query.filter_by(
+            request_ip_hash=ip_hash,
+        ).filter(
+            PasswordVerificationChallenge.created_at
+            >= now - timedelta(hours=1)
+        ).count()
+        if recent:
+            db.session.commit()
+            return recent, None
+        if hourly_account >= 5 or hourly_ip >= 5:
+            active = PasswordVerificationChallenge.query.filter_by(
+                user_id=user.id,
+                purpose=purpose,
+                consumed_at=None,
+                token_version_snapshot=user.token_version,
+            ).filter(PasswordVerificationChallenge.expires_at > now).order_by(
+                PasswordVerificationChallenge.created_at.desc()
+            ).first()
+            db.session.commit()
+            return active, None
+
+        PasswordVerificationChallenge.query.filter_by(
+            user_id=user.id,
+            purpose=purpose,
+            consumed_at=None,
+        ).update({"consumed_at": now}, synchronize_session=False)
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        email = effective_account_email(user)
+        challenge = PasswordVerificationChallenge(
+            user_id=user.id,
+            purpose=purpose,
+            email_snapshot=email,
+            request_ip_hash=ip_hash,
+            token_version_snapshot=user.token_version,
+            expires_at=now + timedelta(minutes=10),
+        )
+        challenge.set_code(code)
+        db.session.add(challenge)
+        db.session.flush()
+        db.session.add(NotificationOutbox(
+            event_type="password_verification_code",
+            idempotency_key=f"password-code:{challenge.public_id}",
+            recipient=email,
+            payload={
+                "challenge_id": challenge.public_id,
+                "verification_code": code,
+                "purpose": purpose,
+                "username": user.username,
+                "expires_minutes": 10,
+            },
+        ))
+        db.session.commit()
+        return challenge, code
 
 
 def _verify_password_challenge(public_id, code, purpose, *, user=None):
@@ -217,10 +290,21 @@ def _verify_password_challenge(public_id, code, purpose, *, user=None):
         or _aware(challenge.expires_at) <= now
         or challenge.attempt_count >= 5
         or (user is not None and challenge.user_id != user.id)
+        or challenge.token_version_snapshot != challenge.user.token_version
     ):
         return None, ({"message": "验证码无效或已过期，请重新获取", "code": "PASSWORD_CODE_INVALID"}, 400)
+    if not reserve_password_challenge_attempt(
+        challenge.id,
+        user_id=challenge.user_id,
+        token_version=challenge.user.token_version,
+        attempted_at=now,
+    ):
+        db.session.rollback()
+        return None, ({
+            "message": "验证码无效或已过期，请重新获取",
+            "code": "PASSWORD_CODE_INVALID",
+        }, 400)
     if not challenge.check_code(str(code or "").strip()):
-        challenge.attempt_count += 1
         db.session.commit()
         return None, ({"message": "验证码不正确，请检查后重试", "code": "PASSWORD_CODE_INCORRECT"}, 400)
     if effective_account_email(challenge.user) != normalize_email(challenge.email_snapshot):
@@ -228,6 +312,21 @@ def _verify_password_challenge(public_id, code, purpose, *, user=None):
         db.session.commit()
         return None, ({"message": "绑定邮箱已经变更，请重新获取验证码", "code": "PASSWORD_EMAIL_CHANGED"}, 409)
     return challenge, None
+
+
+def _claim_verified_password_challenge(challenge, user, claimed_at):
+    if claim_password_challenge(
+        challenge.id,
+        user_id=user.id,
+        token_version=user.token_version,
+        claimed_at=claimed_at,
+    ):
+        return None
+    db.session.rollback()
+    return {
+        "message": "验证码无效或已过期，请重新获取",
+        "code": "PASSWORD_CODE_INVALID",
+    }, 400
 
 
 @auth_bp.get("/captcha")
@@ -253,6 +352,12 @@ def register():
     captcha_id = (payload.get("captcha_id") or "").strip()
     captcha_answer = (payload.get("captcha_answer") or "").strip()
 
+    if invite_code:
+        return {
+            "message": "机构账号不再开放自助注册，请联系平台管理员创建分院账号",
+            "code": "INSTITUTION_SELF_REGISTRATION_DISABLED",
+        }, 410
+
     if not username or not password or not email or not captcha_id or not captcha_answer:
         return {"message": "用户名、邮箱、密码和图片验证码均为必填项"}, 400
     if not is_valid_email(email):
@@ -267,54 +372,18 @@ def register():
     if User.query.filter_by(username=username).first():
         return {"message": "该用户名已被使用", "code": "USERNAME_EXISTS"}, 409
 
-    invite = None
-    expected_invite_hash = None
-    if invite_code:
-        invite = InstitutionInvite.query.filter_by(
-            code_hash=_invite_code_hash(invite_code),
-            status="active",
-        ).first()
-        if invite is None or invite.used_by_user_id is not None:
-            return {"message": "邀请码不正确或已失效", "code": "INVITATION_UNAVAILABLE"}, 400
-        if invite.institution is None or not invite.institution.is_active:
-            return {"message": "该邀请码所属分院已停用", "code": "INSTITUTION_INACTIVE"}, 400
-        if invite.institution.notification_email:
-            email = normalize_email(invite.institution.notification_email)
-        else:
-            invite.institution.notification_email = email
-        expected_invite_hash = invite.code_hash
-
     user = User(
         username=username,
         email=email,
         phone=phone,
-        role="institution_admin" if invite else "user",
-        managed_institution_id=invite.institution_id if invite else None,
-        health_id=None if invite else _new_health_id(),
+        role="user",
+        managed_institution_id=None,
+        health_id=_new_health_id(),
     )
     user.set_password(password)
     try:
         db.session.add(user)
         db.session.flush()
-        if invite is not None:
-            consumed = db.session.execute(
-                update(InstitutionInvite)
-                .where(
-                    InstitutionInvite.id == invite.id,
-                    InstitutionInvite.code_hash == expected_invite_hash,
-                    InstitutionInvite.status == "active",
-                    InstitutionInvite.used_by_user_id.is_(None),
-                )
-                .values(
-                    status="used",
-                    used_by_user_id=user.id,
-                    used_at=datetime.now(timezone.utc),
-                )
-                .execution_options(synchronize_session=False)
-            )
-            if consumed.rowcount != 1:
-                db.session.rollback()
-                return {"message": "该邀请码已经使用", "code": "INVITATION_USED"}, 409
         db.session.commit()
     except IntegrityError:
         db.session.rollback()
@@ -388,10 +457,20 @@ def confirm_password_reset():
     user = challenge.user
     if user.role not in {"user", "institution_admin"} or not user.is_active:
         return {"message": "账号当前不可使用，请联系管理员", "code": "ACCOUNT_UNAVAILABLE"}, 403
+    changed_at = datetime.now(timezone.utc)
+    claim_error = _claim_verified_password_challenge(
+        challenge,
+        user,
+        changed_at,
+    )
+    if claim_error:
+        return claim_error
     user.set_password(new_password)
-    user.token_version += 1
-    user.email_verified_at = datetime.now(timezone.utc)
-    challenge.consumed_at = datetime.now(timezone.utc)
+    if user.role == "institution_admin":
+        user.must_change_initial_password = False
+    user.email_verified_at = changed_at
+    increment_user_security_epochs(user.id)
+    revoke_account_security_artifacts(user.id, revoked_at=changed_at)
     db.session.commit()
     return {"message": "密码已重置，请使用新密码登录"}, 200
 
@@ -418,7 +497,11 @@ def confirm_password_change():
     user = db.session.get(User, int(get_jwt_identity()))
     payload = request.get_json(silent=True) or {}
     new_password = payload.get("new_password") or ""
-    if user is None or user.role not in {"user", "institution_admin"}:
+    if (
+        user is None
+        or user.role not in {"user", "institution_admin"}
+        or not user.is_active
+    ):
         return {"message": "账号当前不可使用", "code": "ACCOUNT_UNAVAILABLE"}, 403
     if not user.check_password(payload.get("current_password") or ""):
         return {"message": "当前密码不正确", "code": "CURRENT_PASSWORD_INCORRECT"}, 400
@@ -429,10 +512,20 @@ def confirm_password_change():
     )
     if error:
         return error
+    changed_at = datetime.now(timezone.utc)
+    claim_error = _claim_verified_password_challenge(
+        challenge,
+        user,
+        changed_at,
+    )
+    if claim_error:
+        return claim_error
     user.set_password(new_password)
-    user.token_version += 1
-    user.email_verified_at = datetime.now(timezone.utc)
-    challenge.consumed_at = datetime.now(timezone.utc)
+    if user.role == "institution_admin":
+        user.must_change_initial_password = False
+    user.email_verified_at = changed_at
+    increment_user_security_epochs(user.id)
+    revoke_account_security_artifacts(user.id, revoked_at=changed_at)
     db.session.commit()
     return {"message": "密码修改成功，请重新登录"}, 200
 
@@ -446,7 +539,8 @@ def change_account_email():
     if user.role not in {"user", "institution_admin"}:
         return {"message": "系统管理员不能自助修改绑定邮箱", "code": "EMAIL_CHANGE_FORBIDDEN"}, 403
 
-    new_email = normalize_email((request.get_json(silent=True) or {}).get("email"))
+    payload = request.get_json(silent=True) or {}
+    new_email = normalize_email(payload.get("email"))
     if not new_email or not is_valid_email(new_email):
         return {"message": "请输入有效的新邮箱地址", "code": "INVALID_EMAIL"}, 400
     old_email = effective_account_email(user)
@@ -454,8 +548,28 @@ def change_account_email():
         return {"message": "新邮箱不能与当前绑定邮箱相同", "code": "EMAIL_UNCHANGED"}, 409
     if user.role == "institution_admin" and user.managed_institution is None:
         return {"message": "当前机构账号未绑定分院，请联系系统管理员", "code": "INSTITUTION_UNAVAILABLE"}, 409
+    if not user.check_password(str(payload.get("current_password") or "")):
+        return {
+            "message": "当前密码不正确",
+            "code": "CURRENT_PASSWORD_INCORRECT",
+        }, 400
+    challenge, error = _verify_password_challenge(
+        (payload.get("challenge_id") or "").strip(),
+        payload.get("verification_code"),
+        "change",
+        user=user,
+    )
+    if error:
+        return error
 
     changed_at = datetime.now(timezone.utc)
+    claim_error = _claim_verified_password_challenge(
+        challenge,
+        user,
+        changed_at,
+    )
+    if claim_error:
+        return claim_error
     change_id = uuid4().hex
     if user.role == "institution_admin":
         institution = user.managed_institution
@@ -468,7 +582,6 @@ def change_account_email():
         user.email = new_email
         user.email_verified_at = None
         account_label = user.username
-
     common_payload = {
         "username": user.username,
         "account_label": account_label,
@@ -489,6 +602,7 @@ def change_account_email():
         recipient=new_email,
         payload=common_payload,
     ))
+    consume_password_challenges(user.id, consumed_at=changed_at)
     try:
         db.session.commit()
     except IntegrityError:
@@ -500,12 +614,38 @@ def change_account_email():
 @auth_bp.post("/refresh")
 @jwt_required(refresh=True)
 def refresh_token():
+    claims = get_jwt()
+    if claims.get("delegated") is True:
+        from app.models import DelegationSessionAudit
+        from app.services.delegation import issue_delegated_tokens
+
+        audit = db.session.get(
+            DelegationSessionAudit,
+            claims.get("delegation_session_id"),
+        )
+        if audit is None or audit.status != "active":
+            return {
+                "message": "关联账号登录已失效，请重新登录",
+                "code": "DELEGATION_SESSION_REVOKED",
+            }, 401
+        tokens = issue_delegated_tokens(audit)
+        return {"access_token": tokens["access_token"]}, 200
+
     user_id = get_jwt_identity()
-    user = db.session.get(User, int(user_id))
+    # The JWT verification callback may already have placed this user in the
+    # session identity map. Reload from the database so a password/account
+    # mutation committed between verification and this handler cannot let an
+    # old refresh token mint an access token in the new security epoch.
+    user = db.session.get(User, int(user_id), populate_existing=True)
     if user is None:
         return {"message": "账号不存在或已不可用", "code": "USER_NOT_FOUND"}, 404
     if not user.is_active:
         return {"message": "该账号已停用，请联系管理员", "code": "ACCOUNT_INACTIVE"}, 403
+    if claims.get("token_version", 0) != user.token_version:
+        return {
+            "message": "登录状态已经失效，请重新登录",
+            "code": "TOKEN_REVOKED",
+        }, 401
 
     access_token = create_access_token(identity=str(user.id), additional_claims={"role": user.role, "token_version": user.token_version})
     return {"access_token": access_token}, 200
@@ -514,4 +654,36 @@ def refresh_token():
 @auth_bp.post("/logout")
 @jwt_required()
 def logout():
+    claims = get_jwt()
+    if claims.get("delegated") is True:
+        from app.services.delegation import revoke_actor_login
+
+        revoke_actor_login(int(claims["actor_id"]), "user logged out")
+        db.session.commit()
+        return {
+            "message": "已退出关联账号登录，请重新登录",
+            "redirect_to": "/login",
+        }, 200
+    from app.services.delegation import revoke_actor_login
+
+    revoke_actor_login(int(get_jwt_identity()))
+    db.session.commit()
     return {"message": "已安全退出登录"}, 200
+
+
+@auth_bp.post("/delegation/exit")
+@jwt_required()
+def exit_delegated_session():
+    claims = get_jwt()
+    if claims.get("delegated") is not True:
+        return {
+            "message": "当前不是关联账号登录状态",
+            "code": "DELEGATION_NOT_ACTIVE",
+        }, 409
+    from app.services.delegation import exit_delegation
+
+    result, error = exit_delegation(claims)
+    if error:
+        return error
+    db.session.commit()
+    return result, 200

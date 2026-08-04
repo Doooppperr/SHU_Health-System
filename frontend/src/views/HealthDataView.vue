@@ -12,12 +12,6 @@
     <el-card shadow="never" class="user-panel user-filter-panel">
       <div class="health-data-filter-grid">
         <label class="filter-field">
-          <span class="filter-field-label">查看谁的资料</span>
-          <el-select v-model="filters.owner_id" @change="filters.page = 1">
-            <el-option v-for="item in owners" :key="String(item.value)" :label="item.label" :value="item.value" />
-          </el-select>
-        </label>
-        <label class="filter-field">
           <span class="filter-field-label">日期范围</span>
           <div class="health-date-filter">
             <el-select v-model="datePreset" aria-label="日期范围快捷选择" @change="applyDatePreset">
@@ -112,28 +106,22 @@
 <script setup>
 import { onMounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { fetchFriends } from "../api/friends";
 import { fetchHealthData, fetchHealthDomains } from "../api/health";
 import { fetchInstitutions } from "../api/institutions";
-import { useAuthStore } from "../stores/auth";
-import { buildHealthOwnerOptions, ownerRequestParams, SELF_OWNER_VALUE, withOwnerRequestParams } from "../utils/healthOwners";
 import { sourceLabel } from "../utils/userPlatform";
 
 const route = useRoute();
 const router = useRouter();
-const auth = useAuthStore();
 const loading = ref(false);
 const error = ref("");
 const items = ref([]);
 const domains = ref([]);
 const institutions = ref([]);
-const owners = ref([]);
 const dateRange = ref([]);
 const DATE_PRESETS = new Set(["all", "week", "month", "half_year", "custom"]);
 const datePreset = ref(DATE_PRESETS.has(String(route.query.date_preset)) ? String(route.query.date_preset) : "all");
 const pagination = reactive({ page: 1, page_size: 15, total: 0 });
 const filters = reactive({
-  owner_id: route.query.owner_id ? String(route.query.owner_id) : SELF_OWNER_VALUE,
   institution_id: route.query.institution_id ? Number(route.query.institution_id) : null,
   domain_id: route.query.domain_id ? Number(route.query.domain_id) : null,
   page: Number(route.query.page) || 1,
@@ -195,7 +183,6 @@ function openDetail(item) {
   router.push({
     name: "health-data-detail",
     params: { id: item.health_data_id },
-    query: ownerRequestParams(filters.owner_id),
   });
 }
 
@@ -203,10 +190,10 @@ async function load() {
   loading.value = true;
   error.value = "";
   try {
-    const params = cleanParams(withOwnerRequestParams({
+    const params = cleanParams({
       ...filters,
       ...dateFilterParams(),
-    }, filters.owner_id));
+    });
     const { data } = await fetchHealthData(params);
     items.value = data.items || [];
     Object.assign(pagination, data.pagination || {});
@@ -230,7 +217,6 @@ async function applyFilters(resetPage = false) {
   if (resetPage) filters.page = 1;
   const query = cleanParams({
     ...filters,
-    owner_id: filters.owner_id === SELF_OWNER_VALUE ? undefined : filters.owner_id,
     date_preset: datePreset.value === "all" ? undefined : datePreset.value,
     ...dateFilterParams(),
   });
@@ -239,14 +225,12 @@ async function applyFilters(resetPage = false) {
 }
 
 onMounted(async () => {
-  const [domainResponse, institutionResponse, friendResponse] = await Promise.all([
+  const [domainResponse, institutionResponse] = await Promise.all([
     fetchHealthDomains(),
     fetchInstitutions(),
-    fetchFriends(),
   ]);
   domains.value = domainResponse.data.items || [];
   institutions.value = institutionResponse.data.items || [];
-  owners.value = buildHealthOwnerOptions(friendResponse.data, auth.user);
   await load();
 });
 </script>

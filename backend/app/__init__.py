@@ -11,6 +11,7 @@ from .ai import ai_bp
 from .agent import agent_bp
 from .auth import auth_bp
 from .comments import comments_bp
+from .complaints import complaints_bp
 from .config import config_by_name
 from .extensions import db, init_extensions
 from .friends import friends_bp
@@ -26,8 +27,14 @@ from .org import org_bp
 from .organizations import organizations_bp
 from .oauth import oauth_bp
 from .profile import profile_bp
-from .schema import initialize_or_validate_schema
+from .public_api import public_bp
+from .schema import CURRENT_SCHEMA_VERSION, initialize_or_validate_schema
 from .seed import seed_core_data
+from .services.delegation_request import (
+    audit_delegated_response,
+    capture_delegated_request,
+)
+from .services.user_access import enforce_completed_identity_for_writes
 from .users import users_bp
 
 
@@ -39,6 +46,12 @@ def _validate_runtime_security(app: Flask, config_name: str) -> None:
         raise RuntimeError(
             "Production startup requires an explicit JWT_SECRET_KEY of at least 32 characters. "
             "Set it in backend/.env before starting Waitress."
+        )
+    account_key = str(app.config.get("ACCOUNT_CREDENTIAL_ENCRYPTION_KEY") or "")
+    if len(account_key) < 32:
+        raise RuntimeError(
+            "Production startup requires ACCOUNT_CREDENTIAL_ENCRYPTION_KEY "
+            "with at least 32 characters."
         )
     if app.config.get("AGENT_ENABLED"):
         encryption_key = str(app.config.get("AGENT_DATA_ENCRYPTION_KEY") or "")
@@ -75,6 +88,7 @@ def create_app(config_name="development"):
     app.register_blueprint(agent_bp, url_prefix="/api/agent")
     app.register_blueprint(users_bp, url_prefix="/api/users")
     app.register_blueprint(profile_bp, url_prefix="/api/profile")
+    app.register_blueprint(public_bp, url_prefix="/api/public")
     app.register_blueprint(health_bp, url_prefix="/api")
     app.register_blueprint(health_data_v7_bp, url_prefix="/api")
     app.register_blueprint(exam_reports_bp, url_prefix="/api/exam-reports")
@@ -84,12 +98,24 @@ def create_app(config_name="development"):
     app.register_blueprint(organizations_bp, url_prefix="/api/organizations")
     app.register_blueprint(indicators_bp, url_prefix="/api/indicators")
     app.register_blueprint(comments_bp, url_prefix="/api/comments")
+    app.register_blueprint(complaints_bp, url_prefix="/api/complaints")
     app.register_blueprint(notifications_bp, url_prefix="/api/notifications")
     app.register_blueprint(oauth_bp)
 
+    # Capture the real actor before any business guard can short-circuit the
+    # request, so denied delegated writes (including IDENTITY_REQUIRED) remain
+    # attributable in the immutable delegation audit trail.
+    app.before_request(capture_delegated_request)
+    app.before_request(enforce_completed_identity_for_writes)
+    app.after_request(audit_delegated_response)
+
     @app.get("/api/health")
     def health_check():
-        return {"status": "ok"}, 200
+        return {
+            "status": "ok",
+            "schema_version": CURRENT_SCHEMA_VERSION,
+            "release_commit": app.config.get("RELEASE_COMMIT") or "development",
+        }, 200
 
     @app.after_request
     def localize_api_messages(response):

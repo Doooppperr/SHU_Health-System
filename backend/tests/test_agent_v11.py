@@ -18,6 +18,7 @@ from app.models import (
     AgentToolEvent,
     AgentRun,
     BookingGroup,
+    FriendRelation,
     HealthRecord,
     Institution,
     Package,
@@ -35,7 +36,20 @@ def _register(client, username):
         ),
     )
     assert response.status_code == 201
-    return {"Authorization": f"Bearer {response.get_json()['access_token']}"}
+    headers = {
+        "Authorization": f"Bearer {response.get_json()['access_token']}"
+    }
+    completed = client.post(
+        "/api/profile/me/complete",
+        headers=headers,
+        json={
+            "real_name": f"虚构{username}",
+            "gender": "undisclosed",
+            "birth_date": "1990-01-01",
+        },
+    )
+    assert completed.status_code == 200, completed.get_json()
+    return headers
 
 
 def _login(client, username, password="Shuhealthdoc！"):
@@ -151,6 +165,52 @@ def test_agent_uses_business_date_and_can_select_cheapest_institution_package(
     prices = [item["price"] for item in result["packages"]]
     assert prices == sorted(prices)
     assert result["selection_hints"]["cheapest_package_id"] == result["packages"][0]["id"]
+
+
+def test_agent_health_tools_only_read_effective_account(client, app):
+    headers = _login(client, "test1")
+    thread_id = client.post(
+        "/api/agent/threads",
+        headers=headers,
+    ).get_json()["item"]["id"]
+    with app.app_context():
+        current = User.query.filter_by(username="test1").one()
+        linked = User.query.filter_by(username="test2").one()
+        relation = FriendRelation.query.filter(
+            db.or_(
+                db.and_(
+                    FriendRelation.user_id == current.id,
+                    FriendRelation.friend_user_id == linked.id,
+                ),
+                db.and_(
+                    FriendRelation.user_id == linked.id,
+                    FriendRelation.friend_user_id == current.id,
+                ),
+            )
+        ).one()
+        relation.activate()
+        run = AgentRun(
+            id=str(uuid.uuid4()),
+            thread_id=thread_id,
+            user_id=current.id,
+            model_name="test",
+        )
+        db.session.add(run)
+        db.session.commit()
+
+        with pytest.raises(PermissionError, match="当前有效账号"):
+            execute_tool(
+                "list_reports",
+                {"owner_id": linked.id, "limit": 10},
+                user=current,
+                thread_id=thread_id,
+                run_id=run.id,
+            )
+        denied = AgentToolEvent.query.filter_by(
+            run_id=run.id,
+            tool_name="list_reports",
+        ).one()
+        assert denied.status == "denied"
 
 
 def test_agent_normalizes_model_markdown_for_plain_text_panel():

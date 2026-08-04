@@ -1,13 +1,13 @@
 # 康康健健 HealthDoc 后端
 
-Flask 后端负责认证与三角色授权、健康身份码亲友授权、预约资料副本、站内/邮件通知、规范附件、104 项成人体检指标、OCR，以及受类型化工具、逐次确认和幂等执行保护的 HealthDoc Agent。本地使用 SQLite schema v11；服务器通过 `DATABASE_URL` 连接 GaussDB/openGauss，并使用 v11 保留式增量迁移。
+Flask 后端负责三角色授权、实名认证、受控关联账号会话、健康身份码多人预约、预约资料副本、报告复核、投诉、评论处罚/申诉、机构画像、站内/邮件通知、104 项成人体检指标、OCR，以及受类型化工具、逐次确认和幂等执行保护的 HealthDoc Agent。本地使用 SQLite schema v12；服务器通过 `DATABASE_URL` 连接 GaussDB/openGauss，并使用 v12 保留式增量迁移。
 
 ## 1.0—3.0 后端演进
 
 - 1.0 建立 Flask API、JWT 三角色授权、机构/套餐、基础预约和健康记录。
-- 2.0 增加自主测量、报告草稿/锁定/归档、时间线、趋势、亲友授权和 AI/OCR 权限链。
+- 2.0 增加自主测量、报告草稿/发布、时间线、趋势、亲友授权和 AI/OCR 权限链。
 - 3.0 引入健康领域、套餐版本、预约组、容量候补、通知 outbox、图文报告；schema v8 进一步增加机构主体、分院和跨院访问审计。
-- 当前只维护 schema v11 的统一模型和接口；旧地址仅在有明确兼容价值时保留，旧数据库通过迁移脚本升级。
+- 当前只维护 schema v12 的统一模型和接口；schema v11 Agent 文档作为历史基线保留，旧数据库通过迁移脚本升级。
 
 ## 环境与安装
 
@@ -27,11 +27,13 @@ if (-not (Test-Path .env)) {
 
 本地通知默认 `NOTIFICATION_EMAIL_DRY_RUN=1`，只验证 Outbox/重试流程而不连接外部邮箱。需要联调真实 SMTP 时，在被 Git 忽略的 `.env` 中配置 `SMTP_*` 并设为 `0`；`NOTIFICATION_EMAIL_REDIRECT` 可将所有通知统一投递到一个测试收件箱。注册必须填写有效邮箱，但邮箱只作为通知渠道，不作为账号唯一标识，因此家庭成员和验收账号可以共用一个邮箱；空位提醒直接使用当前账号绑定的通知邮箱。新建验收库时可用 `DEMO_SHARED_EMAIL` 统一绑定测试账号，真实地址不要写入受版本控制的文件。
 
-根目录的 `scripts/start-full-dev.ps1` 和 `scripts/start-full-prod.ps1` 会在后端就绪后自动启动隐藏的常驻 worker，每 5 秒处理一次 Outbox，并在前端命令退出时停止。单独运行可使用 `scripts/start-notification-worker.ps1`，或在后端目录执行 `python scripts/notification_worker.py --watch --interval-seconds 5`。条件更新保证误开两个 worker 时同一条通知只会被一个进程领取；发送前会把 Outbox 载荷转换为连续的中文业务文本，不会把 JSON 原文发给用户。
+生产环境必须设置至少 32 字符的高熵 `ACCOUNT_CREDENTIAL_ENCRYPTION_KEY`，用于加密发件箱中尚未发送的机构初始账密。它必须与 `AGENT_DATA_ENCRYPTION_KEY`、JWT 和 SMTP 凭据独立，不得提交真实值；冷备份和恢复须连同 root-only 环境文件保留该密钥，随意轮换会使尚未清除的待发凭据无法解密。
 
-## 数据库与 schema v11
+根目录的 `scripts/start-full-dev.ps1` 和 `scripts/start-full-prod.ps1` 会在后端就绪后自动启动隐藏的常驻 worker，每 5 秒处理一次 Outbox，并在前端命令退出时停止。单独运行可使用 `scripts/start-notification-worker.ps1`，或在后端目录执行 `python scripts/notification_worker.py --watch --interval-seconds 5`。条件更新保证误开两个 worker 时同一条通知只会被一个进程并发领取；`sending` 使用 300 秒租约，崩溃遗留的过期租约会返回重试队列。收到 SIGTERM 后 worker 不再领取下一条，而是完成当前 SMTP 结果落库后退出。SMTP 与数据库无法组成原子事务，因此这里明确采用 at-least-once：极端崩溃发生在 SMTP 已接收、数据库尚未落库之间时可能重发，但不会把记录永久卡在 `sending`。发送前会把 Outbox 载荷转换为连续的中文业务文本，不会把 JSON 原文发给用户。生产 systemd 单元还传入 `--start-gate-file /var/lib/healthdoc/notification-worker.enabled`：发布候选阶段 worker 可以启动并等待，但门闩文件创建前不会领取或发送任何 Outbox。
 
-默认数据库为 `instance/health_system.db`。SQLite 连接启用外键和 30 秒写锁等待；`PRAGMA user_version=11` 标识当前结构。新空库直接创建 v11，v4–v10 使用升级脚本保留迁移；生产 openGauss/GaussDB 使用 `migrations/versions/20260729_schema_v11.py`，其下修订为 schema v10。
+## 数据库与 schema v12
+
+默认数据库为 `instance/health_system.db`。SQLite 连接启用外键和 30 秒写锁等待；`PRAGMA user_version=12` 标识当前结构。新空库直接创建 v12，v4–v11 使用原子升级脚本；生产 openGauss/GaussDB 使用 `migrations/versions/20260730_schema_v12.py` 与 `scripts/migrate_schema_v12.py`。
 
 ```powershell
 .\.venv\Scripts\python.exe .\scripts\upgrade_local_database.py --check-only
@@ -41,9 +43,10 @@ if (-not (Test-Path .env)) {
 验收业务数据可通过专用脚本重建；`--check-only` 只校验目标库和账号边界，`--apply --yes` 才会覆盖验收业务记录并保留全部验收账号及密码哈希：
 
 ```powershell
-.\.venv\Scripts\python.exe .\scripts\reset_v10_demo_data.py --check-only
-.\.venv\Scripts\python.exe .\scripts\reset_v10_demo_data.py --apply --yes
-.\.venv\Scripts\python.exe .\scripts\validate_v10_demo.py
+.\.venv\Scripts\python.exe .\scripts\reset_v12_demo_data.py --check-only
+.\.venv\Scripts\python.exe .\scripts\reset_v12_demo_data.py --apply --yes
+.\.venv\Scripts\python.exe .\scripts\validate_v12_demo.py `
+  --database .\instance\health_system.db --upload-dir .\uploads
 ```
 
 升级与重建都会先校验完整性并生成时间戳备份。当前核心表包括：
@@ -56,15 +59,17 @@ if (-not (Test-Path .env)) {
 - 通知可靠性：`availability_notification_events`、`notification_outbox`、`user_notifications`。
 - Agent：`agent_threads`、`agent_runs`、`agent_tool_events`、`agent_pending_actions`、`agent_action_executions`、`support_handoffs`；
 - OAuth/MCP：`oauth_clients`、`oauth_authorization_codes`、`oauth_access_tokens`、`oauth_refresh_tokens`。
+- v12 关联与预约凭据：`delegation_session_audits`、`delegated_action_audits`、`booking_participant_tokens`、`booking_participant_authorizations`；
+- v12 治理与画像：`appointment_complaints`、`complaint_messages`、`complaint_events`、`comment_sanctions`、`comment_appeals`、`institution_audience_insight_cache`。
 
 ## 角色与账号规则
 
-- `user`：必须有唯一 `health_id`，不能绑定机构。
+- `user`：必须有唯一 `health_id`，不能绑定机构；完成姓名、性别、出生日期前，业务写操作统一返回 `IDENTITY_REQUIRED`。
 - `institution_admin`：必须绑定一个具体分院，不拥有健康身份码；账号无总部权限。本院报告可生产和归档，同机构兄弟分院已归档报告仅可查看并写入审计日志。
 - `admin`：不能绑定机构，也不拥有健康身份码。
 - `is_active=false` 后，登录、刷新令牌及所有角色保护接口立即拒绝账号。
 - 普通用户注册时健康身份码由服务端生成，前端不能指定或修改。
-- 机构工作人员注册必须消费当前有效邀请码；邀请码每机构只有一行，重新生成覆盖当前值并使旧明文失效，数据库仅保存哈希。
+- 公共注册只创建普通用户。分院与唯一机构账号由系统管理员在同一事务创建；初始凭据只在加密 Outbox 暂存，邮件成功后清除。
 - 系统管理员可停用/恢复账号。删除普通用户需显式 `confirm=true` 并级联其健康数据；删除机构账号保留报告及创建者用户名快照，只把创建者外键置空。
 
 ## 当前 API 分区
@@ -72,6 +77,7 @@ if (-not (Test-Path .env)) {
 | 前缀 | 主要角色 | 内容 |
 |---|---|---|
 | `/api/auth` | 公开/登录用户 | 图片验证码、注册、登录、刷新、注销 |
+| `/api/public` | 公开 | 启用机构、分院、在售套餐和平台联系方式的脱敏只读目录 |
 | `/api/users/me` | 登录用户 | 当前账号与实时角色 |
 | `/api/profile/me` | 普通用户 | 本人健康身份和个人健康资料 |
 | `/api/self-measurements` | 普通用户 | 总览测量抽屉使用的六类日常测量 CRUD |
@@ -82,15 +88,16 @@ if (-not (Test-Path .env)) {
 | `/api/ai/trends/stream` | 普通用户 | 本次页面授权后的当前趋势流式 AI 解读 |
 | `/api/organizations` | 登录用户 | 机构主体及其分院的公开分组读模型 |
 | `/api/org/context` | 机构账号 | 当前机构主体、当前分院、兄弟分院和协作权限 |
-| `/api/friends` | 普通用户 | 亲友关系与授权状态 |
+| `/api/friends` | 普通用户 | 双向关联账号申请、接受、双方备注、撤销、列表与受控切换 |
 | `/api/notifications` | 普通用户 | 站内通知、未读数和业务跳转 |
 | `/api/institutions` | 登录用户 | 启用机构、详情和套餐浏览 |
-| `/api/appointments`、`/api/booking-groups` | 普通用户 | 未来 30 天余量、1–5 人预约组与整组取消 |
+| `/api/appointments`、`/api/booking-groups` | 普通用户 | 上海时区明天至第 30 天、三类参与人、受检预约、代预约回执与部分取消 |
 | `/api/waitlist-subscriptions` | 普通用户 | 候补提醒创建、查看和取消 |
-| `/api/comments` | 用户/管理员 | 公开评论、我的评论和审核 |
+| `/api/comments` | 用户/管理员 | 公开评论、隐藏原因、7/30 天或永久禁言与单次申诉 |
+| `/api/complaints` | 用户/机构/管理员 | 每个预约一条投诉、追加式消息/事件、升级、接管和关闭 |
 | `/api/indicators/dicts` | 登录用户 | 指标字典 |
 | `/api/org` | 机构账号 | 本机构资料、套餐审核申请、预约履约、相册和报告生产 |
-| `/api/admin` | 系统管理员 | 平台统计、机构、套餐变更审批、相册和邀请码 |
+| `/api/admin` | 系统管理员 | 平台统计、分院+账号创建、身份修正、套餐审批、投诉和评论治理 |
 | `/api/users` | 系统管理员 | 账号列表、停用、恢复和删除 |
 | `/api/ai` | 访客/普通用户 | FAQ、流式对话、报告列表和分析 |
 | `/api/agent` | 普通用户/管理员 | Agent 线程、SSE 运行、第一方确认、人工工单运营 |
@@ -99,6 +106,8 @@ if (-not (Test-Path .env)) {
 
 所有受限接口都在服务端逐请求查询账号、角色、启用状态和机构绑定。前端隐藏菜单不是安全边界。
 
+平台固定联系方式由 `app/services/platform_contact.py` 统一维护，并由 `GET /api/public/contact` 及公开目录响应提供；前端展示和文档不得建立另一套运行时配置来源。
+
 ## 机构、套餐、相册和评论
 
 - 机构采用 `is_active` 软停用；套餐新增、修改、下架和恢复都由所属机构提交审核申请，管理员只能通过或驳回，不能直接改套餐。
@@ -106,7 +115,7 @@ if (-not (Test-Path .env)) {
 - 每机构最多 8 张 JPEG、PNG 或 WebP 图片，单张最大 5 MB；服务端真实解码、修正方向、重编码并清除 EXIF。
 - 相册排序一次提交完整 ID 集合并归一化；第一张作为公开封面。
 - `/uploads/<path>` 只服务 `institution_images` 已登记的存储键，`reports/` 和孤儿文件返回 404。
-- 用户只有在拥有当前机构的已发布匹配报告时才能发布评论；评论默认等待管理员审核，用户可查看和删除自己的评论。
+- 用户只有在拥有当前机构的已发布匹配报告时才能发布评论；评论处罚只影响发言，不影响预约、报告或投诉。每次处罚最多申诉一次，解封不自动恢复隐藏评论。
 
 ## 日常记录、健康数据与报告状态机
 
@@ -119,30 +128,31 @@ if (-not (Test-Path .env)) {
 机构报告只属于登录账号当前绑定机构。状态流为：
 
 ```text
-draft ──lock──> locked ──submit + exact user identity──> published
+draft ──上传医生确认──> pending_review ──复核医生确认──> published
 ```
 
-- `draft`：只能从 `awaiting_report` 预约建立；受检者、体检日期和套餐来自预约快照，只可编辑指标。
-- `locked`：复核完成后锁定，删除草稿临时原文件；内容写接口从此返回 409。
-- `published`：健康身份码和真实姓名对应唯一启用注册用户，提交后立即永久归档并向用户只读开放，不可撤下或删除。
+- `draft`：从已到检预约建立，可上传、OCR、录入和修改。
+- `pending_review`：上传确认必须记录上传医生；机构仍可修正指标、结论和附件。
+- `published`：复核确认必须记录复核医生；发布、预约履约、事件、通知、锁档和临时文件清理同事务完成，之后不可修改或撤回。
 
-预约直接绑定注册普通用户，不再提供健康码候选匹配。提交时再次校验账号仍然启用，成功后在同一事务写入报告发布字段，并把预约由 `awaiting_report` 改为 `fulfilled`。
+预约参与人可来自当前有效账号、已关联账号或短时一次性健康码参与人令牌。令牌只保存哈希，绑定预约人和目标用户，提交时重新校验并以条件更新一次性消费；原始健康身份码不写 URL、持久缓存、普通日志或模型上下文。Agent 另外使用线程级非秘密 slot：真实 bearer 只存在于加密线程状态的独立映射，模型消息和历史只保存 slot，工具调用进入类型化执行边界时才解析为 bearer。
 
-预约状态为 `unfulfilled → awaiting_report → fulfilled`；`unfulfilled` 可由用户取消为 `cancelled`，或由机构随时置为不可恢复的 `invalidated`。同一受检者同日已有有效预约时统一返回 `APPOINTMENT_DATE_CONFLICT`，前端显示明确业务窗口。预约成功后，机构收到接待提醒，预约人和每位受检者收到包含掩码身份信息、分院地址和套餐须知的幂等确认邮件。预约创建后即按预约日期进入本人及获授权亲友健康时间线，并使用同一预约 ID 随状态变化更新展示。每日上限为空表示不限量，正整数表示限制；降低上限不取消既有预约。
+预约状态为 `unfulfilled → awaiting_report → fulfilled`；未履约记录可取消，机构取消和未到检分别保留明确终态。所有创建入口按上海时区只接受明天至第 30 天；升级前已有当天预约不追溯取消。预约成功后，机构收到接待提醒，受检者收到站内通知及可用邮箱通知；原预约人另见脱敏代预约回执。每日上限为空表示不限量，正整数表示限制；降低上限不取消既有预约。
 
 ## 时间线、趋势与亲友隐私
 
 - 时间线通过 `record_type=all|exam|self` 合并体检全生命周期和按自然日聚合的个人记录，使用专用只读 DTO。
 - 趋势按日期生成一个“每日有效值”：同日存在已发布机构指标时优先；否则使用当日时间最后的自测。
 - 机构报告不含某指标时，该指标仍可从当天最后一次自测取值。
-- 亲友访问每次重新验证当前授权状态；亲友接口只授予查看能力，不提供代传、代记或修改入口。
-- 亲友 DTO 只保留选择对象所需的账号 ID/用户名，并从健康事件中排除 `user_id`、`matched_user_id`、受检者姓名快照、健康身份码、真实姓名、生日、性别、邮箱、手机号、过敏史和既往史。
+- 健康时间线、体检数据、趋势和 Agent 健康读取只访问当前有效账号，不再接受亲友 owner 选择器。
+- 关联切换使用受控会话，记录真实操作者、有效账号、完整链，最多三层且禁止重复/循环；撤销、停用、密码安全版本变化或链路失效会立即使下游会话失效。
+- 健康码匹配只返回姓名、性别、出生年份和脱敏身份码；服务端可采用最近身高体重生成预约快照，但不向未关联预约人返回历史数值。
 - 不存在与无权访问尽量统一为 404，减少对象存在性泄露。
 
 ## AI 助手
 
 - 匿名用户只能访问公开 FAQ/导览，不能附带健康上下文。
-- `GET /api/ai/records` 按需返回本人或授权亲友的可分析已发布报告元数据。
+- `GET /api/ai/records` 按需返回当前有效账号的可分析已发布报告元数据；切换关联账号前不能直接选择亲友作为 owner。
 - `POST /api/ai/chat/stream` 使用 SSE；普通问题不读取报告，需要个人上下文但未选择时返回 `select_records` 动作。
 - `POST /api/ai/analyze/stream` 支持同一归属人的单/多报告分析。
 - `POST /api/ai/chat` 是非流式兼容接口。
@@ -155,7 +165,7 @@ draft ──lock──> locked ──submit + exact user identity──> publish
 
 RAG 仅索引 `rag_sources/manifest.json` 批准的公共知识，不索引用户问题、聊天、OCR 原文、用户 ID 或健康指标值。首次显式执行 `.\.venv\Scripts\python.exe scripts\rag_sync.py sync`，成功后再设置 `RAG_ENABLED=1`；应用启动和请求期间不联网更新语料。来源哈希变化会进入 quarantine，审核批准后才能切换索引。SSE 增加 `status.stage=retrieving`，只返回 `rag_used`、`retrieval_status` 和 `knowledge_source_count`，不向前端暴露来源正文或 URL。
 
-可分析对象为本人或已授权亲友的 `published` 机构报告。精确 `selected_record_ids` 与 `record_scope: {"owner_id": 2, "mode": "all_confirmed"}` 互斥，后者在 schema v8 中解析为该归属人的全部已发布报告；两种方式都必须逐请求同意并重新鉴权。
+可分析对象只属于当前有效账号的 `published` 机构报告；查看关联账号前必须先建立受控切换会话。精确 `selected_record_ids` 与 `record_scope: {"owner_id": <当前有效账号 ID>, "mode": "all_confirmed"}` 互斥，服务端对两种方式都逐请求校验 owner、状态、指标存在性和本次同意；旧客户端传入其他亲友 `owner_id` 会被拒绝，不能绕过账号切换。
 
 ## HealthDoc Agent
 
@@ -207,7 +217,7 @@ Waitress 本机验收推荐从项目根目录运行：
 .\.venv\Scripts\python.exe -m pip check
 ```
 
-后端测试使用独立内存 SQLite，不修改 `instance/health_system.db`；覆盖 schema v11、SQLite/openGauss 结构校验、保留式升级、原有健康业务、Agent 密文与权限、工具审计、确认幂等、人工工单、OAuth PKCE/轮换/重放和 MCP 内部验签。完整结论见 [`../项目文档/测试报告.md`](../项目文档/测试报告.md)。
+后端自动化默认使用独立内存 SQLite，不修改 `instance/health_system.db`；v12 数据强校验器必须显式传入数据库和上传目录，并以只读方式核对 schema、账号、数据与媒体。最终门禁结论见 [`../项目文档/测试报告.md`](../项目文档/测试报告.md)。
 
 ## 生产数据库同步
 
@@ -219,3 +229,5 @@ Waitress 本机验收推荐从项目根目录运行：
 ```
 
 脚本验证源库完整性与外键，创建完整目标 schema，复制全部表、重置生成序列并逐表核对行数。`--replace` 会清空目标应用表，只能在已备份且明确允许覆盖的隔离验收环境使用。普通服务器素材更新使用 `scripts/deploy-server.ps1 -SyncDemoMedia`，只同步清单限定的 `demo-v8/demo-v10` 素材；完整验收库覆盖才使用 `-SyncDemoDatabase`。
+
+服务器发布为每个 `/opt/healthdoc/releases/<release_id>` 创建独立 `venv`，systemd 统一从 `/opt/healthdoc/current/venv` 启动；发布失败不会改写旧 release 的依赖。切换前会备份数据库、上传、环境、Apache、旧 release，以及 HealthDoc systemd unit 文件和 enable/mask 状态，并验证冷备 tar 可读；完整细节见 [`../项目文档/服务器部署与同步.md`](../项目文档/服务器部署与同步.md)。

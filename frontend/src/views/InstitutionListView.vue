@@ -2,7 +2,8 @@
   <div class="workspace-page user-platform-page institution-directory">
     <section class="user-page-lead">
       <div><span class="user-kicker">体检服务网络</span><h2>先选机构，再选方便到达的分院</h2><p>同一机构的分院共享已归档体检资料，但预约时间、名额和套餐仍由各分院独立安排。</p></div>
-      <el-button type="primary" plain @click="router.push({name:'appointments'})">查看我的预约</el-button>
+      <el-button v-if="!publicMode" type="primary" plain @click="router.push({name:'appointments'})">查看我的预约</el-button>
+      <el-button v-else type="primary" plain @click="router.push({name:'login',query:{redirect:'/appointments'}})">登录后预约</el-button>
     </section>
     <section class="institution-search-panel" aria-label="搜索体检机构">
       <el-input
@@ -42,6 +43,9 @@ import {computed,onBeforeUnmount,onMounted,ref} from "vue";
 import {useRouter} from "vue-router";
 import InstitutionCoverImage from "../components/InstitutionCoverImage.vue";
 import {fetchOrganizations} from "../api/institutions";
+import {fetchPublicOrganizations} from "../api/public";
+const props=defineProps({publicMode:{type:Boolean,default:false}});
+const publicMode=computed(()=>props.publicMode);
 const router=useRouter(),loading=ref(false),organizations=ref([]),errorMessage=ref(""),query=ref("");
 const matchedBranchCount=computed(()=>organizations.value.reduce((total,item)=>total+(item.branches?.length||0),0));
 let searchTimer;
@@ -51,7 +55,7 @@ async function load(){
   loading.value=true;
   errorMessage.value="";
   try{
-    const response=await fetchOrganizations({q:query.value.trim()});
+    const response=await (publicMode.value?fetchPublicOrganizations({q:query.value.trim()}):fetchOrganizations({q:query.value.trim()}));
     if(revision===requestRevision) organizations.value=response.data.items||[];
   }catch(error){
     if(revision===requestRevision) errorMessage.value=error?.response?.data?.message||"机构列表加载失败";
@@ -64,7 +68,7 @@ function queueSearch(){
   window.clearTimeout(searchTimer);
   searchTimer=window.setTimeout(load,300);
 }
-function goDetail(id){router.push({name:"institution-detail",params:{id}});}
+function goDetail(id){router.push({name:publicMode.value?"public-institution-detail":"institution-detail",params:{id}});}
 onMounted(load);
 onBeforeUnmount(()=>window.clearTimeout(searchTimer));
 </script>

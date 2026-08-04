@@ -16,6 +16,7 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
+import sqlalchemy as sa
 from sqlalchemy import Boolean, Date, DateTime, JSON, create_engine, inspect, text
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -23,6 +24,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 
 from app.extensions import db  # noqa: E402
 import app.models  # noqa: E402,F401  Ensures every mapped table is registered.
+from app.schema import _schema_shape_issues  # noqa: E402
 
 
 def _arguments() -> argparse.Namespace:
@@ -134,6 +136,245 @@ def _reset_sequences(connection) -> None:
             )
 
 
+def _remap_friend_relation_references(
+    connection,
+    *,
+    primary_id: int,
+    duplicate_ids: list[int],
+) -> None:
+    """Keep imported booking/waitlist evidence attached to the retained pair."""
+
+    if not duplicate_ids:
+        return
+    inspector = inspect(connection)
+    tables = set(inspector.get_table_names())
+    for table_name in (
+        "booking_participant_authorizations",
+        "waitlist_subscription_participants",
+    ):
+        if table_name not in tables:
+            continue
+        columns = {
+            column["name"] for column in inspector.get_columns(table_name)
+        }
+        if "friend_relation_id" not in columns:
+            continue
+        connection.execute(
+            text(
+                f"UPDATE {table_name} "
+                "SET friend_relation_id=:primary_id "
+                "WHERE friend_relation_id IN :duplicate_ids"
+            ).bindparams(sa.bindparam("duplicate_ids", expanding=True)),
+            {
+                "primary_id": primary_id,
+                "duplicate_ids": duplicate_ids,
+            },
+        )
+
+
+def _upgrade_legacy_rows_to_v12(connection) -> dict[str, int]:
+    """Backfill v12 semantics after copying a v11-or-older snapshot.
+
+    The generic table copier deliberately copies only common columns.  The
+    resulting database therefore needs the semantic migration below; schema
+    shape validation alone would otherwise leave all existing users
+    unverified, all friend links one-way, and all existing appointments
+    without a participant authorization record.
+    """
+
+    connection.execute(
+        text(
+            "UPDATE users "
+            "SET identity_completed_at=COALESCE(created_at, CURRENT_TIMESTAMP) "
+            "WHERE role='user' "
+            "AND real_name IS NOT NULL AND length(trim(real_name)) > 0 "
+            "AND birth_date IS NOT NULL "
+            "AND gender IN ('male','female','other','undisclosed')"
+        )
+    )
+    # Credentials created before the user/client security-epoch snapshots
+    # existed cannot be trusted. Preserve their rows for audit while making
+    # every outstanding authorization code and token terminal.
+    connection.execute(
+        text(
+            "UPDATE oauth_authorization_codes "
+            "SET consumed_at=COALESCE(consumed_at, CURRENT_TIMESTAMP)"
+        )
+    )
+    connection.execute(
+        text(
+            "UPDATE oauth_access_tokens "
+            "SET revoked_at=COALESCE(revoked_at, CURRENT_TIMESTAMP)"
+        )
+    )
+    connection.execute(
+        text(
+            "UPDATE oauth_refresh_tokens "
+            "SET revoked_at=COALESCE(revoked_at, CURRENT_TIMESTAMP)"
+        )
+    )
+
+    friend_rows = connection.execute(
+        text(
+            "SELECT id, user_id, friend_user_id, relation_name, auth_status, "
+            "booking_auth_status, booking_authorized_at, created_at "
+            "FROM friend_relations ORDER BY id"
+        )
+    ).mappings().all()
+    grouped: dict[tuple[int, int], list] = {}
+    for row in friend_rows:
+        key = tuple(sorted((int(row["user_id"]), int(row["friend_user_id"]))))
+        grouped.setdefault(key, []).append(row)
+    for (low, high), rows in grouped.items():
+        primary = rows[0]
+        active = any(
+            bool(row["auth_status"]) or bool(row["booking_auth_status"])
+            for row in rows
+        )
+        forward_name = None
+        reverse_name = None
+        authorization_times = []
+        for row in rows:
+            if (
+                int(row["user_id"]) == int(primary["user_id"])
+                and int(row["friend_user_id"]) == int(primary["friend_user_id"])
+            ):
+                forward_name = forward_name or row["relation_name"]
+            else:
+                reverse_name = reverse_name or row["relation_name"]
+            candidate = row["booking_authorized_at"] or row["created_at"]
+            if candidate is not None:
+                authorization_times.append(candidate)
+        duplicate_ids = [int(row["id"]) for row in rows[1:]]
+        if duplicate_ids:
+            _remap_friend_relation_references(
+                connection,
+                primary_id=int(primary["id"]),
+                duplicate_ids=duplicate_ids,
+            )
+            connection.execute(
+                text("DELETE FROM friend_relations WHERE id IN :ids").bindparams(
+                    sa.bindparam("ids", expanding=True)
+                ),
+                {"ids": duplicate_ids},
+            )
+        authorized_at = min(authorization_times) if active and authorization_times else None
+        connection.execute(
+            text(
+                "UPDATE friend_relations SET "
+                "pair_key=:pair_key, relation_name=:forward_name, "
+                "friend_relation_name=:reverse_name, "
+                "status=:status, accepted_at=:accepted_at, revoked_at=NULL, "
+                "auth_status=:active, reverse_auth_status=:active, "
+                "authorization_version=0, "
+                "booking_auth_status=:active, "
+                "reverse_booking_auth_status=:active, "
+                "booking_authorized_at=:authorized_at, "
+                "reverse_booking_authorized_at=:authorized_at, "
+                "booking_authorization_version=0 "
+                "WHERE id=:row_id"
+            ),
+            {
+                "pair_key": f"{low}:{high}",
+                "forward_name": forward_name or "亲友",
+                "reverse_name": reverse_name or "亲友",
+                "status": "active" if active else "pending",
+                "accepted_at": authorized_at,
+                "active": active,
+                "authorized_at": authorized_at,
+                "row_id": int(primary["id"]),
+            },
+        )
+
+    connection.execute(
+        text(
+            "INSERT INTO booking_participant_authorizations ("
+            "appointment_id, booker_user_id, subject_user_id, "
+            "participant_type, friend_relation_id, authorization_version, "
+            "participant_token_id, created_at"
+            ") "
+            "SELECT appointment.id, "
+            "COALESCE(appointment.booked_by_user_id, appointment.user_id), "
+            "appointment.user_id, "
+            "CASE WHEN COALESCE(appointment.booked_by_user_id, "
+            "appointment.user_id)=appointment.user_id "
+            "THEN 'self' ELSE 'linked_account' END, "
+            "relation.id, COALESCE(relation.booking_authorization_version, 0), "
+            "NULL, appointment.created_at "
+            "FROM appointments AS appointment "
+            "LEFT JOIN friend_relations AS relation ON relation.pair_key = "
+            "CASE WHEN COALESCE(appointment.booked_by_user_id, appointment.user_id) "
+            "< appointment.user_id "
+            "THEN CAST(COALESCE(appointment.booked_by_user_id, appointment.user_id) "
+            "AS VARCHAR) || ':' || CAST(appointment.user_id AS VARCHAR) "
+            "ELSE CAST(appointment.user_id AS VARCHAR) || ':' || "
+            "CAST(COALESCE(appointment.booked_by_user_id, appointment.user_id) "
+            "AS VARCHAR) END "
+            "WHERE NOT EXISTS ("
+            "SELECT 1 FROM booking_participant_authorizations AS existing "
+            "WHERE existing.appointment_id=appointment.id)"
+        )
+    )
+    connection.execute(
+        text(
+            "UPDATE waitlist_subscription_participants AS participant SET "
+            "participant_type=CASE WHEN participant.subject_user_id=("
+            "SELECT subscription.subscriber_user_id "
+            "FROM waitlist_subscriptions AS subscription "
+            "WHERE subscription.id=participant.subscription_id"
+            ") THEN 'self' ELSE 'linked_account' END, "
+            "friend_relation_id=("
+            "SELECT relation.id FROM friend_relations AS relation "
+            "JOIN waitlist_subscriptions AS subscription "
+            "ON subscription.id=participant.subscription_id "
+            "WHERE relation.pair_key=CASE "
+            "WHEN subscription.subscriber_user_id < participant.subject_user_id "
+            "THEN CAST(subscription.subscriber_user_id AS VARCHAR) || ':' || "
+            "CAST(participant.subject_user_id AS VARCHAR) "
+            "ELSE CAST(participant.subject_user_id AS VARCHAR) || ':' || "
+            "CAST(subscription.subscriber_user_id AS VARCHAR) END "
+            "LIMIT 1"
+            "), "
+            "authorization_version=COALESCE(("
+            "SELECT relation.booking_authorization_version "
+            "FROM friend_relations AS relation "
+            "JOIN waitlist_subscriptions AS subscription "
+            "ON subscription.id=participant.subscription_id "
+            "WHERE relation.pair_key=CASE "
+            "WHEN subscription.subscriber_user_id < participant.subject_user_id "
+            "THEN CAST(subscription.subscriber_user_id AS VARCHAR) || ':' || "
+            "CAST(participant.subject_user_id AS VARCHAR) "
+            "ELSE CAST(participant.subject_user_id AS VARCHAR) || ':' || "
+            "CAST(subscription.subscriber_user_id AS VARCHAR) END "
+            "LIMIT 1"
+            "), 0)"
+        )
+    )
+    connection.execute(
+        text(
+            "UPDATE institution_reports "
+            "SET submitted_for_review_at=COALESCE(locked_at, created_at) "
+            "WHERE status IN ('pending_review','published') "
+            "AND submitted_for_review_at IS NULL"
+        )
+    )
+    connection.execute(
+        text(
+            "UPDATE institution_reports "
+            "SET reviewed_at=COALESCE(published_at, submitted_at, locked_at, created_at) "
+            "WHERE status='published' AND reviewed_at IS NULL"
+        )
+    )
+    return {
+        "friend_relations": connection.execute(
+            text("SELECT COUNT(*) FROM friend_relations")
+        ).scalar_one(),
+        "booking_participant_authorizations": connection.execute(
+            text("SELECT COUNT(*) FROM booking_participant_authorizations")
+        ).scalar_one(),
+    }
+
+
 def migrate(
     source_path: Path,
     target_url: str,
@@ -169,6 +410,7 @@ def migrate(
         available = _source_tables(source)
         required = set(db.metadata.tables)
         missing = sorted(required - available)
+        legacy_source = bool(missing)
         if missing and not allow_legacy_source:
             raise RuntimeError("SQLite source is missing tables: " + ", ".join(missing))
 
@@ -182,14 +424,43 @@ def migrate(
                 if table.name not in available:
                     expected_counts[table.name] = 0
                     continue
-                rows = source.execute(f'SELECT * FROM "{table.name}"').fetchall()
+                order_clause = ""
+                if table.name == "users":
+                    user_source_columns = {
+                        row[1]
+                        for row in source.execute('PRAGMA table_info("users")')
+                    }
+                    if {
+                        "managed_institution_id",
+                        "is_active",
+                    }.issubset(user_source_columns):
+                        order_clause = (
+                            " ORDER BY "
+                            "CASE WHEN managed_institution_id IS NULL "
+                            "THEN 1 ELSE 0 END, managed_institution_id, "
+                            "CASE WHEN is_active THEN 0 ELSE 1 END, id"
+                        )
+                    else:
+                        order_clause = " ORDER BY id"
+                rows = source.execute(
+                    f'SELECT * FROM "{table.name}"{order_clause}'
+                ).fetchall()
                 expected_counts[table.name] = len(rows)
                 if not rows:
                     continue
                 source_columns = set(rows[0].keys())
                 payload = []
+                retained_institution_ids = set()
                 for row in rows:
                     item = {}
+                    duplicate_institution_account = False
+                    if table.name == "users" and "managed_institution_id" in row.keys():
+                        managed_id = row["managed_institution_id"]
+                        if managed_id is not None:
+                            duplicate_institution_account = (
+                                managed_id in retained_institution_ids
+                            )
+                            retained_institution_ids.add(managed_id)
                     for column in table.columns:
                         if column.name not in source_columns:
                             continue
@@ -197,9 +468,20 @@ def migrate(
                         if (
                             table.name == "institution_reports"
                             and column.name == "status"
-                            and value == "withdrawn"
+                            and value in {"withdrawn", "locked"}
                         ):
-                            value = "published"
+                            value = (
+                                "pending_review"
+                                if value == "locked"
+                                else "published"
+                            )
+                        if table.name == "users" and duplicate_institution_account:
+                            if column.name == "managed_institution_id":
+                                value = None
+                            elif column.name == "is_active":
+                                value = False
+                            elif column.name == "token_version":
+                                value = int(value or 0) + 1
                         if (
                             table.name == "appointments"
                             and column.name == "status"
@@ -207,10 +489,45 @@ def migrate(
                         ):
                             value = "no_show"
                         item[column.name] = _adapt_value(column, value)
+                    if (
+                        table.name == "password_verification_challenges"
+                        and "token_version_snapshot" not in source_columns
+                    ):
+                        # A legacy code has no trustworthy authentication
+                        # epoch. Preserve the audit row while ensuring it can
+                        # never be confirmed after migration.
+                        item["token_version_snapshot"] = 0
+                        item["consumed_at"] = (
+                            _adapt_value(table.c.consumed_at, row["consumed_at"])
+                            or datetime.now()
+                        )
                     payload.append(item)
                 target.execute(table.insert(), payload)
 
+            if legacy_source:
+                expected_counts.update(_upgrade_legacy_rows_to_v12(target))
             _reset_sequences(target)
+            # A full replacement is created directly from the current ORM
+            # metadata, so record the matching Alembic head. The normal
+            # incremental path still reaches this revision through Alembic.
+            target.execute(
+                text(
+                    "CREATE TABLE IF NOT EXISTS alembic_version "
+                    "(version_num VARCHAR(32) NOT NULL PRIMARY KEY)"
+                )
+            )
+            target.execute(text("DELETE FROM alembic_version"))
+            target.execute(
+                text(
+                    "INSERT INTO alembic_version (version_num) "
+                    "VALUES ('20260730_schema_v12')"
+                )
+            )
+            if target.dialect.name == "sqlite":
+                # SQLite is supported as an isolated rehearsal target even
+                # though production uses openGauss. Keep its native marker in
+                # sync so the same strict v12 validator can inspect the copy.
+                target.exec_driver_sql("PRAGMA user_version=12")
 
             for table_name, expected in expected_counts.items():
                 actual = target.execute(
@@ -225,6 +542,14 @@ def migrate(
             destination_tables = set(inspect(target).get_table_names())
             if not required.issubset(destination_tables):
                 raise RuntimeError("destination schema validation failed")
+            issues = _schema_shape_issues(target)
+            if issues:
+                preview = "; ".join(issues[:20])
+                if len(issues) > 20:
+                    preview += f"; and {len(issues) - 20} more"
+                raise RuntimeError(
+                    "destination physical schema validation failed: " + preview
+                )
         return expected_counts
     finally:
         source.close()

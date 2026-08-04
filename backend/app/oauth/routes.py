@@ -8,7 +8,8 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode, urlparse
 
 from flask import current_app, g, jsonify, redirect, request
-from flask_jwt_extended import get_jwt_identity, jwt_required
+from flask_jwt_extended import get_jwt, get_jwt_identity, jwt_required
+from sqlalchemy import update
 
 from app.extensions import db
 from app.models import (
@@ -213,6 +214,17 @@ def authorize():
         client, redirect_uri, challenge, scopes = _approved_request(payload)
     except ValueError as exc:
         return _oauth_error("invalid_request", str(exc))
+    # A linked-account JWT is deliberately short-lived and remains bound to
+    # the relationship chain.  Turning it into a standalone OAuth grant would
+    # discard that chain and let the original actor keep the subject's access
+    # after the relationship or delegated session is revoked.
+    source_claims = get_jwt()
+    if source_claims.get("delegated") is True:
+        return _oauth_error(
+            "access_denied",
+            "关联账号会话不能授权第三方应用，请退出切换后使用本人账号登录授权",
+            403,
+        )
     if payload.get("decision") != "approve":
         target = f"{redirect_uri}?{urlencode({'error': 'access_denied', 'state': payload.get('state', '')})}"
         return {"redirect_to": target}
@@ -220,9 +232,19 @@ def authorize():
         user_id = int(get_jwt_identity())
     except (TypeError, ValueError):
         return _oauth_error("access_denied", "valid user required", 403)
-    user = db.session.get(User, user_id)
+    user = db.session.get(User, user_id, populate_existing=True)
     if user is None or not user.is_active or user.role != "user":
         return _oauth_error("access_denied", "active user account required", 403)
+    try:
+        source_user_version = int(source_claims["token_version"])
+    except (KeyError, TypeError, ValueError):
+        return _oauth_error("access_denied", "login session is no longer valid", 403)
+    if source_user_version != user.token_version:
+        return _oauth_error("access_denied", "login session is no longer valid", 403)
+    client = db.session.get(OAuthClient, client.client_id, populate_existing=True)
+    if client is None or client.status != "approved":
+        return _oauth_error("access_denied", "client is no longer approved", 403)
+    source_client_version = int(client.approval_version or 0)
     raw_code = _token(32)
     row = OAuthAuthorizationCode(
         code_hash=_hash(raw_code),
@@ -231,6 +253,8 @@ def authorize():
         redirect_uri=redirect_uri,
         scope=" ".join(sorted(scopes)),
         code_challenge=challenge,
+        user_token_version_snapshot=source_user_version,
+        client_approval_version_snapshot=source_client_version,
         expires_at=_now() + timedelta(minutes=2),
     )
     db.session.add(row)
@@ -241,7 +265,15 @@ def authorize():
     return {"redirect_to": f"{redirect_uri}?{urlencode(query)}"}
 
 
-def _issue_tokens(*, client_id, user_id, scope, family_id=None):
+def _issue_tokens(
+    *,
+    client_id,
+    user_id,
+    scope,
+    user_token_version_snapshot,
+    client_approval_version_snapshot,
+    family_id=None,
+):
     access = _token(32)
     refresh = _token(48)
     audience = _resource_url()
@@ -253,6 +285,8 @@ def _issue_tokens(*, client_id, user_id, scope, family_id=None):
             user_id=user_id,
             scope=scope,
             audience=audience,
+            user_token_version_snapshot=user_token_version_snapshot,
+            client_approval_version_snapshot=client_approval_version_snapshot,
             expires_at=now + timedelta(minutes=10),
         )
     )
@@ -264,6 +298,8 @@ def _issue_tokens(*, client_id, user_id, scope, family_id=None):
             user_id=user_id,
             scope=scope,
             audience=audience,
+            user_token_version_snapshot=user_token_version_snapshot,
+            client_approval_version_snapshot=client_approval_version_snapshot,
             expires_at=now + timedelta(days=30),
         )
     )
@@ -277,13 +313,47 @@ def _issue_tokens(*, client_id, user_id, scope, family_id=None):
     }
 
 
+def _consume_authorization_code(code_id, consumed_at):
+    """Atomically claim an authorization code for the current transaction."""
+    result = db.session.execute(
+        update(OAuthAuthorizationCode)
+        .where(
+            OAuthAuthorizationCode.id == code_id,
+            OAuthAuthorizationCode.consumed_at.is_(None),
+        )
+        .values(consumed_at=consumed_at)
+    )
+    return result.rowcount == 1
+
+
+def _consume_refresh_token(token_id, consumed_at):
+    """Atomically claim an unused, unrevoked refresh token for rotation."""
+    result = db.session.execute(
+        update(OAuthRefreshToken)
+        .where(
+            OAuthRefreshToken.id == token_id,
+            OAuthRefreshToken.used_at.is_(None),
+            OAuthRefreshToken.revoked_at.is_(None),
+        )
+        .values(used_at=consumed_at, revoked_at=consumed_at)
+    )
+    return result.rowcount == 1
+
+
+def _revoke_refresh_family(family_id, revoked_at):
+    OAuthRefreshToken.query.filter_by(family_id=family_id).update(
+        {"revoked_at": revoked_at},
+        synchronize_session=False,
+    )
+
+
 @oauth_bp.post("/oauth/token")
 def token():
     if not current_app.config.get("OAUTH_ENABLED"):
         return _oauth_error("temporarily_unavailable", "OAuth is disabled", 503)
     grant = request.form.get("grant_type")
     client_id = str(request.form.get("client_id") or "")
-    client = db.session.get(OAuthClient, client_id)
+    client = db.session.get(OAuthClient, client_id, populate_existing=True)
     if client is None or client.status != "approved":
         return _oauth_error("invalid_client", "client is not approved", 401)
     now = _now()
@@ -299,15 +369,35 @@ def token():
             or row.redirect_uri != request.form.get("redirect_uri")
         ):
             return _oauth_error("invalid_grant", "authorization code is invalid")
+        user = db.session.get(User, row.user_id, populate_existing=True)
+        if (
+            user is None
+            or not user.is_active
+            or user.role != "user"
+            or row.user_token_version_snapshot != user.token_version
+            or row.client_approval_version_snapshot
+            != int(client.approval_version or 0)
+        ):
+            _consume_authorization_code(row.id, now)
+            db.session.commit()
+            return _oauth_error("invalid_grant", "authorization grant is no longer valid")
         verifier = str(request.form.get("code_verifier") or "")
         calculated = base64.urlsafe_b64encode(
             hashlib.sha256(verifier.encode("ascii", errors="ignore")).digest()
         ).rstrip(b"=").decode("ascii")
         if not secrets.compare_digest(calculated, row.code_challenge):
             return _oauth_error("invalid_grant", "PKCE verification failed")
-        row.consumed_at = now
+        if not _consume_authorization_code(row.id, now):
+            db.session.rollback()
+            return _oauth_error("invalid_grant", "authorization code is invalid")
         result = _issue_tokens(
-            client_id=client_id, user_id=row.user_id, scope=row.scope
+            client_id=client_id,
+            user_id=row.user_id,
+            scope=row.scope,
+            user_token_version_snapshot=row.user_token_version_snapshot,
+            client_approval_version_snapshot=(
+                row.client_approval_version_snapshot
+            ),
         )
         db.session.commit()
     elif grant == "refresh_token":
@@ -318,20 +408,40 @@ def token():
         if row is None:
             return _oauth_error("invalid_grant", "refresh token is invalid")
         if row.used_at is not None or row.revoked_at is not None:
-            OAuthRefreshToken.query.filter_by(family_id=row.family_id).update(
-                {"revoked_at": now}
-            )
+            _revoke_refresh_family(row.family_id, now)
             db.session.commit()
             return _oauth_error("invalid_grant", "refresh token replay detected")
         if _aware(row.expires_at) <= now:
             return _oauth_error("invalid_grant", "refresh token expired")
-        row.used_at = now
-        row.revoked_at = now
+        user = db.session.get(User, row.user_id, populate_existing=True)
+        if (
+            user is None
+            or not user.is_active
+            or user.role != "user"
+            or row.user_token_version_snapshot != user.token_version
+            or row.client_approval_version_snapshot
+            != int(client.approval_version or 0)
+        ):
+            _revoke_refresh_family(row.family_id, now)
+            db.session.commit()
+            return _oauth_error("invalid_grant", "authorization grant is no longer valid")
+        family_id = row.family_id
+        if not _consume_refresh_token(row.id, now):
+            # A concurrent request won the rotation. Treat this exactly like
+            # any other replay and revoke every descendant in the family.
+            db.session.rollback()
+            _revoke_refresh_family(family_id, now)
+            db.session.commit()
+            return _oauth_error("invalid_grant", "refresh token replay detected")
         result = _issue_tokens(
             client_id=client_id,
             user_id=row.user_id,
             scope=row.scope,
             family_id=row.family_id,
+            user_token_version_snapshot=row.user_token_version_snapshot,
+            client_approval_version_snapshot=(
+                row.client_approval_version_snapshot
+            ),
         )
         db.session.commit()
     else:
@@ -385,18 +495,60 @@ def admin_client_decision(client_id):
     decision = payload.get("decision")
     if decision not in {"approve", "reject", "revoke"}:
         return {"message": "decision 必须是 approve、reject 或 revoke"}, 400
-    client = db.session.get(OAuthClient, client_id)
+    client = db.session.get(OAuthClient, client_id, populate_existing=True)
     if client is None:
         return {"message": "没有找到 OAuth 客户端"}, 404
-    client.status = {"approve": "approved", "reject": "rejected", "revoke": "revoked"}[decision]
-    client.approved_by_user_id = g.current_user.id
-    client.approved_at = _now()
-    if decision == "revoke":
-        now = _now()
+    target_status = {
+        "approve": "approved",
+        "reject": "rejected",
+        "revoke": "revoked",
+    }[decision]
+    if client.status == target_status:
+        return {
+            "item": {
+                "client_id": client.client_id,
+                "status": client.status,
+                "approval_version": int(client.approval_version or 0),
+            }
+        }
+    now = _now()
+    expected_version = int(client.approval_version or 0)
+    changed = db.session.execute(
+        update(OAuthClient)
+        .where(
+            OAuthClient.client_id == client_id,
+            OAuthClient.approval_version == expected_version,
+        )
+        .values(
+            status=target_status,
+            approved_by_user_id=g.current_user.id,
+            approved_at=now,
+            approval_version=OAuthClient.approval_version + 1,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if changed.rowcount != 1:
+        db.session.rollback()
+        return {
+            "message": "OAuth 客户端状态已经发生变化，请刷新后重试",
+            "code": "OAUTH_CLIENT_STATE_CONFLICT",
+        }, 409
+    if decision in {"reject", "revoke"}:
+        OAuthAuthorizationCode.query.filter_by(
+            client_id=client_id,
+            consumed_at=None,
+        ).update({"consumed_at": now})
         OAuthAccessToken.query.filter_by(client_id=client_id).update({"revoked_at": now})
         OAuthRefreshToken.query.filter_by(client_id=client_id).update({"revoked_at": now})
     db.session.commit()
-    return {"item": {"client_id": client.client_id, "status": client.status}}
+    db.session.refresh(client)
+    return {
+        "item": {
+            "client_id": client.client_id,
+            "status": client.status,
+            "approval_version": client.approval_version,
+        }
+    }
 
 
 def validate_bearer_token(value, required_scopes=()):
@@ -411,8 +563,29 @@ def validate_bearer_token(value, required_scopes=()):
         return None
     if not set(required_scopes) <= set(row.scope.split()):
         return None
-    user = db.session.get(User, row.user_id)
-    return (row, user) if user and user.is_active else None
+    client = db.session.get(
+        OAuthClient,
+        row.client_id,
+        populate_existing=True,
+    )
+    if (
+        client is None
+        or client.status != "approved"
+        or row.client_approval_version_snapshot
+        != int(client.approval_version or 0)
+    ):
+        return None
+    user = db.session.get(User, row.user_id, populate_existing=True)
+    return (
+        (row, user)
+        if (
+            user
+            and user.is_active
+            and user.role == "user"
+            and row.user_token_version_snapshot == user.token_version
+        )
+        else None
+    )
 
 
 _MCP_TOOL_SCOPES = {

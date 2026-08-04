@@ -3,6 +3,7 @@ from datetime import date, timedelta
 from sqlalchemy import event
 
 from app.extensions import db
+from app.models import InstitutionReport, ReportIndicator, User
 
 
 PASSWORD = "Shuhealthdoc！"
@@ -152,21 +153,77 @@ def test_health_trends_return_dates_and_explainable_reference_ranges(app, client
     assert all("ocr_diagnostics" not in statement for statement in distinct_queries)
 
 
-def test_authorized_friend_is_used_by_health_data_timeline_and_trends(client):
+def test_health_trends_expose_qualitative_positive_results_for_alerts(app, client):
+    headers = login(client, "test1")
+    with app.app_context():
+        user = User.query.filter_by(username="test1").one()
+        candidates = (
+            ReportIndicator.query.join(InstitutionReport)
+            .filter(
+                InstitutionReport.matched_user_id == user.id,
+                InstitutionReport.status == "published",
+            )
+            .all()
+        )
+        result = next(
+            row for row in candidates
+            if row.indicator_dict.code not in {"HEIGHT", "WEIGHT", "HIP"}
+        )
+        result.value = "阳性"
+        result.indicator_dict.value_type = "text"
+        result.result_status = "positive"
+        result.abnormal_flag = "positive"
+        result.is_abnormal = True
+        result.reference_text = "阴性"
+        domain_id = result.display_domain_id
+        db.session.commit()
+
+    response = client.get(
+        f"/api/health-trends/{domain_id}?source_type=institution",
+        headers=headers,
+    )
+    assert response.status_code == 200
+    qualitative_points = [
+        point
+        for entry in response.get_json()["qualitative_series_by_indicator"]
+        for point in entry["points"]
+    ]
+
+    positive = [
+        point for point in qualitative_points
+        if point["result_status"] == "positive"
+    ]
+    assert positive
+    assert all(point["value"] and point["health_data_id"] for point in positive)
+    assert all(point["source"]["type"] == "institution" for point in positive)
+
+
+def test_linked_health_reads_require_an_effective_account_switch(client):
     headers = login(client, "test1")
     relations = client.get("/api/friends", headers=headers).get_json()["outgoing"]
     relation = next(item for item in relations if item["auth_status"])
     friend_id = relation["friend_user"]["id"]
 
     health_data = client.get(f"/api/health-data?owner_id={friend_id}", headers=headers)
+    assert health_data.status_code == 403
+    switched = client.post(
+        f"/api/friends/{relation['id']}/switch-session",
+        headers=headers,
+    )
+    assert switched.status_code == 200, switched.get_json()
+    effective = {
+        "Authorization": f"Bearer {switched.get_json()['access_token']}"
+    }
+
+    health_data = client.get("/api/health-data", headers=effective)
     assert health_data.status_code == 200
     assert health_data.get_json()["owner"]["id"] == friend_id
 
-    timeline = client.get(f"/api/health/timeline?owner_id={friend_id}", headers=headers)
+    timeline = client.get("/api/health/timeline", headers=effective)
     assert timeline.status_code == 200
     assert timeline.get_json()["owner"]["id"] == friend_id
 
-    domain_id = client.get("/api/health-domains", headers=headers).get_json()["items"][0]["id"]
-    trends = client.get(f"/api/health-trends/{domain_id}?owner_id={friend_id}", headers=headers)
+    domain_id = client.get("/api/health-domains", headers=effective).get_json()["items"][0]["id"]
+    trends = client.get(f"/api/health-trends/{domain_id}", headers=effective)
     assert trends.status_code == 200
     assert trends.get_json()["owner"]["id"] == friend_id

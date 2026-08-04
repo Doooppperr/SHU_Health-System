@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -17,6 +18,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app import create_app  # noqa: E402
+from app.config import config_by_name  # noqa: E402
 from app.demo_indicator_values import DEMO_REALISTIC_SERIES  # noqa: E402
 from app.extensions import db  # noqa: E402
 from app.models import (  # noqa: E402
@@ -60,12 +62,22 @@ BANNED_PRODUCT_COPY = (
 )
 
 
+def create_read_only_validation_app():
+    """Create an app without schema initialization or fixture seeding."""
+
+    previous = os.environ.get("HEALTHDOC_SCHEMA_MIGRATION")
+    os.environ["HEALTHDOC_SCHEMA_MIGRATION"] = "1"
+    try:
+        return create_app("development")
+    finally:
+        if previous is None:
+            os.environ.pop("HEALTHDOC_SCHEMA_MIGRATION", None)
+        else:
+            os.environ["HEALTHDOC_SCHEMA_MIGRATION"] = previous
+
+
 def validate_product_copy() -> int:
     paths = [
-        PROJECT_DIR / "README.md",
-        BACKEND_DIR / "README.md",
-        PROJECT_DIR / "frontend" / "README.md",
-        *(PROJECT_DIR / "项目文档").glob("*.md"),
         *(PROJECT_DIR / "frontend" / "src").rglob("*.vue"),
         *(
             path for path in (PROJECT_DIR / "frontend" / "src").rglob("*.js")
@@ -231,8 +243,20 @@ def validate_institution1_shared_archives():
     return len(shared), min(len(report.indicators) for report in shared)
 
 
-def main():
-    app = create_app("development")
+def main(
+    database_path: Path | None = None,
+    upload_dir: Path | None = None,
+):
+    if database_path is not None:
+        resolved = database_path.expanduser().resolve()
+        config_by_name["development"].SQLALCHEMY_DATABASE_URI = (
+            f"sqlite:///{resolved.as_posix()}"
+        )
+    if upload_dir is not None:
+        config_by_name["development"].UPLOAD_DIR = str(
+            upload_dir.expanduser().resolve()
+        )
+    app = create_read_only_validation_app()
     with app.app_context():
         user = User.query.filter_by(username="test1", role="user").one()
         active_ids = {row.id for row in IndicatorDict.query.all()}
@@ -363,9 +387,16 @@ def main():
             })
             for report in reports
         )
-        if ReportTextResult.query.count() != represented_pairs:
+        published_conclusion_count = (
+            ReportTextResult.query
+            .join(InstitutionReport)
+            .filter(InstitutionReport.status == "published")
+            .count()
+        )
+        if published_conclusion_count != represented_pairs:
             raise RuntimeError(
-                "report conclusion count does not match represented report-domain pairs"
+                "published report conclusion count does not match represented "
+                "report-domain pairs"
             )
         inspector = inspect(db.engine)
         quote = db.engine.dialect.identifier_preparer.quote

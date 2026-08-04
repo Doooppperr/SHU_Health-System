@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 
-import { getMe, login, refresh, register } from "../api/auth";
+import { getMe, login, logout as requestLogout, refresh, register } from "../api/auth";
+import { switchFriendSession } from "../api/friends";
 import { clearAllAiSessionStorage } from "../utils/aiSession";
 
 const STORAGE_KEY = "health-system-auth";
@@ -12,6 +13,7 @@ export const useAuthStore = defineStore("auth", {
     accessToken: "",
     refreshToken: "",
     user: null,
+    delegation: null,
     hydrated: false,
   }),
   actions: {
@@ -37,6 +39,7 @@ export const useAuthStore = defineStore("auth", {
           this.accessToken = parsed.accessToken || "";
           this.refreshToken = parsed.refreshToken || "";
           this.user = parsed.user || null;
+          this.delegation = parsed.delegation || null;
         } catch {
           sessionStorage.removeItem(STORAGE_KEY);
           localStorage.removeItem(STORAGE_KEY);
@@ -58,6 +61,7 @@ export const useAuthStore = defineStore("auth", {
           accessToken: this.accessToken,
           refreshToken: this.refreshToken,
           user: this.user,
+          ...(this.delegation ? { delegation: this.delegation } : {}),
         })
       );
     },
@@ -69,6 +73,7 @@ export const useAuthStore = defineStore("auth", {
         this.accessToken = data.access_token;
         this.refreshToken = data.refresh_token;
         this.user = data.user;
+        this.delegation = null;
         this.persist();
       }
       return data;
@@ -80,6 +85,7 @@ export const useAuthStore = defineStore("auth", {
       this.accessToken = data.access_token;
       this.refreshToken = data.refresh_token;
       this.user = data.user;
+      this.delegation = null;
       this.persist();
       return data;
     },
@@ -130,11 +136,58 @@ export const useAuthStore = defineStore("auth", {
       }
     },
 
+    async switchToFriend(relation) {
+      const relationId = relation?.id || relation?.relation_id;
+      if (!relationId) throw new Error("缺少亲友授权关系");
+      const { data } = await switchFriendSession(relationId);
+      const delegatedUser = data.user || data.item?.user || data.delegation?.user;
+      const delegatedToken = data.access_token || data.token || data.delegation?.access_token;
+      if (!delegatedUser || !delegatedToken) {
+        throw new Error("亲友账号切换响应不完整");
+      }
+
+      clearAllAiSessionStorage();
+      this.accessToken = delegatedToken;
+      this.refreshToken = data.refresh_token || data.delegation?.refresh_token || "";
+      this.user = delegatedUser;
+      this.delegation = {
+        relationId,
+        ownerUsername:
+          relation?.friend_username
+          || relation?.username
+          || delegatedUser.display_name
+          || delegatedUser.username
+          || "亲友",
+        expiresAt: data.expires_at || data.delegation?.expires_at || null,
+        session: data.session || data.delegation?.session || null,
+      };
+      this.persist();
+      return data;
+    },
+
+    async returnToOwnAccount() {
+      if (!this.delegation) return false;
+      await this.secureLogout();
+      return true;
+    },
+
+    async secureLogout() {
+      try {
+        await requestLogout();
+      } catch {
+        // A network failure must never keep credentials in the browser.
+      } finally {
+        this.logout();
+      }
+      return true;
+    },
+
     logout() {
       clearAllAiSessionStorage();
       this.accessToken = "";
       this.refreshToken = "";
       this.user = null;
+      this.delegation = null;
       this.persist();
     },
   },

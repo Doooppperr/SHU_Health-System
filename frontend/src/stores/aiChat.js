@@ -7,6 +7,7 @@ import {
   streamAiChat,
 } from "../api/ai";
 import { AI_SESSION_PREFIX } from "../utils/aiSession";
+import { redactHealthIdentityCodes } from "../utils/sensitiveData";
 
 
 const PANEL_WIDTH_KEY = "health-ai-panel-width";
@@ -32,7 +33,7 @@ function newMessageId(prefix) {
 function readJson(storage, key, fallback) {
   try {
     const raw = storage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
+    return raw ? redactHealthIdentityCodes(JSON.parse(raw)) : fallback;
   } catch {
     storage.removeItem(key);
     return fallback;
@@ -46,8 +47,9 @@ function positiveIntegerOrNull(value) {
 }
 
 function normalizeMessages(rawMessages) {
-  if (!Array.isArray(rawMessages)) return [];
-  return rawMessages
+  const safeMessages = redactHealthIdentityCodes(rawMessages);
+  if (!Array.isArray(safeMessages)) return [];
+  return safeMessages
     .filter(
       (message) =>
         ["user", "assistant"].includes(message?.role) &&
@@ -110,48 +112,53 @@ function normalizeMessages(rawMessages) {
 }
 
 function recordMetadata(record) {
+  const safeRecord = redactHealthIdentityCodes(record || {});
   return {
-    id: Number(record.id),
-    owner_id: Number(record.owner_id),
-    owner_name: record.owner_name || record.owner?.display_name || "档案所有者",
-    owner_label: record.owner_label || record.owner?.label || "",
-    exam_date: record.exam_date || "",
+    id: Number(safeRecord.id),
+    owner_id: Number(safeRecord.owner_id),
+    owner_name:
+      safeRecord.owner_name || safeRecord.owner?.display_name || "档案所有者",
+    owner_label: safeRecord.owner_label || safeRecord.owner?.label || "",
+    exam_date: safeRecord.exam_date || "",
     institution_name:
-      record.institution_name || record.institution?.name || "未填写机构",
-    indicator_count: Number(record.indicator_count) || 0,
+      safeRecord.institution_name || safeRecord.institution?.name || "未填写机构",
+    indicator_count: Number(safeRecord.indicator_count) || 0,
   };
 }
 
 function normalizeActiveRecordContext(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const ownerId = positiveIntegerOrNull(raw.owner_id);
+  const safeRaw = redactHealthIdentityCodes(raw);
+  if (!safeRaw || typeof safeRaw !== "object") return null;
+  const ownerId = positiveIntegerOrNull(safeRaw.owner_id);
   const scopeMode = ["selected_records", "all_confirmed", "indicator_history"].includes(
-    raw.scope_mode
+    safeRaw.scope_mode
   )
-    ? raw.scope_mode
+    ? safeRaw.scope_mode
     : "selected_records";
-  const anchorRecordIds = Array.isArray(raw.anchor_record_ids)
-    ? [...new Set(raw.anchor_record_ids.map(Number).filter(Number.isInteger))]
+  const anchorRecordIds = Array.isArray(safeRaw.anchor_record_ids)
+    ? [...new Set(safeRaw.anchor_record_ids.map(Number).filter(Number.isInteger))]
     : [];
   if (ownerId === null || (scopeMode === "selected_records" && !anchorRecordIds.length)) {
     return null;
   }
   return {
     owner_id: ownerId,
-    owner_name: String(raw.owner_name || "档案所有者"),
+    owner_name: String(safeRaw.owner_name || "档案所有者"),
     anchor_record_ids: anchorRecordIds,
     scope_mode: scopeMode,
-    indicator_codes: Array.isArray(raw.indicator_codes)
-      ? [...new Set(raw.indicator_codes.map(String).filter(Boolean))]
+    indicator_codes: Array.isArray(safeRaw.indicator_codes)
+      ? [...new Set(safeRaw.indicator_codes.map(String).filter(Boolean))]
       : [],
-    source: raw.source || "manual",
-    display_summary: String(raw.display_summary || ""),
-    updated_at: Number(raw.updated_at) || Date.now(),
+    source: safeRaw.source || "manual",
+    display_summary: String(safeRaw.display_summary || ""),
+    updated_at: Number(safeRaw.updated_at) || Date.now(),
   };
 }
 
 function clipHistoryContent(content) {
-  const characters = Array.from(content.trim());
+  const characters = Array.from(
+    redactHealthIdentityCodes(String(content || "").trim())
+  );
   if (characters.length <= MAX_HISTORY_CONTENT_CHARS) return characters.join("");
 
   const marker = Array.from(HISTORY_TRUNCATION_MARKER);
@@ -225,7 +232,9 @@ function errorText(error) {
   if (error?.status === 429) {
     return "发送过于频繁，请稍后再试。";
   }
-  return error?.message || "AI 暂时无法回复，请稍后再试。";
+  return redactHealthIdentityCodes(
+    error?.message || "AI 暂时无法回复，请稍后再试。"
+  );
 }
 
 function messageMentionsRecords(message) {
@@ -290,7 +299,9 @@ export const useAiChatStore = defineStore("ai-chat", {
         const currentSchema = saved.version === AI_SESSION_SCHEMA_VERSION;
         this.messages = currentSchema ? normalizeMessages(saved.messages) : [];
         this.summary =
-          currentSchema && typeof saved.summary === "string" ? saved.summary : "";
+          currentSchema && typeof saved.summary === "string"
+            ? redactHealthIdentityCodes(saved.summary)
+            : "";
         this.isOpen = saved.isOpen === true;
         this.lastModel = typeof saved.lastModel === "string" ? saved.lastModel : "";
         this.activeRecordContext = currentSchema
@@ -299,20 +310,25 @@ export const useAiChatStore = defineStore("ai-chat", {
         this.applyActiveContextSelection();
       }
       this.hydrated = true;
+      // Rewrite an existing session immediately so data saved by an older
+      // frontend cannot leave a raw health identity code in browser storage.
+      if (saved) this.persist();
     },
 
     persist() {
       if (!this.currentIdentity) return;
       sessionStorage.setItem(
         sessionKey(this.currentIdentity),
-        JSON.stringify({
-          version: AI_SESSION_SCHEMA_VERSION,
-          messages: this.messages.slice(-MAX_STORED_MESSAGES),
-          summary: this.summary,
-          isOpen: this.isOpen,
-          lastModel: this.lastModel,
-          activeRecordContext: this.activeRecordContext,
-        })
+        JSON.stringify(
+          redactHealthIdentityCodes({
+            version: AI_SESSION_SCHEMA_VERSION,
+            messages: this.messages.slice(-MAX_STORED_MESSAGES),
+            summary: this.summary,
+            isOpen: this.isOpen,
+            lastModel: this.lastModel,
+            activeRecordContext: this.activeRecordContext,
+          })
+        )
       );
     },
 
@@ -437,7 +453,8 @@ export const useAiChatStore = defineStore("ai-chat", {
       this.recordsLoading = true;
       this.recordsError = "";
       try {
-        const { data } = await fetchAiRecords();
+        const response = await fetchAiRecords();
+        const data = redactHealthIdentityCodes(response.data || {});
         if (
           this.currentIdentity !== loadIdentity ||
           this.recordsLoadSequence !== loadSequence
@@ -618,7 +635,7 @@ export const useAiChatStore = defineStore("ai-chat", {
     },
 
     async sendMessage(content, authenticated) {
-      const message = content.trim();
+      const message = redactHealthIdentityCodes(String(content || "").trim());
       if (!message || this.isSending || this.pickerContext || this.preparedAnalysis) {
         return null;
       }
@@ -717,6 +734,7 @@ export const useAiChatStore = defineStore("ai-chat", {
         Boolean(retryContext) && messageMentionsRecords(userMessage.content);
       const sensitiveHistoryAssistantId =
         requestContext?.sensitiveHistoryAssistantId || "";
+      userMessage.content = redactHealthIdentityCodes(userMessage.content);
       Object.assign(assistantMessage, {
         content: "",
         streaming: true,
@@ -855,9 +873,10 @@ export const useAiChatStore = defineStore("ai-chat", {
       let actionRequested = false;
 
       try {
-        await stream(payload, {
+        await stream(redactHealthIdentityCodes(payload), {
           signal: controller.signal,
-          onEvent: (event) => {
+          onEvent: (incomingEvent) => {
+            const event = redactHealthIdentityCodes(incomingEvent);
             if (
               this.activeController !== controller ||
               this.currentIdentity !== requestIdentity
@@ -870,7 +889,9 @@ export const useAiChatStore = defineStore("ai-chat", {
             } else if (event.event === "status") {
               this.statusText = event.message || event.status || "正在生成回复…";
             } else if (event.event === "delta") {
-              assistantMessage.content += String(eventText(event));
+              assistantMessage.content = redactHealthIdentityCodes(
+                assistantMessage.content + String(eventText(event))
+              );
               this.statusText = "正在生成回复…";
             } else if (event.event === "action") {
               const action = event.action || event.type;
@@ -888,7 +909,9 @@ export const useAiChatStore = defineStore("ai-chat", {
               }
             } else if (event.event === "done") {
               if (!assistantMessage.content && (event.reply || event.content)) {
-                assistantMessage.content = event.reply || event.content;
+                assistantMessage.content = redactHealthIdentityCodes(
+                  event.reply || event.content
+                );
               }
               assistantMessage.decision = event.decision || assistantMessage.decision;
               assistantMessage.source = event.source || assistantMessage.source;
@@ -929,7 +952,9 @@ export const useAiChatStore = defineStore("ai-chat", {
                 userMessage.recordSensitive = false;
               }
               if (!assistantMessage.recordSensitive) {
-                this.summary = event.summary || this.summary;
+                this.summary = redactHealthIdentityCodes(
+                  event.summary || this.summary
+                );
               }
               this.lastModel = event.model || this.lastModel;
             }
@@ -947,7 +972,9 @@ export const useAiChatStore = defineStore("ai-chat", {
         assistantMessage.failed = true;
         assistantMessage.cancelled = cancelled;
         assistantMessage.retryable = retryable;
-        assistantMessage.errorCode = error?.code || (cancelled ? "CANCELLED" : "");
+        assistantMessage.errorCode = redactHealthIdentityCodes(
+          error?.code || (cancelled ? "CANCELLED" : "")
+        );
         assistantMessage.errorMessage = cancelled ? "已取消本次生成" : errorText(error);
         if (assistantMessage.kind === "analysis" && !retryable) {
           assistantMessage.retryRecords = [];

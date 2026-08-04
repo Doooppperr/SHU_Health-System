@@ -125,6 +125,92 @@ class BookingGroup(db.Model):
         return data
 
 
+class BookingParticipantToken(db.Model):
+    __tablename__ = "booking_participant_tokens"
+    __table_args__ = (
+        db.CheckConstraint(
+            "booker_user_id <> subject_user_id",
+            name="ck_booking_participant_token_not_self",
+        ),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    token_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    booker_user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    subject_user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    authorization_version = db.Column(db.Integer, nullable=False)
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    consumed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    revoked_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+    )
+
+
+class BookingParticipantAuthorization(db.Model):
+    __tablename__ = "booking_participant_authorizations"
+    __table_args__ = (
+        db.UniqueConstraint(
+            "appointment_id",
+            name="uq_booking_participant_authorization_appointment",
+        ),
+        db.CheckConstraint(
+            "participant_type in "
+            "('self','linked_account','health_code_token')",
+            name="ck_booking_participant_authorization_type",
+        ),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    appointment_id = db.Column(
+        db.Integer,
+        db.ForeignKey("appointments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    booker_user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    subject_user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    participant_type = db.Column(db.String(20), nullable=False)
+    friend_relation_id = db.Column(
+        db.Integer,
+        db.ForeignKey("friend_relations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    authorization_version = db.Column(db.Integer, nullable=False, default=0)
+    participant_token_id = db.Column(
+        db.Integer,
+        db.ForeignKey("booking_participant_tokens.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+    )
+
+
 class AppointmentEvent(db.Model):
     __tablename__ = "appointment_events"
     __table_args__ = (db.UniqueConstraint("appointment_id", "event_type", "occurred_at", name="uq_appointment_event"),)
@@ -184,17 +270,63 @@ class WaitlistSubscription(db.Model):
 
 class WaitlistSubscriptionParticipant(db.Model):
     __tablename__ = "waitlist_subscription_participants"
-    __table_args__ = (db.UniqueConstraint("subscription_id", "subject_user_id", name="uq_waitlist_participant"),)
+    __table_args__ = (
+        db.UniqueConstraint(
+            "subscription_id",
+            "subject_user_id",
+            name="uq_waitlist_participant",
+        ),
+        db.CheckConstraint(
+            "participant_type in "
+            "('self','linked_account','health_code_token')",
+            name="ck_waitlist_subscription_participants_type",
+        ),
+    )
     id = db.Column(db.Integer, primary_key=True)
     subscription_id = db.Column(db.Integer, db.ForeignKey("waitlist_subscriptions.id", ondelete="CASCADE"), nullable=False, index=True)
     subject_user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     name_snapshot = db.Column(db.String(80), nullable=False)
     health_id_snapshot = db.Column(db.String(20), nullable=False)
     booking_authorized_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    participant_type = db.Column(
+        db.String(20),
+        nullable=False,
+        default="linked_account",
+        server_default="linked_account",
+    )
+    friend_relation_id = db.Column(
+        db.Integer,
+        db.ForeignKey("friend_relations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    authorization_version = db.Column(
+        db.Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
     subscription = db.relationship("WaitlistSubscription", back_populates="participants")
     def to_dict(self):
-        return {"id": self.id, "subject_user_id": self.subject_user_id, "name": self.name_snapshot,
-                "booking_authorized_at": self.booking_authorized_at.isoformat() if self.booking_authorized_at else None}
+        external_type = {
+            "friend": "linked_account",
+            "health_code": "health_code_token",
+        }.get(self.participant_type, self.participant_type)
+        return {
+            "id": self.id,
+            "subject_user_id": (
+                self.subject_user_id
+                if self.participant_type
+                not in {"health_code", "health_code_token"}
+                else None
+            ),
+            "name": self.name_snapshot,
+            "participant_type": external_type,
+            "booking_authorized_at": (
+                self.booking_authorized_at.isoformat()
+                if self.booking_authorized_at
+                else None
+            ),
+        }
 
 
 class AvailabilityNotificationEvent(db.Model):
@@ -220,6 +352,10 @@ class NotificationOutbox(db.Model):
     next_attempt_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utc_now)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utc_now)
     sent_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    sensitive_payload_cleared_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=True,
+    )
 
 
 class NotificationDelivery(db.Model):

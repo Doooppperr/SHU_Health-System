@@ -22,3 +22,11 @@ export function updateBookingAuthorization(relationId, payload) {
 export function deleteFriend(relationId) {
   return http.delete(`/friends/${relationId}`);
 }
+
+export function switchFriendSession(relationId) {
+  return http.post(`/friends/${relationId}/switch-session`);
+}
+
+export function exitFriendSession() {
+  return http.post("/auth/delegation/exit");
+}

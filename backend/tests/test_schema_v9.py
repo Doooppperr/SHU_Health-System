@@ -3,6 +3,9 @@ from collections import Counter
 import shutil
 import sqlite3
 
+import pytest
+from sqlalchemy.exc import IntegrityError
+
 from app.extensions import db
 from app.models import Comment, IndicatorDict, Institution, NotificationOutbox, User
 from scripts import notification_worker
@@ -21,6 +24,23 @@ def login(client, username="test1", password=PASSWORD):
     assert response.status_code == 200
     data = response.get_json()
     return data, {"Authorization": f"Bearer {data['access_token']}"}
+
+
+def secure_email_change(client, headers, email, password=PASSWORD):
+    challenge = client.post(
+        "/api/auth/password-change/code",
+        headers=headers,
+    ).get_json()
+    return client.put(
+        "/api/auth/email",
+        headers=headers,
+        json={
+            "email": email,
+            "current_password": password,
+            "challenge_id": challenge["challenge_id"],
+            "verification_code": challenge["verification_code"],
+        },
+    )
 
 
 def test_active_password_change_requires_current_password_and_revokes_old_tokens(app, client, monkeypatch):
@@ -107,7 +127,7 @@ def test_user_email_change_sends_old_and_new_notifications(app, client):
     _, headers = login(client, "test4")
     with app.app_context():
         old_email = User.query.filter_by(username="test4").one().email
-    response = client.put("/api/auth/email", headers=headers, json={"email": "new-user@example.test"})
+    response = secure_email_change(client, headers, "new-user@example.test")
     assert response.status_code == 200
     assert response.get_json()["user"]["email"] == "new-user@example.test"
     with app.app_context():
@@ -122,34 +142,36 @@ def test_user_email_change_sends_old_and_new_notifications(app, client):
         assert len(new_rows) == 1
 
 
-def test_institution_email_change_updates_branch_and_every_manager(app, client):
+def test_institution_has_one_account_and_email_change_stays_synchronized(app, client):
     with app.app_context():
         institution = Institution.query.order_by(Institution.id).first()
         old_email = institution.notification_email
-        staff = User(
+        duplicate = User(
             username="branch-shared-mail-test",
             role="institution_admin",
             email="legacy-manager@example.test",
             managed_institution_id=institution.id,
         )
-        staff.set_password("secret123")
-        db.session.add(staff)
-        db.session.commit()
-        staff_username = institution.administrators[0].username
+        duplicate.set_password("secret123")
+        db.session.add(duplicate)
+        with pytest.raises(IntegrityError):
+            db.session.commit()
+        db.session.rollback()
+        staff_username = institution.administrator.username
         institution_id = institution.id
     _, headers = login(client, staff_username)
-    response = client.put("/api/auth/email", headers=headers, json={"email": "branch-new@example.test"})
+    response = secure_email_change(client, headers, "branch-new@example.test")
     assert response.status_code == 200
     assert response.get_json()["user"]["email"] == "branch-new@example.test"
     with app.app_context():
         institution = db.session.get(Institution, institution_id)
         assert institution.notification_email == "branch-new@example.test"
-        manager_emails = {
-            row.email for row in User.query.filter_by(
-                managed_institution_id=institution_id, role="institution_admin",
-            ).all()
-        }
-        assert manager_emails == {"branch-new@example.test"}
+        managers = User.query.filter_by(
+            managed_institution_id=institution_id,
+            role="institution_admin",
+        ).all()
+        assert len(managers) == 1
+        assert managers[0].email == "branch-new@example.test"
         assert NotificationOutbox.query.filter_by(
             event_type="account_email_changed_old", recipient=old_email,
         ).count() == 1

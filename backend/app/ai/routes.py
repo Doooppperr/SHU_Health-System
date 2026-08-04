@@ -6,7 +6,8 @@ import threading
 import time
 import uuid
 from collections import defaultdict, deque
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from flask import Response, current_app, request, stream_with_context
 from flask_jwt_extended import get_jwt_identity, jwt_required
@@ -39,12 +40,15 @@ from app.ai.rag import (
     get_knowledge_retriever,
 )
 from app.extensions import db
-from app.models import Appointment, FriendRelation, HealthDomain, HealthIndicator, HealthRecord, IndicatorDict, IndicatorDomainLink, Institution, ReportAsset, User
+from app.models import Appointment, HealthDomain, HealthIndicator, HealthRecord, IndicatorDict, IndicatorDomainLink, Institution, ReportAsset, User
 from app.services.indicator_values import result_status_is_displayable
+from app.services.platform_contact import PLATFORM_CONTACT
+from app.services.sensitive_data import redact_health_identity_codes
 
 
 _rate_buckets = defaultdict(deque)
 _rate_lock = threading.Lock()
+BUSINESS_TZ = ZoneInfo("Asia/Shanghai")
 _RECORD_QUERY_BATCH_SIZE = 400
 _MAX_HISTORY_CONTENT_CHARS = 4000
 _HISTORY_TRUNCATION_MARKER = "\n…（较早内容已由服务端裁剪）…\n"
@@ -58,6 +62,36 @@ _FOLLOW_UP_TOKENS = ("这个", "这份", "其中", "刚才", "继续", "上述",
 _TREND_TOKENS = ("趋势", "变化", "对比", "历史", "最近几年", "近几年", "历年")
 _LATEST_TOKENS = ("上一次", "最近一次", "最新", "上一份", "最近一份")
 _ALL_HISTORY_TOKENS = ("全部历史", "所有历史", "全部报告", "所有报告", "历次报告")
+
+
+class _HealthIdRedactingAiClient:
+    """Enforce health-ID removal at the final external-provider boundary."""
+
+    def __init__(self, client):
+        self._client = client
+        self.model = getattr(client, "model", None)
+
+    def complete(self, messages, *, json_output=False, max_tokens=1200):
+        completion = self._client.complete(
+            redact_health_identity_codes(messages),
+            json_output=json_output,
+            max_tokens=max_tokens,
+        )
+        return AiCompletion(
+            content=redact_health_identity_codes(completion.content),
+            usage=redact_health_identity_codes(completion.usage),
+        )
+
+    def stream(self, messages, *, json_output=False, max_tokens=1200):
+        return self._client.stream(
+            redact_health_identity_codes(messages),
+            json_output=json_output,
+            max_tokens=max_tokens,
+        )
+
+
+def _get_health_id_safe_ai_client():
+    return _HealthIdRedactingAiClient(get_ai_client(current_app.config))
 
 
 def _current_user_optional():
@@ -96,14 +130,14 @@ def _is_rate_limited(user):
 
 
 def _json_error(message, code, status, *, retryable=False):
-    return {
+    return redact_health_identity_codes({
         "message": message,
         "error": {
             "code": code,
             "message": message,
             "retryable": retryable,
         },
-    }, status
+    }), status
 
 
 def _parse_json_object():
@@ -112,7 +146,9 @@ def _parse_json_object():
         return {}, None
     if not isinstance(payload, dict):
         return None, _json_error("request body must be an object", "invalid_request", 400)
-    return payload, None
+    # This is the first application boundary after Flask's JSON parser.  Every
+    # downstream consumer receives a detached, recursively redacted payload.
+    return redact_health_identity_codes(payload), None
 
 
 def _parse_history(raw_history):
@@ -138,7 +174,7 @@ def _parse_history(raw_history):
             return None, "history roles must alternate user and assistant"
         if not isinstance(content, str) or not content.strip():
             return None, "history content cannot be empty"
-        normalized_content = content.strip()
+        normalized_content = redact_health_identity_codes(content.strip())
         if len(normalized_content) > _MAX_HISTORY_CONTENT_CHARS:
             available = _MAX_HISTORY_CONTENT_CHARS - len(_HISTORY_TRUNCATION_MARKER)
             head_length = (available + 1) // 2
@@ -260,7 +296,7 @@ def _message_year(message):
     match = re.search(r"(?<!\d)(20\d{2})\s*年?", message)
     if match:
         return int(match.group(1))
-    today_year = date.today().year
+    today_year = datetime.now(BUSINESS_TZ).year
     if "前年" in message:
         return today_year - 2
     if "去年" in message:
@@ -271,22 +307,12 @@ def _message_year(message):
 
 
 def _mentioned_owner_id(user, message):
-    mentioned = set()
-    for relation in FriendRelation.query.filter_by(
-        user_id=user.id, auth_status=True
-    ).all():
-        friend = relation.friend_user
-        if friend and friend.real_name and friend.real_name in message:
-            mentioned.add(friend.id)
-    if len(mentioned) > 1:
-        return None, _json_error(
-            "一次只能分析一位成员的健康档案",
-            "mixed_record_owners",
-            400,
-        )
-    if mentioned:
-        return next(iter(mentioned)), None
-    if any(token in message for token in ("我", "我的", "本人")):
+    # A delegated JWT already identifies the switched-to account. Names in a
+    # prompt must never act as an alternate health-record selector.
+    if (
+        any(token in message for token in ("我", "我的", "本人", "当前账号"))
+        or (user.real_name and user.real_name in message)
+    ):
         return user.id, None
     return None, None
 
@@ -354,12 +380,8 @@ def _query_owner_records(owner_id, *, year=None, latest_only=False):
 
 
 def _authorized_owner_ids(user):
-    friend_ids = (
-        db.session.query(FriendRelation.friend_user_id)
-        .filter_by(user_id=user.id, auth_status=True)
-        .all()
-    )
-    return {user.id, *(row[0] for row in friend_ids)}
+    """Health context is scoped to the effective JWT account only."""
+    return {user.id}
 
 
 def _record_load_options():
@@ -452,23 +474,11 @@ def _load_record_scope(user, record_scope):
 def _auto_select_records(user, message):
     if user is None or user.role != "user" or not needs_record_selection(message):
         return []
-    owner_id = user.id
-    mentioned_friend_ids = []
-    for relation in FriendRelation.query.filter_by(user_id=user.id, auth_status=True).all():
-        friend = relation.friend_user
-        if friend and friend.real_name and friend.real_name in message:
-            mentioned_friend_ids.append(friend.id)
-    if len(set(mentioned_friend_ids)) > 1:
-        return []
-    if mentioned_friend_ids:
-        owner_id = mentioned_friend_ids[0]
-    elif not any(token in message for token in ("我", "我的", "本人")):
-        return []
     limit = 3 if any(token in message for token in ("趋势", "变化", "对比", "最近几年", "历史")) else 1
     return (
         HealthRecord.query.options(*_record_load_options())
         .filter(
-            HealthRecord.owner_id == owner_id,
+            HealthRecord.owner_id == user.id,
             HealthRecord.status == "published",
             HealthRecord.indicators.any(),
         )
@@ -484,7 +494,7 @@ def _record_resolution(user, records, *, source, scope_mode, indicator_codes=Non
     ordered = sorted(records, key=lambda item: (item.exam_date, item.id))
     owner = ordered[0].owner
     owner_name = owner.real_name if owner and owner.real_name else (
-        "本人" if ordered[0].owner_id == user.id else "已授权亲友"
+        "当前账号"
     )
     record_rows = [
         {
@@ -747,8 +757,11 @@ def _resolve_record_context(user, payload, message, record_ids, record_scope):
 def _institution_context_for_message(message):
     if not any(token in message for token in ("推荐", "体检机构", "体检中心", "分院", "附近", "预约机构")):
         return None
-    today = date.today()
-    institutions = Institution.query.filter_by(is_active=True).order_by(Institution.id).all()
+    today = datetime.now(BUSINESS_TZ).date()
+    institutions = Institution.query.filter(
+        Institution.is_active.is_(True),
+        Institution.organization.has(is_active=True),
+    ).order_by(Institution.id).all()
     ranked = []
     for institution in institutions:
         organization_name = institution.organization.name if institution.organization else institution.name
@@ -769,7 +782,7 @@ def _institution_context_for_message(message):
         score += sum(1 for fragment in searchable.replace("，", " ").split() if len(fragment) >= 2 and fragment in message)
         packages = []
         for package in institution.packages:
-            if not package.is_active:
+            if not package.is_active or package.current_version_id is None:
                 continue
             domain_names = [row.get("name") for row in package.to_dict().get("domains", []) if row.get("name")]
             relevance = sum(1 for token in [package.name, package.focus_area, *domain_names] if token and token in message)
@@ -780,7 +793,10 @@ def _institution_context_for_message(message):
     selected = sorted(positive or ranked, key=lambda row: (-row[0], row[1].id))[:8]
     if not selected:
         return {
-            "reply": "【系统机构数据】平台内当前没有启用的体检机构，暂时无法给出平台内推荐。请稍后再试或联系平台 021-666666。",
+            "reply": (
+                "【系统机构数据】平台内当前没有启用的体检机构，暂时无法给出平台内推荐。"
+                f"请稍后再试或联系平台 {PLATFORM_CONTACT['phone']}。"
+            ),
             "sources": [],
         }
     lines = ["【系统机构数据】以下结果只来自 HealthDoc 当前启用机构和实时预约数据："]
@@ -788,7 +804,7 @@ def _institution_context_for_message(message):
     for _score, institution, packages in selected:
         organization_name = institution.organization.name if institution.organization else institution.name
         availability = []
-        for offset in range(0, 7):
+        for offset in range(1, 8):
             day = today + timedelta(days=offset)
             booked = Appointment.query.filter(
                 Appointment.institution_id == institution.id,
@@ -831,7 +847,7 @@ def _indicator_codes_from_records(records):
 def _retrieve_knowledge(user, query, records=None, *, indicator_codes=None, limit=None):
     retriever = get_knowledge_retriever(current_app)
     return retriever.retrieve(
-        query,
+        redact_health_identity_codes(query),
         audience="authenticated"
         if user is not None and user.role == "user"
         else "public",
@@ -845,9 +861,11 @@ def _retrieve_knowledge(user, query, records=None, *, indicator_codes=None, limi
 
 
 def _knowledge_context(result):
-    return format_knowledge_context(
-        result,
-        max_chars=int(current_app.config.get("RAG_MAX_CONTEXT_CHARS", 12000)),
+    return redact_health_identity_codes(
+        format_knowledge_context(
+            result,
+            max_chars=int(current_app.config.get("RAG_MAX_CONTEXT_CHARS", 12000)),
+        )
     )
 
 
@@ -896,7 +914,7 @@ def _format_record_context(user, records, *, indicator_codes=None):
         return ""
 
     selected_codes = set(indicator_codes or [])
-    owner_label = "本人" if user is not None and records[0].owner_id == user.id else "已授权亲友"
+    owner_label = "当前账号"
     sections = [f"档案归属：{owner_label}。共选择 {len(records)} 份档案。"]
     for index, record in enumerate(
         sorted(records, key=lambda item: (item.exam_date, item.id), reverse=True), start=1
@@ -954,18 +972,27 @@ def _format_record_context(user, records, *, indicator_codes=None):
         sections.append("服务端已按同日机构数据优先规则计算的每日有效数据：\n" + "\n".join(daily_sections))
     text = "\n\n".join(sections)
     if len(text) <= _MAX_RECORD_CONTEXT_CHARS:
-        return text
-    return text[:_MAX_RECORD_CONTEXT_CHARS] + "\n…（历史档案已按相关性和长度裁剪）…"
+        return redact_health_identity_codes(text)
+    return redact_health_identity_codes(
+        text[:_MAX_RECORD_CONTEXT_CHARS]
+        + "\n…（历史档案已按相关性和长度裁剪）…"
+    )
 
 
 def _compact_history(history, summary):
+    history = redact_health_identity_codes(history)
+    summary = redact_health_identity_codes(summary)
     max_messages = int(current_app.config.get("AI_MAX_HISTORY_MESSAGES", 20))
     if len(history) < max_messages:
         return history, summary.strip(), 0
     compacted_count = 2
     return (
         history[compacted_count:],
-        merge_summary_deterministically(summary.strip(), history[:compacted_count]),
+        redact_health_identity_codes(
+            merge_summary_deterministically(
+                summary.strip(), history[:compacted_count]
+            )
+        ),
         compacted_count,
     )
 
@@ -974,11 +1001,11 @@ def _validate_chat_request(user, payload):
     message = payload.get("message")
     if not isinstance(message, str) or not message.strip():
         return None, _json_error("message is required", "message_required", 400)
-    message = message.strip()
+    message = redact_health_identity_codes(message.strip())
     if len(message) > 2000:
         return None, _json_error("message is too long", "message_too_long", 400)
 
-    summary = payload.get("summary") or ""
+    summary = redact_health_identity_codes(payload.get("summary") or "")
     if not isinstance(summary, str) or len(summary) > 6000:
         return None, _json_error("summary is invalid or too long", "invalid_summary", 400)
 
@@ -1095,7 +1122,7 @@ def _resolve_chat(user, chat_request):
     )
     retrieval = chat_request["retrieval"]
     knowledge_context = _knowledge_context(retrieval)
-    client = get_ai_client(current_app.config)
+    client = _get_health_id_safe_ai_client()
     if user is None:
         result = answer_guest_question(
             client,
@@ -1156,10 +1183,12 @@ def _chat_response_payload(user, chat_request, resolution):
             "next_active_record_context"
         ),
     }
-    return payload
+    return redact_health_identity_codes(payload)
 
 
 def _sse(event, payload):
+    event = redact_health_identity_codes(event)
+    payload = redact_health_identity_codes(payload)
     return (
         f"event: {event}\n"
         f"data: {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n\n"
@@ -1204,13 +1233,13 @@ def _consume_provider_stream(
                         {"stage": "deciding", "message": heartbeat_message},
                     )
             if event_usage is not None:
-                usage = event_usage
+                usage = redact_health_identity_codes(event_usage)
     finally:
         close = getattr(provider_stream, "close", None)
         if callable(close):
             close()
 
-    content = "".join(content_parts).strip()
+    content = redact_health_identity_codes("".join(content_parts).strip())
     if not content:
         raise AiProviderError(
             "AI provider returned an empty response",
@@ -1221,7 +1250,7 @@ def _consume_provider_stream(
 
 
 def _stream_model_chat_resolution(user, chat_request):
-    client = get_ai_client(current_app.config)
+    client = _get_health_id_safe_ai_client()
     message = chat_request["message"]
     retrieval = chat_request["retrieval"]
     knowledge_context = _knowledge_context(retrieval)
@@ -1328,7 +1357,14 @@ def _log_stream_completion(
         "usage": usage or {},
         "retrieval": retrieval.log_payload(),
     }
-    logger.info("ai_request %s", json.dumps(log_data, ensure_ascii=True, separators=(",", ":")))
+    logger.info(
+        "ai_request %s",
+        json.dumps(
+            redact_health_identity_codes(log_data),
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ),
+    )
 
 
 def _sse_response(generator):
@@ -1355,7 +1391,6 @@ def analyzable_records():
             403,
         )
 
-    owner_ids = _authorized_owner_ids(user)
     records = (
         HealthRecord.query.options(
             joinedload(HealthRecord.owner),
@@ -1363,7 +1398,7 @@ def analyzable_records():
             selectinload(HealthRecord.indicators),
         )
         .filter(
-            HealthRecord.owner_id.in_(owner_ids),
+            HealthRecord.owner_id == user.id,
             HealthRecord.status == "published",
             HealthRecord.indicators.any(),
         )
@@ -1380,7 +1415,7 @@ def analyzable_records():
                 "owner": {
                     "id": record.owner_id,
                     "display_name": record.owner.real_name if record.owner else "未知",
-                    "label": "本人" if record.owner_id == user.id else "已授权亲友",
+                    "label": "当前账号",
                 },
                 "exam_date": record.exam_date.isoformat(),
                 "institution": (
@@ -1411,7 +1446,9 @@ def analyzable_records():
         summary["date_range"]["latest"] = max(
             summary["date_range"]["latest"], item["exam_date"]
         )
-    return {"items": items, "owners": list(owners_by_id.values())}, 200
+    return redact_health_identity_codes(
+        {"items": items, "owners": list(owners_by_id.values())}
+    ), 200
 
 
 @ai_bp.post("/chat")
@@ -1448,7 +1485,7 @@ def chat():
         )
 
     if resolution.get("action"):
-        return {
+        return redact_health_identity_codes({
             "reply": resolution["message"],
             "decision": "answer",
             "action": resolution["action"],
@@ -1461,7 +1498,7 @@ def chat():
             "rag_used": False,
             "retrieval_status": "disabled",
             "knowledge_source_count": 0,
-        }, 200
+        }), 200
     return _chat_response_payload(user, chat_request, resolution), 200
 
 
@@ -1677,7 +1714,9 @@ def analyze_stream():
     if load_error:
         return load_error
 
-    facts = build_analysis_facts(user, records, domain_id=domain_id)
+    facts = redact_health_identity_codes(
+        build_analysis_facts(user, records, domain_id=domain_id)
+    )
     if domain_id is not None and not facts.get("trends") and not any(item.get("indicators") for item in facts.get("records", [])) and not facts.get("institution_text_results"):
         return _json_error("selected records contain no data in this health domain", "domain_data_unavailable", 400)
     if selected_asset_ids:
@@ -1734,8 +1773,10 @@ def analyze_stream():
                 records,
                 limit=int(current_app.config.get("RAG_ANALYSIS_CONTEXT_K", 6)),
             )
-            client = get_ai_client(current_app.config)
-            messages = build_analysis_messages(facts, _knowledge_context(retrieval))
+            client = _get_health_id_safe_ai_client()
+            messages = redact_health_identity_codes(
+                build_analysis_messages(facts, _knowledge_context(retrieval))
+            )
             completion = yield from _consume_provider_stream(
                 client,
                 messages,
@@ -1823,14 +1864,16 @@ def analyze_trends_stream():
     owner = user
     raw_owner_id = payload.get("owner_id")
     if raw_owner_id not in {None, "", "self"}:
-        try: owner_id = int(raw_owner_id)
-        except (TypeError, ValueError): return _json_error("成员信息不正确", "invalid_owner_id", 400)
-        relation = FriendRelation.query.filter_by(user_id=user.id, friend_user_id=owner_id, auth_status=True).first()
-        if relation is None:
-            return _json_error("当前没有查看该成员健康数据的授权", "owner_access_denied", 403)
-        owner = db.session.get(User, owner_id)
-        if owner is None or not owner.is_active:
-            return _json_error("成员账号不可用", "owner_not_found", 404)
+        try:
+            owner_id = int(raw_owner_id)
+        except (TypeError, ValueError):
+            return _json_error("成员信息不正确", "invalid_owner_id", 400)
+        if owner_id != user.id:
+            return _json_error(
+                "健康趋势仅分析当前有效账号；请先切换关联账号",
+                "CURRENT_ACCOUNT_REQUIRED",
+                403,
+            )
 
     def parse_day(key):
         raw = payload.get(key)
@@ -1885,13 +1928,13 @@ def analyze_trends_stream():
         })
     if not indicators:
         return _json_error("当前筛选范围没有可分析的趋势数据", "trend_data_unavailable", 400)
-    facts = {
+    facts = redact_health_identity_codes({
         "owner_display": owner.real_name or owner.username,
         "health_domain": domain.name,
         "start_date": start_date.isoformat() if start_date else None,
         "end_date": end_date.isoformat() if end_date else None,
         "indicators": indicators,
-    }
+    })
     request_id = uuid.uuid4().hex
 
     def generate():
@@ -1899,9 +1942,11 @@ def analyze_trends_stream():
                             "model": current_app.config.get("DEEPSEEK_MODEL")})
         yield _sse("status", {"stage": "analyzing", "message": "正在结合当前图表整理趋势…"})
         try:
-            client = get_ai_client(current_app.config)
+            client = _get_health_id_safe_ai_client()
             completion = yield from _consume_provider_stream(
-                client, build_trend_analysis_messages(facts), json_output=True,
+                client,
+                redact_health_identity_codes(build_trend_analysis_messages(facts)),
+                json_output=True,
                 max_tokens=1800, heartbeat_message="AI 正在分析当前图表…")
             result = parse_model_completion(completion)
             for chunk in iter_text_chunks(result["reply"]):

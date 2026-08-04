@@ -48,7 +48,7 @@ class InstitutionReport(db.Model):
     __tablename__ = "institution_reports"
     __table_args__ = (
         db.CheckConstraint(
-            "status in ('draft', 'locked', 'published')",
+            "status in ('draft', 'pending_review', 'published')",
             name="ck_institution_reports_status",
         ),
         db.CheckConstraint("length(trim(subject_name_snapshot)) > 0", name="ck_institution_reports_subject_name"),
@@ -71,6 +71,17 @@ class InstitutionReport(db.Model):
     appointment_id = db.Column(db.Integer, db.ForeignKey("appointments.id", ondelete="SET NULL"), nullable=True, unique=True, index=True)
     matched_user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     status = db.Column(db.String(24), nullable=False, default="draft", index=True)
+    upload_doctor_name = db.Column(db.String(80), nullable=True)
+    review_doctor_name = db.Column(db.String(80), nullable=True)
+    submitted_for_review_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    reviewed_by_user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    reviewed_by_username_snapshot = db.Column(db.String(80), nullable=True)
+    reviewed_at = db.Column(db.DateTime(timezone=True), nullable=True)
     ocr_diagnostics = db.Column(db.JSON, nullable=True)
     temporary_file_url = db.Column(db.String(255), nullable=True)
     locked_at = db.Column(db.DateTime(timezone=True), nullable=True)
@@ -80,6 +91,7 @@ class InstitutionReport(db.Model):
 
     institution = db.relationship("Institution")
     creator = db.relationship("User", foreign_keys=[created_by_user_id])
+    reviewer = db.relationship("User", foreign_keys=[reviewed_by_user_id])
     owner = db.relationship("User", foreign_keys=[matched_user_id])
     package = db.relationship("Package")
     package_version = db.relationship("PackageVersion")
@@ -110,6 +122,11 @@ class InstitutionReport(db.Model):
             "appointment_id": self.appointment_id,
             "exam_date": calendar_date_iso(self.exam_date),
             "status": self.status,
+            "upload_doctor_name": self.upload_doctor_name or "历史报告未记录",
+            "review_doctor_name": self.review_doctor_name or "历史报告未记录",
+            "submitted_for_review_at": self.submitted_for_review_at.isoformat() if self.submitted_for_review_at else None,
+            "reviewed_by_username_snapshot": self.reviewed_by_username_snapshot,
+            "reviewed_at": self.reviewed_at.isoformat() if self.reviewed_at else None,
             "subject_name_snapshot": self.subject_name_snapshot,
             "created_by_username_snapshot": self.created_by_username_snapshot,
             "locked_at": self.locked_at.isoformat() if self.locked_at else None,
@@ -128,6 +145,7 @@ class InstitutionReport(db.Model):
             result["ocr_diagnostics"] = self.ocr_diagnostics
         else:
             result.pop("created_by_username_snapshot", None)
+            result.pop("reviewed_by_username_snapshot", None)
         if include_indicators:
             result["indicators"] = [item.to_dict() for item in self.indicators]
             result["text_results"] = [item.to_dict() for item in self.text_results]

@@ -61,8 +61,25 @@
         <el-descriptions-item label="注册时间">{{formatTime(detail.created_at)}}</el-descriptions-item>
         <el-descriptions-item label="最近改密邮件">{{mailStatusName(detail.password_notification?.status)}}</el-descriptions-item>
       </el-descriptions>
+      <el-alert title="管理员只能修正姓名、性别和出生日期，不能查看或修改用户健康档案。" type="info" show-icon :closable="false" style="margin-top:16px" />
+      <el-button v-if="detail" type="primary" plain style="margin-top:16px" @click="openIdentityCorrection">修正实名信息</el-button>
       <el-button v-if="detail?.password_notification?.status==='failed'" type="warning" style="margin-top:16px" @click="retryDetailMail">重试密码通知邮件</el-button>
     </el-drawer>
+
+    <el-dialog v-model="identityVisible" title="修正用户实名信息" width="min(520px,94vw)">
+      <el-alert title="保存后仅通过邮件通知用户；发送失败会保留在发件箱中按队列策略重试。管理员仍不能查看用户健康档案。" type="warning" show-icon :closable="false" />
+      <el-form label-position="top" style="margin-top:16px">
+        <el-form-item label="真实姓名" required><el-input v-model.trim="identityForm.real_name" maxlength="80" /></el-form-item>
+        <el-form-item label="性别" required>
+          <el-select v-model="identityForm.gender" style="width:100%">
+            <el-option label="男" value="male" /><el-option label="女" value="female" />
+            <el-option label="其他" value="other" /><el-option label="不披露" value="undisclosed" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="出生日期" required><el-date-picker v-model="identityForm.birth_date" type="date" value-format="YYYY-MM-DD" style="width:100%" /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="identityVisible=false">取消</el-button><el-button type="primary" :loading="identitySaving" @click="saveIdentityCorrection">保存修正</el-button></template>
+    </el-dialog>
 
     <el-dialog v-model="passwordVisible" title="管理员修改用户密码" width="min(500px,94vw)">
       <el-alert title="新密码将永久生效，旧登录令牌立即失效；邮件会将新密码明文通知用户。" type="warning" show-icon :closable="false"/>
@@ -86,6 +103,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { deleteInstitutionAccount } from "../../api/admin";
 import {
   changeUserPassword,
+  correctUserBasicProfile,
   deleteUser,
   fetchUser,
   fetchUsers,
@@ -97,6 +115,7 @@ const items=ref([]),loading=ref(false),filters=reactive({q:"",role:"",active:""}
 const pagination=reactive({page:1,page_size:20,total:0,pages:0});
 const detailVisible=ref(false),detail=ref(null),passwordVisible=ref(false),passwordTarget=ref(null);
 const newPassword=ref(""),passwordSaving=ref(false),deliveryStatus=ref(""),deliveryMessage=ref("");
+const identityVisible=ref(false),identitySaving=ref(false),identityForm=reactive({real_name:"",gender:"",birth_date:""});
 const roleName=(role)=>({user:"普通用户",institution_admin:"机构账号",admin:"系统管理员"}[role]||role);
 const genderName=(gender)=>({male:"男",female:"女",other:"其他/未填写"}[gender]||"未填写");
 const formatTime=(value)=>value?new Date(value).toLocaleString("zh-CN"):"—";
@@ -112,6 +131,8 @@ async function load(){
 }
 async function applyFilters(){pagination.page=1;await load();}
 async function showDetail(row){detail.value=(await fetchUser(row.id)).data.item;detailVisible.value=true;}
+function openIdentityCorrection(){Object.assign(identityForm,{real_name:detail.value.real_name||"",gender:detail.value.gender||"",birth_date:detail.value.birth_date||""});identityVisible.value=true;}
+async function saveIdentityCorrection(){if(!identityForm.real_name||!identityForm.gender||!identityForm.birth_date)return ElMessage.error("请完整填写姓名、性别和出生日期");identitySaving.value=true;try{const{data}=await correctUserBasicProfile(detail.value.id,{...identityForm});detail.value={...detail.value,...(data.item||{})};identityVisible.value=false;ElMessage.success("实名信息已修正，邮件通知已进入发送队列");await load();}catch(error){ElMessage.error(error?.response?.data?.message||"实名信息修正失败");}finally{identitySaving.value=false;}}
 function openPassword(row){passwordTarget.value=row;newPassword.value="";deliveryStatus.value="";deliveryMessage.value="";passwordVisible.value=true;}
 async function savePassword(){
   if(newPassword.value.length<8)return ElMessage.error("新密码至少 8 位");

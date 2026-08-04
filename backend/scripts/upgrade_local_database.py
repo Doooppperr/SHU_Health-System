@@ -1,4 +1,4 @@
-"""Upgrade the local SQLite database to HealthDoc schema v11.
+"""Upgrade the local SQLite database to HealthDoc schema v12.
 
 The v6-to-v7 path preserves all current business data while adding health
 domains, package versions, booking groups, waitlists and private assets. Older
@@ -25,7 +25,38 @@ from sqlalchemy import create_engine
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_DATABASE = BACKEND_DIR / "instance" / "health_system.db"
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
+ADDITIVE_V12_SECURITY_COLUMNS = {
+    "password_verification_challenges.token_version_snapshot": (
+        "password_verification_challenges",
+        "token_version_snapshot",
+    ),
+    "oauth_clients.approval_version": ("oauth_clients", "approval_version"),
+    "oauth_authorization_codes.user_token_version_snapshot": (
+        "oauth_authorization_codes",
+        "user_token_version_snapshot",
+    ),
+    "oauth_authorization_codes.client_approval_version_snapshot": (
+        "oauth_authorization_codes",
+        "client_approval_version_snapshot",
+    ),
+    "oauth_access_tokens.user_token_version_snapshot": (
+        "oauth_access_tokens",
+        "user_token_version_snapshot",
+    ),
+    "oauth_access_tokens.client_approval_version_snapshot": (
+        "oauth_access_tokens",
+        "client_approval_version_snapshot",
+    ),
+    "oauth_refresh_tokens.user_token_version_snapshot": (
+        "oauth_refresh_tokens",
+        "user_token_version_snapshot",
+    ),
+    "oauth_refresh_tokens.client_approval_version_snapshot": (
+        "oauth_refresh_tokens",
+        "client_approval_version_snapshot",
+    ),
+}
 sys.path.insert(0, str(BACKEND_DIR))
 
 from app import models as _models  # noqa: E402,F401
@@ -46,9 +77,17 @@ class SchemaReport:
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Upgrade the local SQLite database to schema v11.")
+    parser = argparse.ArgumentParser(description="Upgrade the local SQLite database to schema v12.")
     parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE)
     parser.add_argument("--check-only", action="store_true")
+    parser.add_argument(
+        "--allow-data-loss",
+        action="store_true",
+        help=(
+            "Explicitly allow the unsupported legacy fallback that retains "
+            "only one administrator account"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -60,12 +99,97 @@ def inspect_schema(connection):
     tables = table_names(connection)
     expected = set(db.metadata.tables)
     missing_columns = []
+    physical_issues = []
+
+    def sqlite_affinity(declared_type):
+        value = str(declared_type or "").upper()
+        if "INT" in value:
+            return "integer"
+        if any(token in value for token in ("CHAR", "CLOB", "TEXT")):
+            return "text"
+        if not value or "BLOB" in value:
+            return "blob"
+        if any(token in value for token in ("REAL", "FLOA", "DOUB")):
+            return "real"
+        return "numeric"
+
     for name in sorted(expected & tables):
-        actual = {row[1] for row in connection.execute(f'PRAGMA table_info("{name}")')}
+        table = db.metadata.tables[name]
+        info_rows = connection.execute(
+            f'PRAGMA table_info("{name}")'
+        ).fetchall()
+        actual_info = {row[1]: row for row in info_rows}
+        actual = set(actual_info)
         missing_columns.extend(f"{name}.{column.name}" for column in db.metadata.tables[name].columns if column.name not in actual)
+        for column in table.columns:
+            row = actual_info.get(column.name)
+            if row is None:
+                continue
+            if not column.primary_key and bool(row[3]) != (not column.nullable):
+                physical_issues.append(
+                    f"{name}.{column.name}.nullability"
+                )
+            if sqlite_affinity(row[2]) != sqlite_affinity(column.type):
+                physical_issues.append(f"{name}.{column.name}.type")
+
+        unique_sets = set()
+        for index_row in connection.execute(f'PRAGMA index_list("{name}")'):
+            if not index_row[2]:
+                continue
+            unique_sets.add(tuple(
+                row[2] for row in connection.execute(
+                    f'PRAGMA index_info("{index_row[1]}")'
+                )
+            ))
+        for constraint in table.constraints:
+            if constraint.__visit_name__ != "unique_constraint":
+                continue
+            columns = tuple(column.name for column in constraint.columns)
+            if columns not in unique_sets:
+                physical_issues.append(
+                    f"{name}.unique({','.join(columns)})"
+                )
+
+        foreign_key_rows = connection.execute(
+            f'PRAGMA foreign_key_list("{name}")'
+        ).fetchall()
+        foreign_key_groups = {}
+        for row in foreign_key_rows:
+            group = foreign_key_groups.setdefault(row[0], {
+                "table": row[2],
+                "from": [],
+                "to": [],
+            })
+            group["from"].append((row[1], row[3]))
+            group["to"].append((row[1], row[4]))
+        actual_foreign_keys = {
+            (
+                tuple(value for _order, value in sorted(group["from"])),
+                group["table"],
+                tuple(value for _order, value in sorted(group["to"])),
+            )
+            for group in foreign_key_groups.values()
+        }
+        for constraint in table.constraints:
+            if constraint.__visit_name__ != "foreign_key_constraint":
+                continue
+            expected_fk = (
+                tuple(column.name for column in constraint.columns),
+                next(iter(constraint.elements)).column.table.name,
+                tuple(element.column.name for element in constraint.elements),
+            )
+            if expected_fk not in actual_foreign_keys:
+                physical_issues.append(
+                    f"{name}.foreign_key({','.join(expected_fk[0])})"
+                )
     ddl = "\n".join((row[0] or "") for row in connection.execute("SELECT sql FROM sqlite_master WHERE type IN ('table','index') AND sql IS NOT NULL"))
-    named = {constraint.name for table in db.metadata.tables.values() for constraint in table.constraints if constraint.name}
-    incompatible_constraints = []
+    named = {
+        item.name
+        for table in db.metadata.tables.values()
+        for item in (*table.constraints, *table.indexes)
+        if item.name
+    }
+    incompatible_constraints = list(physical_issues)
     if "users" in tables:
         for index_row in connection.execute('PRAGMA index_list("users")'):
             if not index_row[2]:
@@ -92,7 +216,7 @@ def validate(connection):
         raise RuntimeError(f"SQLite foreign_key_check found {len(violations)} violation(s)")
     report = inspect_schema(connection)
     if not report.is_current:
-        raise RuntimeError(f"schema v11 validation failed: {report}")
+        raise RuntimeError(f"schema v12 validation failed: {report}")
 
 
 def repair_result_statuses(connection):
@@ -159,7 +283,7 @@ def read_admin(connection):
 
 def backup_path(database):
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return database.with_name(f"{database.stem}.before-schema-v11-{stamp}-{uuid.uuid4().hex[:6]}.db")
+    return database.with_name(f"{database.stem}.before-schema-v12-{stamp}-{uuid.uuid4().hex[:6]}.db")
 
 
 def prepare_v8_source(database_path):
@@ -186,7 +310,7 @@ def prepare_v8_source(database_path):
     return prepared
 
 
-def rebuild_database(database_path):
+def rebuild_database(database_path, *, allow_data_loss=False):
     database_path = database_path.resolve()
     if not database_path.is_file():
         raise FileNotFoundError(f"SQLite database not found: {database_path}")
@@ -211,13 +335,82 @@ def rebuild_database(database_path):
                 backup.unlink(missing_ok=True)
                 return None
             return backup
+        additive_v12_security_columns = (
+            report.version == SCHEMA_VERSION
+            and not report.missing_tables
+            and bool(report.missing_columns)
+            and set(report.missing_columns).issubset(
+                ADDITIVE_V12_SECURITY_COLUMNS
+            )
+            and not report.missing_constraints
+        )
+        if additive_v12_security_columns:
+            backup = backup_path(database_path)
+            temporary = database_path.with_name(
+                f".{database_path.stem}.v12-security-{uuid.uuid4().hex}.db"
+            )
+            target = None
+            try:
+                # Apply non-transactional SQLite DDL only to an isolated copy.
+                # The live file is replaced after the copy passes the complete
+                # schema, integrity and foreign-key contract.
+                with closing(sqlite3.connect(backup)) as recovery:
+                    source.backup(recovery)
+                with closing(sqlite3.connect(temporary)) as candidate:
+                    source.backup(candidate)
+                source.close()
+                target = sqlite3.connect(temporary)
+                missing = set(report.missing_columns)
+                for qualified_name in sorted(missing):
+                    table_name, column_name = (
+                        ADDITIVE_V12_SECURITY_COLUMNS[qualified_name]
+                    )
+                    target.execute(
+                        f'ALTER TABLE "{table_name}" ADD COLUMN '
+                        f'"{column_name}" INTEGER NOT NULL DEFAULT 0'
+                    )
+                if (
+                    "password_verification_challenges."
+                    "token_version_snapshot" in missing
+                ):
+                    target.execute(
+                        "UPDATE password_verification_challenges "
+                        "SET token_version_snapshot=COALESCE(("
+                        "SELECT users.token_version FROM users "
+                        "WHERE users.id=password_verification_challenges.user_id"
+                        "), 0), consumed_at=COALESCE("
+                        "consumed_at, CURRENT_TIMESTAMP)"
+                    )
+                if any(name.startswith("oauth_") for name in missing):
+                    target.execute(
+                        "UPDATE oauth_authorization_codes SET consumed_at="
+                        "COALESCE(consumed_at, CURRENT_TIMESTAMP)"
+                    )
+                    target.execute(
+                        "UPDATE oauth_access_tokens SET revoked_at="
+                        "COALESCE(revoked_at, CURRENT_TIMESTAMP)"
+                    )
+                    target.execute(
+                        "UPDATE oauth_refresh_tokens SET revoked_at="
+                        "COALESCE(revoked_at, CURRENT_TIMESTAMP)"
+                    )
+                validate(target)
+                target.commit()
+                target.close()
+                os.replace(temporary, database_path)
+            except Exception:
+                if target is not None:
+                    target.close()
+                temporary.unlink(missing_ok=True)
+                raise
+            return backup
         admin = read_admin(source)
         available_tables = table_names(source)
 
-    if report.version in {4, 5, 6, 7, 8, 9, 10}:
+    if report.version in {4, 5, 6, 7, 8, 9, 10, 11}:
         from scripts.migrate_sqlite_to_gaussdb import migrate
 
-        temporary = database_path.with_name(f".{database_path.stem}.v11-{uuid.uuid4().hex}.db")
+        temporary = database_path.with_name(f".{database_path.stem}.v12-{uuid.uuid4().hex}.db")
         prepared = prepare_v8_source(database_path)
         backup = backup_path(database_path)
         try:
@@ -242,7 +435,13 @@ def rebuild_database(database_path):
             prepared.unlink(missing_ok=True)
         return backup
 
-    temporary = database_path.with_name(f".{database_path.stem}.v11-{uuid.uuid4().hex}.db")
+    if available_tables and not allow_data_loss:
+        raise RuntimeError(
+            "unsupported or incomplete SQLite schema; refusing the "
+            "administrator-only rebuild without --allow-data-loss"
+        )
+
+    temporary = database_path.with_name(f".{database_path.stem}.v12-{uuid.uuid4().hex}.db")
     backup = backup_path(database_path)
     engine = create_engine(f"sqlite:///{temporary.as_posix()}")
     try:
@@ -289,7 +488,7 @@ def main():
     if args.check_only:
         with closing(sqlite3.connect(database)) as connection: print_report(database, inspect_schema(connection))
         return
-    backup = rebuild_database(database)
+    backup = rebuild_database(database, allow_data_loss=args.allow_data_loss)
     print(f"database={database}")
     print("schema_upgrade=already-current" if backup is None else f"backup={backup}\nschema_upgrade=ok")
 

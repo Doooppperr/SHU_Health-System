@@ -1,4 +1,4 @@
-"""Safely replace the local schema-v10 demonstration snapshot.
+"""Safely replace the local current-schema acceptance snapshot.
 
 This command never runs as part of normal application startup.  It preserves
 all user rows and refuses to operate when non-demo personal or institution
@@ -44,7 +44,7 @@ DEFAULT_UPLOAD_DIR = BACKEND_DIR / "uploads"
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Replace local business demo records with the approved v8 scenario",
+        description="Replace local business demo records with the approved v12 scenario",
     )
     parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE)
     parser.add_argument("--upload-dir", type=Path, default=DEFAULT_UPLOAD_DIR)
@@ -87,7 +87,7 @@ def _backup(database: Path, upload_dir: Path) -> dict:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     suffix = hashlib.sha256(f"{database}-{stamp}".encode()).hexdigest()[:6]
     backup_database = database.with_name(
-        f"{database.stem}.before-demo-v10-{stamp}-{suffix}.db"
+        f"{database.stem}.before-demo-v12-{stamp}-{suffix}.db"
     )
     with closing(sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)) as source:
         with closing(sqlite3.connect(backup_database)) as target:
@@ -96,7 +96,7 @@ def _backup(database: Path, upload_dir: Path) -> dict:
         raise RuntimeError("database backup is empty")
 
     upload_archive = database.with_name(
-        f"uploads.before-demo-v10-{stamp}-{suffix}.zip"
+        f"uploads.before-demo-v12-{stamp}-{suffix}.zip"
     )
     unreadable_files = []
     with zipfile.ZipFile(upload_archive, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -110,7 +110,7 @@ def _backup(database: Path, upload_dir: Path) -> dict:
                         # unreadable synthetic file. Record it explicitly; the
                         # database backup still preserves its storage metadata.
                         unreadable_files.append(path.relative_to(upload_dir).as_posix())
-        archive.writestr("demo-v10-backup.json", json.dumps({
+        archive.writestr("demo-v12-backup.json", json.dumps({
             "database": str(database),
             "database_sha256": _sha256(backup_database),
             "upload_dir": str(upload_dir),
@@ -125,7 +125,7 @@ def _backup(database: Path, upload_dir: Path) -> dict:
 
 
 def _make_app(database: Path, upload_dir: Path) -> Flask:
-    app = Flask("healthdoc-demo-v10-reset")
+    app = Flask("healthdoc-demo-v12-reset")
     app.config.from_object(DevelopmentConfig)
     app.config.update(
         SQLALCHEMY_DATABASE_URI=f"sqlite:///{database.as_posix()}",
@@ -280,7 +280,7 @@ def main():
 
     upload_dir.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
-        prefix="healthdoc-demo-v10-stage-", dir=upload_dir.parent,
+        prefix="healthdoc-demo-v12-stage-", dir=upload_dir.parent,
     ) as staging_name:
         staging_dir = Path(staging_name)
         app = _make_app(database, staging_dir)
@@ -317,7 +317,18 @@ def main():
             _remove_replaced_files(upload_dir, old_keys, new_keys)
             db.session.remove()
             db.engine.dispose()
-    (BACKEND_DIR / "report_media_manifest.json").write_text(
+    if (
+        database == DEFAULT_DATABASE.resolve()
+        and upload_dir == DEFAULT_UPLOAD_DIR.resolve()
+    ):
+        media_manifest_path = BACKEND_DIR / "report_media_manifest.json"
+    else:
+        # Isolated migration/E2E rehearsals must not rewrite the tracked
+        # manifest paired with the repository's canonical snapshot.
+        media_manifest_path = database.with_name(
+            f"{database.stem}.report-media-manifest.json"
+        )
+    media_manifest_path.write_text(
         json.dumps(media_manifest, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
@@ -333,6 +344,7 @@ def main():
         "attachments": {
             "count": len(attachment_manifest),
             "manifest_sha256": manifest_digest,
+            "media_manifest": str(media_manifest_path),
         },
         "reset": "ok",
     }, ensure_ascii=False, indent=2, default=str))

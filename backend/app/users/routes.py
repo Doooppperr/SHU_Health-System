@@ -1,18 +1,48 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from flask import current_app, g, request
 
 from app.extensions import db
 from app.models import (
-    Comment, FriendRelation, InstitutionReport, ReportAsset,
-    NotificationOutbox, SelfMeasurement, User,
+    BookingParticipantToken, Comment, FriendRelation, InstitutionReport,
+    NotificationOutbox, ReportAsset, SelfMeasurement, User,
 )
+from app.services.delegation import revoke_user_delegations
 from app.services.permissions import ROLE_ADMIN, roles_required
 from app.services.record_files import delete_report_urls
 from app.services.storage import get_storage_backend
 from app.users import users_bp
 from app.services.account_email import effective_account_email
 from app.services.contact import is_valid_email
+from app.services.password_challenges import (
+    increment_user_security_epochs,
+    revoke_account_security_artifacts,
+)
+
+
+def _admin_user_summary(user):
+    item = user.to_dict(include_profile=False)
+    if user.role == "user":
+        item.update(
+            real_name=user.real_name,
+            birth_date=(
+                user.birth_date.isoformat() if user.birth_date else None
+            ),
+            gender=user.gender,
+            identity_completed=user.profile_completed,
+            identity_completed_at=(
+                user.identity_completed_at.isoformat()
+                if user.identity_completed_at
+                else None
+            ),
+            profile_completed=user.profile_completed,
+            profile_completed_at=(
+                user.identity_completed_at.isoformat()
+                if user.identity_completed_at
+                else None
+            ),
+        )
+    return item
 
 
 @users_bp.get("/me")
@@ -49,7 +79,7 @@ def list_users():
     total = query.count()
     rows = query.order_by(User.id).offset((page - 1) * size).limit(size).all()
     return {
-        "items": [item.to_dict(include_profile=False) for item in rows],
+        "items": [_admin_user_summary(item) for item in rows],
         "pagination": {
             "page": page,
             "page_size": size,
@@ -75,6 +105,22 @@ def get_user(user_id):
             "health_id": user.health_id,
             "birth_date": user.birth_date.isoformat() if user.birth_date else None,
             "gender": user.gender,
+            "identity_completed": user.profile_completed,
+            "identity_completed_at": (
+                user.identity_completed_at.isoformat()
+                if user.identity_completed_at
+                else None
+            ),
+            "profile_completed": user.profile_completed,
+            "profile_completed_at": (
+                user.identity_completed_at.isoformat()
+                if user.identity_completed_at
+                else None
+            ),
+            "allow_health_id_proxy_booking": (
+                user.allow_health_id_proxy_booking
+            ),
+            "health_id_booking_enabled": user.allow_health_id_proxy_booking,
             "password_notification": ({
                 "outbox_id": password_notice.id,
                 "status": password_notice.status,
@@ -99,7 +145,8 @@ def admin_change_password(user_id):
     if not email or not is_valid_email(email):
         return {"message": "该用户没有有效通知邮箱，请先完善邮箱"}, 409
     user.set_password(password)
-    user.token_version += 1
+    increment_user_security_epochs(user.id)
+    revoke_account_security_artifacts(user.id)
     key = f"admin-password:{user.id}:version:{user.token_version}"
     outbox = NotificationOutbox(
         event_type="admin_password_changed",
@@ -150,22 +197,64 @@ def update_user(user_id):
         return {"message": "未找到该用户"}, 404
     payload = request.get_json(silent=True) or {}
     if "is_active" in payload:
-        if user.id == g.current_user.id and payload["is_active"] is False:
+        desired_active = payload["is_active"]
+        if not isinstance(desired_active, bool):
+            return {"message": "is_active 必须为布尔值"}, 400
+        if user.id == g.current_user.id and desired_active is False:
             return {"message": "系统管理员不能停用自己的账号"}, 400
-        user.is_active = bool(payload["is_active"])
+        if desired_active != user.is_active:
+            now = datetime.now(timezone.utc)
+            user.is_active = desired_active
+            # Both deactivation and restoration are security boundaries.  A
+            # monotonic version bump ensures credentials that were invalid
+            # during deactivation can never become valid again on restore.
+            increment_user_security_epochs(
+                user.id,
+                booking_authorization_version=True,
+            )
+            revoke_account_security_artifacts(user.id, revoked_at=now)
+            revoke_user_delegations(
+                user.id,
+                "account active state changed by administrator",
+            )
+            BookingParticipantToken.query.filter(
+                db.or_(
+                    BookingParticipantToken.booker_user_id == user.id,
+                    BookingParticipantToken.subject_user_id == user.id,
+                ),
+                BookingParticipantToken.consumed_at.is_(None),
+                BookingParticipantToken.revoked_at.is_(None),
+            ).update({"revoked_at": now}, synchronize_session=False)
     if "email" in payload:
         if user.role == "institution_admin":
             return {
                 "message": "机构账号邮箱请由分院管理员在机构资料中统一修改",
                 "code": "INSTITUTION_EMAIL_MANAGED_BY_BRANCH",
             }, 409
-        user.email = (payload.get("email") or "").strip() or None
+        email = (payload.get("email") or "").strip() or None
+        if email != user.email:
+            changed_at = datetime.now(timezone.utc)
+            user.email = email
+            user.email_verified_at = None
+            increment_user_security_epochs(user.id)
+            revoke_account_security_artifacts(
+                user.id,
+                revoked_at=changed_at,
+            )
     if "phone" in payload:
         user.phone = (payload.get("phone") or "").strip() or None
+    if user.role == "user":
+        if {"real_name", "birth_date", "gender"}.intersection(payload):
+            return {
+                "message": "请使用管理员实名认证修正接口修改姓名、出生日期或性别",
+                "code": "BASIC_PROFILE_CORRECTION_REQUIRED",
+            }, 409
     if "password" in payload:
         return {"message": "请使用管理员密码修改接口"}, 400
     db.session.commit()
-    return {"item": user.to_dict(include_profile=False)}, 200
+    return {
+        "item": _admin_user_summary(user),
+    }, 200
 
 
 @users_bp.delete("/<int:user_id>")

@@ -11,12 +11,6 @@
     <el-card shadow="never" class="user-panel user-filter-panel">
       <div class="trend-filter-grid-platform">
         <label class="filter-field">
-          <span class="filter-field-label">查看谁的趋势</span>
-          <el-select v-model="filters.owner_id" @change="filters.source = 'all'">
-            <el-option v-for="owner in owners" :key="String(owner.value)" :label="owner.label" :value="owner.value" />
-          </el-select>
-        </label>
-        <label class="filter-field">
           <span class="filter-field-label">健康方向</span>
           <el-select v-model="filters.domain_id" placeholder="选择健康方向">
             <el-option v-for="domain in domains" :key="domain.id" :label="domain.name" :value="domain.id" />
@@ -55,6 +49,47 @@
     </el-card>
 
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
+
+    <el-card v-if="abnormalItems.length" shadow="never" class="abnormal-panel">
+      <template #header>
+        <div class="abnormal-panel__heading">
+          <div>
+            <span>异常提示</span>
+            <strong>发现 {{ latestAbnormalItems.length }} 项指标存在异常（共 {{ allAbnormalItems.length }} 条记录）</strong>
+          </div>
+          <div class="abnormal-panel__actions">
+            <el-button
+              v-if="allAbnormalItems.length > latestAbnormalItems.length"
+              link
+              type="primary"
+              @click="showAllAbnormal = !showAllAbnormal"
+            >
+              {{ showAllAbnormal ? "收起历史异常" : `展开全部 ${allAbnormalItems.length} 条异常` }}
+            </el-button>
+            <el-tag type="danger" effect="dark">请重点关注</el-tag>
+          </div>
+        </div>
+      </template>
+      <p class="abnormal-panel__notice">异常提示用于帮助定位需要关注的数据，不能替代医生诊断；如有不适请及时就医。</p>
+      <div class="abnormal-list">
+        <article v-for="item in abnormalItems" :key="item.key">
+          <div class="abnormal-list__identity">
+            <strong>{{ item.indicator }}</strong>
+            <span>{{ item.domain }} · {{ item.source }}</span>
+            <small>参考范围：{{ item.reference || "以报告或医嘱为准" }}</small>
+          </div>
+          <p>
+            <b>{{ item.value }} {{ item.unit }}</b>
+            <el-tag type="danger" effect="light">{{ item.direction }}</el-tag>
+            <el-tag v-if="item.latestRecovered" type="success" effect="light">历史异常，最新已恢复正常</el-tag>
+          </p>
+          <div class="abnormal-list__tail">
+            <time>{{ item.date }}</time>
+            <el-button v-if="item.detailId" link type="primary" @click="openAbnormalDetail(item)">查看详情</el-button>
+          </div>
+        </article>
+      </div>
+    </el-card>
 
     <el-card v-if="rawSeries.length" shadow="never" class="user-panel">
       <div class="indicator-picker-heading">
@@ -114,7 +149,7 @@
 
     <div v-if="!loading && !series.length" class="user-empty-state user-empty-state--page">
       <span class="user-empty-state__icon">趋</span>
-      <div><strong>这个健康方向还没有足够的数据</strong><p>可以调整成员、日期、健康方向或数据来源后重新查看。</p></div>
+      <div><strong>这个健康方向还没有足够的数据</strong><p>可以调整日期、健康方向或数据来源后重新查看。</p></div>
     </div>
   </div>
 </template>
@@ -122,22 +157,35 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { fetchFriends } from "../api/friends";
 import { streamAiTrendAnalysis } from "../api/ai";
 import { fetchHealthDomains, fetchHealthTrends } from "../api/health";
 import HealthTrendChart from "../components/HealthTrendChart.vue";
-import { useAuthStore } from "../stores/auth";
-import { buildHealthOwnerOptions, ownerRequestParams, SELF_OWNER_VALUE, withOwnerRequestParams } from "../utils/healthOwners";
+import { collectAbnormalTrendItems } from "../utils/v12";
 
 const route = useRoute();
 const router = useRouter();
-const auth = useAuthStore();
 const domains = ref([]);
-const owners = ref([]);
 const sourceOptions = ref([{ value: "all", label: "全部来源" }, { value: "self", label: "个人日常测量" }, { value: "institution", label: "全部机构体检" }]);
 const rawSeries = ref([]);
+const qualitativeSeries = ref([]);
 const selectedIndicatorIds = ref([]);
 const series = computed(() => rawSeries.value.filter((entry) => selectedIndicatorIds.value.includes(entry.indicator.id)));
+const currentDomain = computed(() => domains.value.find((domain) => domain.id === filters.domain_id) || null);
+const showAllAbnormal = ref(false);
+const allAbnormalItems = computed(() => collectAbnormalTrendItems(
+  [...rawSeries.value, ...qualitativeSeries.value],
+  currentDomain.value,
+));
+const latestAbnormalItems = computed(() => {
+  const latestByIndicator = new Map();
+  for (const item of allAbnormalItems.value) {
+    if (!latestByIndicator.has(item.indicatorId)) latestByIndicator.set(item.indicatorId, item);
+  }
+  return [...latestByIndicator.values()];
+});
+const abnormalItems = computed(() => (
+  showAllAbnormal.value ? allAbnormalItems.value : latestAbnormalItems.value
+));
 const loading = ref(false);
 const error = ref("");
 const dateRange = ref([]);
@@ -151,7 +199,6 @@ const analysisCache = new Map();
 let analysisController;
 let analysisTimer;
 const filters = reactive({
-  owner_id: route.query.owner_id ? String(route.query.owner_id) : SELF_OWNER_VALUE,
   domain_id: route.query.domain_id ? Number(route.query.domain_id) : null,
   source: typeof route.query.source === "string" ? route.query.source : "all",
 });
@@ -203,6 +250,11 @@ function cleanParams(value) {
   return result;
 }
 
+function openAbnormalDetail(item) {
+  if (!item.detailId) return;
+  router.push({ name: "health-data-detail", params: { id: item.detailId } });
+}
+
 function localDate(value = new Date()) {
   return [
     value.getFullYear(),
@@ -234,13 +286,15 @@ async function load() {
   loading.value = true;
   error.value = "";
   try {
-    const params = cleanParams(withOwnerRequestParams({
+    const params = cleanParams({
       source_type: filters.source.startsWith("institution") ? "institution" : filters.source,
       institution_id: filters.source.startsWith("institution:") ? Number(filters.source.split(":")[1]) : undefined,
       ...dateFilterParams(),
-    }, filters.owner_id));
+    });
     const { data } = await fetchHealthTrends(filters.domain_id, params);
     rawSeries.value = data.series_by_indicator || [];
+    qualitativeSeries.value = data.qualitative_series_by_indicator || [];
+    showAllAbnormal.value = false;
     const availableIds = rawSeries.value.map((entry) => entry.indicator.id);
     const retained = selectedIndicatorIds.value.filter((id) => availableIds.includes(id));
     selectedIndicatorIds.value = retained.length ? retained : availableIds;
@@ -259,11 +313,11 @@ async function load() {
 }
 
 function analysisPayload() {
-  return cleanParams(withOwnerRequestParams({ domain_id: filters.domain_id,
+  return cleanParams({ domain_id: filters.domain_id,
     source_type: filters.source.startsWith("institution") ? "institution" : filters.source,
     institution_id: filters.source.startsWith("institution:") ? Number(filters.source.split(":")[1]) : undefined,
     ...dateFilterParams(),
-    indicator_ids: [...selectedIndicatorIds.value] }, filters.owner_id));
+    indicator_ids: [...selectedIndicatorIds.value] });
 }
 
 function selectAllIndicators(){selectedIndicatorIds.value=rawSeries.value.map((entry)=>entry.indicator.id);indicatorSelectionChanged();}
@@ -299,7 +353,6 @@ async function runTrendAnalysis(force = false) {
 async function apply() {
   const query = cleanParams({
     ...filters,
-    owner_id: filters.owner_id === SELF_OWNER_VALUE ? undefined : filters.owner_id,
     date_preset: datePreset.value === "all" ? undefined : datePreset.value,
     ...dateFilterParams(),
   });
@@ -317,10 +370,9 @@ async function applyCustomDateRange() {
 }
 
 onMounted(async () => {
-  const [domainResponse, friendResponse] = await Promise.all([fetchHealthDomains(), fetchFriends()]);
+  const domainResponse = await fetchHealthDomains();
   domains.value = domainResponse.data.items || [];
   filters.domain_id ||= domains.value[0]?.id;
-  owners.value = buildHealthOwnerOptions(friendResponse.data, auth.user);
   await load();
 });
 onBeforeUnmount(() => { clearTimeout(analysisTimer); analysisController?.abort(); });
@@ -330,4 +382,15 @@ onBeforeUnmount(() => { clearTimeout(analysisTimer); analysisController?.abort()
 .indicator-picker-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px}
 .indicator-picker-heading>div:first-child{display:grid;gap:4px}
 .indicator-picker-heading small{color:var(--color-text-muted)}
+.abnormal-panel{margin:18px 0;border-color:#f5b8b8}
+.abnormal-panel__heading,.abnormal-panel__actions{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.abnormal-panel__heading>div:first-child{display:grid;gap:4px}
+.abnormal-panel__heading span,.abnormal-panel__notice{color:var(--el-text-color-secondary)}
+.abnormal-list{display:grid;gap:10px;max-height:360px;overflow:auto}
+.abnormal-list article{display:grid;grid-template-columns:minmax(180px,1fr) auto auto;align-items:center;gap:16px;padding:12px 14px;border-radius:12px;background:#fff3f3}
+.abnormal-list__identity,.abnormal-list__tail{display:grid;gap:3px}
+.abnormal-list__identity span,.abnormal-list__identity small,.abnormal-list time{color:var(--el-text-color-secondary);font-size:13px}
+.abnormal-list__tail{justify-items:end}
+.abnormal-list p{display:flex;align-items:center;gap:8px;margin:0}
+@media(max-width:680px){.abnormal-list article{grid-template-columns:1fr}.abnormal-panel__heading{align-items:flex-start}.abnormal-panel__actions{align-items:flex-end;flex-direction:column}.abnormal-list__tail{justify-items:start}}
 </style>

@@ -216,6 +216,12 @@ class OAuthClient(db.Model):
     redirect_uris = db.Column(db.JSON, nullable=False)
     scopes = db.Column(db.JSON, nullable=False)
     status = db.Column(db.String(20), nullable=False, default="pending", server_default="pending", index=True)
+    approval_version = db.Column(
+        db.Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
     token_endpoint_auth_method = db.Column(db.String(30), nullable=False, default="none", server_default="none")
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utc_now)
     approved_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -232,6 +238,18 @@ class OAuthAuthorizationCode(db.Model):
     redirect_uri = db.Column(db.String(500), nullable=False)
     scope = db.Column(db.String(500), nullable=False)
     code_challenge = db.Column(db.String(128), nullable=False)
+    user_token_version_snapshot = db.Column(
+        db.Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    client_approval_version_snapshot = db.Column(
+        db.Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
     expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
     consumed_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utc_now)
@@ -246,6 +264,18 @@ class OAuthAccessToken(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     scope = db.Column(db.String(500), nullable=False)
     audience = db.Column(db.String(255), nullable=False)
+    user_token_version_snapshot = db.Column(
+        db.Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    client_approval_version_snapshot = db.Column(
+        db.Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
     expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
     revoked_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utc_now)
@@ -261,6 +291,18 @@ class OAuthRefreshToken(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     scope = db.Column(db.String(500), nullable=False)
     audience = db.Column(db.String(255), nullable=False)
+    user_token_version_snapshot = db.Column(
+        db.Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    client_approval_version_snapshot = db.Column(
+        db.Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
     expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
     used_at = db.Column(db.DateTime(timezone=True), nullable=True)
     revoked_at = db.Column(db.DateTime(timezone=True), nullable=True)

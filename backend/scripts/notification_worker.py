@@ -1,4 +1,12 @@
-"""Deliver notification_outbox rows with retry-safe idempotent state transitions."""
+"""Deliver notification Outbox rows with bounded, at-least-once retries.
+
+SMTP cannot atomically commit its provider delivery together with our database.
+The worker therefore finishes an in-flight row on SIGTERM and leases claims so
+an abruptly killed process cannot leave a row in ``sending`` forever. A crash
+after the provider accepted a message but before the database commit can still
+produce a retry; that explicit at-least-once trade-off is preferable to silent
+permanent mail loss.
+"""
 
 from __future__ import annotations
 
@@ -6,11 +14,13 @@ import argparse
 from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
+import signal
 import smtplib
 import sys
+import threading
 import time
 
-from sqlalchemy import update
+from sqlalchemy import text, update
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_DIR))
@@ -18,6 +28,15 @@ sys.path.insert(0, str(BACKEND_DIR))
 from app import create_app  # noqa: E402
 from app.extensions import db  # noqa: E402
 from app.models import NotificationDelivery, NotificationOutbox  # noqa: E402
+from app.services.account_credentials import decrypt_account_credentials  # noqa: E402
+from app.services.platform_contact import PLATFORM_CONTACT  # noqa: E402
+
+
+DEFAULT_CLAIM_LEASE_SECONDS = 300
+
+
+def _stop_is_requested(stop_requested) -> bool:
+    return bool(stop_requested is not None and stop_requested.is_set())
 
 
 def _display_date(value):
@@ -37,7 +56,25 @@ def _email_content(row):
     appointment_date = _display_date(payload.get("appointment_date"))
     party_size = max(1, int(payload.get("party_size") or 1))
 
-    if row.event_type == "password_verification_code":
+    if row.event_type in {"institution_account_created", "institution_account_reset"}:
+        credentials = decrypt_account_credentials(
+            payload.get("encrypted_credentials"),
+            purpose=payload.get("credential_purpose") or "",
+        )
+        subject = (
+            "HealthDoc 机构账号已创建"
+            if row.event_type == "institution_account_created"
+            else "HealthDoc 机构账号凭据已重置"
+        )
+        body = (
+            f"{payload.get('account_label') or '体检分院'}，您好，"
+            f"您的HealthDoc机构账号用户名为{credentials.get('username') or '未设置'}，"
+            f"临时密码为{credentials.get('temporary_password') or '未设置'}。"
+            f"登录地址为{payload.get('login_url') or '/login'}。"
+            "请使用该账号登录机构工作台，并在首次登录后尽快修改密码。"
+            "本邮件包含敏感账号信息，请妥善保管且不要转发。"
+        )
+    elif row.event_type == "password_verification_code":
         purpose = "找回密码" if payload.get("purpose") == "reset" else "修改密码"
         subject = f"HealthDoc {purpose}验证码"
         body = (
@@ -79,7 +116,7 @@ def _email_content(row):
         )
         solution = branch_text or (
             f"请联系原机构{payload.get('institution_phone') or ''}"
-            f"或平台客服{payload.get('support_phone') or '021-666666'}重新安排"
+            f"或平台客服{payload.get('support_phone') or PLATFORM_CONTACT['phone']}重新安排"
         )
         body = (
             f"{payload.get('recipient_name') or '用户'}，您好，非常抱歉，"
@@ -174,8 +211,30 @@ def _send(app, row):
     return str(response or f"smtp-{row.id}")
 
 
-def run_batch(app, limit=50):
+def _recover_stale_claims(now):
+    """Return expired ``sending`` leases to the retry queue atomically."""
+    recovered = db.session.execute(
+        update(NotificationOutbox)
+        .where(
+            NotificationOutbox.status == "sending",
+            NotificationOutbox.next_attempt_at <= now,
+        )
+        .values(status="failed", next_attempt_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    db.session.commit()
+    return int(recovered.rowcount or 0)
+
+
+def run_batch(
+    app,
+    limit=50,
+    *,
+    stop_requested=None,
+    lease_seconds=DEFAULT_CLAIM_LEASE_SECONDS,
+):
     now = datetime.now(timezone.utc)
+    _recover_stale_claims(now)
     row_ids = [
         row_id
         for (row_id,) in db.session.query(NotificationOutbox.id)
@@ -190,18 +249,25 @@ def run_batch(app, limit=50):
     delivered = 0
     attempted = 0
     for row_id in row_ids:
+        if _stop_is_requested(stop_requested):
+            break
+        claim_now = datetime.now(timezone.utc)
         # Claim with a conditional UPDATE so accidentally starting two workers
-        # cannot send the same Outbox row twice.
+        # cannot send the same Outbox row concurrently. ``next_attempt_at`` is
+        # the claim lease deadline while the row is in ``sending``.
         claim = db.session.execute(
             update(NotificationOutbox)
             .where(
                 NotificationOutbox.id == row_id,
                 NotificationOutbox.status.in_(("pending", "failed")),
-                NotificationOutbox.next_attempt_at <= now,
+                NotificationOutbox.next_attempt_at <= claim_now,
             )
             .values(
                 status="sending",
                 attempts=NotificationOutbox.attempts + 1,
+                next_attempt_at=claim_now + timedelta(
+                    seconds=max(30, int(lease_seconds))
+                ),
             )
             .execution_options(synchronize_session=False)
         )
@@ -213,8 +279,14 @@ def run_batch(app, limit=50):
         try:
             provider_id = _send(app, row)
             row.status = "sent"; row.sent_at = datetime.now(timezone.utc)
-            if row.event_type in {"password_verification_code", "admin_password_changed"}:
+            if row.event_type in {
+                "password_verification_code",
+                "admin_password_changed",
+                "institution_account_created",
+                "institution_account_reset",
+            }:
                 row.payload = {"challenge_id": (row.payload or {}).get("challenge_id"), "sensitive_content_cleared": True}
+                row.sensitive_payload_cleared_at = datetime.now(timezone.utc)
             db.session.add(NotificationDelivery(outbox_id=row.id, success=True, provider_message_id=provider_id))
             delivered += 1
         except Exception as exc:
@@ -225,13 +297,27 @@ def run_batch(app, limit=50):
     return attempted, delivered
 
 
-def run_watch(app, limit=50, interval_seconds=5, *, max_cycles=None, sleep=time.sleep):
+def run_watch(
+    app,
+    limit=50,
+    interval_seconds=5,
+    *,
+    max_cycles=None,
+    sleep=time.sleep,
+    stop_requested=None,
+):
     """Continuously drain the Outbox; ``max_cycles`` exists for deterministic tests."""
     cycles = 0
     totals = [0, 0]
     while max_cycles is None or cycles < max_cycles:
+        if _stop_is_requested(stop_requested):
+            break
         with app.app_context():
-            attempted, delivered = run_batch(app, limit)
+            attempted, delivered = run_batch(
+                app,
+                limit,
+                stop_requested=stop_requested,
+            )
         totals[0] += attempted
         totals[1] += delivered
         if attempted:
@@ -240,28 +326,98 @@ def run_watch(app, limit=50, interval_seconds=5, *, max_cycles=None, sleep=time.
                 flush=True,
             )
         cycles += 1
-        if max_cycles is not None and cycles >= max_cycles:
+        if (
+            _stop_is_requested(stop_requested)
+            or (max_cycles is not None and cycles >= max_cycles)
+        ):
             break
-        sleep(interval_seconds)
+        if stop_requested is not None and sleep is time.sleep:
+            stop_requested.wait(interval_seconds)
+        else:
+            sleep(interval_seconds)
     return tuple(totals)
+
+
+def wait_for_start_gate(path, *, sleep=time.sleep, stop_requested=None):
+    """Keep a newly installed worker side-effect free until cutover commits."""
+    gate = Path(path)
+    announced = False
+    while not gate.is_file():
+        if _stop_is_requested(stop_requested):
+            return False
+        if not announced:
+            print(f"notification_worker=waiting gate={gate}", flush=True)
+            announced = True
+        if stop_requested is not None and sleep is time.sleep:
+            stop_requested.wait(1)
+        else:
+            sleep(1)
+    return True
+
+
+def check_config(app):
+    """Validate runtime configuration and SQL without claiming Outbox rows."""
+    with app.app_context():
+        db.session.execute(text("SELECT 1"))
+        db.session.rollback()
+    required = ["SMTP_FROM"]
+    if not app.config.get("NOTIFICATION_EMAIL_DRY_RUN"):
+        required.append("SMTP_HOST")
+    missing = [key for key in required if not app.config.get(key)]
+    if missing:
+        raise RuntimeError(
+            f"notification configuration is missing: {', '.join(missing)}"
+        )
+    print("notification_worker=config-ok sql=ok", flush=True)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--watch", action="store_true")
+    parser.add_argument("--check-config", action="store_true")
+    parser.add_argument("--start-gate-file")
     parser.add_argument("--interval-seconds", type=float, default=5)
     parser.add_argument("--config", choices=("development", "production"), default="development")
     args = parser.parse_args()
     app = create_app(args.config)
+    if args.check_config:
+        check_config(app)
+        return
     limit = max(1, min(args.limit, 500))
     if args.watch:
+        stop_requested = threading.Event()
+
+        def request_stop(signum, _frame):
+            if not stop_requested.is_set():
+                print(
+                    f"notification_worker=stopping signal={signum} "
+                    "after_current_delivery=true",
+                    flush=True,
+                )
+            stop_requested.set()
+
+        signal.signal(signal.SIGTERM, request_stop)
+        signal.signal(signal.SIGINT, request_stop)
+        if args.start_gate_file:
+            if not wait_for_start_gate(
+                args.start_gate_file,
+                stop_requested=stop_requested,
+            ):
+                print("notification_worker=stopped", flush=True)
+                return
         interval = max(1.0, min(args.interval_seconds, 300.0))
         print(f"notification_worker=watching interval_seconds={interval:g}", flush=True)
         try:
-            run_watch(app, limit, interval)
+            run_watch(
+                app,
+                limit,
+                interval,
+                stop_requested=stop_requested,
+            )
         except KeyboardInterrupt:
-            print("notification_worker=stopped", flush=True)
+            stop_requested.set()
+        print("notification_worker=stopped", flush=True)
         return
     with app.app_context():
         attempted, delivered = run_batch(app, limit)

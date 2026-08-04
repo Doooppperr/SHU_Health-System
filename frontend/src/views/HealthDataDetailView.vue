@@ -20,6 +20,26 @@
 
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
 
+    <section v-if="item?.source_type === 'institution' && item.review_trace" class="report-review-trace" aria-label="报告复核信息">
+      <div>
+        <span>上传医生</span>
+        <strong>{{ item.review_trace.upload_doctor_name || "历史报告未记录" }}</strong>
+        <small>{{ formatDateTime(item.review_trace.uploaded_at) }}</small>
+      </div>
+      <i aria-hidden="true">→</i>
+      <div>
+        <span>复核医生</span>
+        <strong>{{ item.review_trace.review_doctor_name || "历史报告未记录" }}</strong>
+        <small>{{ formatDateTime(item.review_trace.reviewed_at) }}</small>
+      </div>
+      <i aria-hidden="true">→</i>
+      <div>
+        <span>报告发布</span>
+        <strong>已锁档展示</strong>
+        <small>{{ formatDateTime(item.review_trace.published_at) }}</small>
+      </div>
+    </section>
+
     <section v-if="domainOptions.length > 1" class="health-domain-filter" aria-label="筛选健康方向">
       <div>
         <span>筛选健康方向</span>
@@ -150,20 +170,16 @@ const visibleSections = computed(() => {
 const allIndicators = computed(() => visibleSections.value.flatMap((section) => section.indicators || []));
 const indicatorCount = computed(() => allIndicators.value.length);
 const abnormalCount = computed(() => allIndicators.value.filter((indicator) => indicator.is_abnormal).length);
-const canEditSelf = computed(() => item.value?.source_type === "self" && !route.query.owner_id);
+const canEditSelf = computed(() => item.value?.source_type === "self");
 const detailTitle = computed(() => item.value?.source_type === "self"
   ? "当天的日常测量"
   : item.value?.package?.name || "体检健康数据");
-
-function ownerParams() {
-  return route.query.owner_id ? { owner_id: route.query.owner_id } : {};
-}
 
 async function load() {
   loading.value = true;
   error.value = "";
   try {
-    const nextItem = (await fetchHealthDataDetail(route.params.id, ownerParams())).data.item;
+    const nextItem = (await fetchHealthDataDetail(route.params.id)).data.item;
     const availableIds = (nextItem.sections || []).map((section) => section.domain.id);
     const retainedIds = selectedDomainIds.value.filter((id) => availableIds.includes(id));
     item.value = nextItem;
@@ -207,7 +223,7 @@ async function reloadAfterMeasurement() {
 
 async function openAsset(asset) {
   try {
-    const { data } = await fetchHealthAssetContent(route.params.id, asset.id, ownerParams());
+    const { data } = await fetchHealthAssetContent(route.params.id, asset.id);
     closeAssetPreview();
     previewAsset.value = asset;
     previewUrl.value = URL.createObjectURL(data);
@@ -229,6 +245,44 @@ onBeforeUnmount(closeAssetPreview);
 </script>
 
 <style scoped>
+.report-review-trace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 18px;
+  padding: 16px 18px;
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-surface);
+}
+
+.report-review-trace > div {
+  display: grid;
+  gap: 4px;
+}
+
+.report-review-trace span,
+.report-review-trace small {
+  color: var(--color-text-secondary);
+}
+
+.report-review-trace i {
+  color: var(--color-primary);
+  font-style: normal;
+}
+
+@media (max-width: 720px) {
+  .report-review-trace {
+    grid-template-columns: 1fr;
+  }
+
+  .report-review-trace i {
+    transform: rotate(90deg);
+    justify-self: start;
+  }
+}
+
 .health-domain-filter {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) minmax(300px, 1.5fr) auto;
