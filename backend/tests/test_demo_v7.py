@@ -16,7 +16,7 @@ from app.demo_v7 import (
 )
 from app.extensions import db
 from app.models import (
-    Appointment, BookingGroup, HealthDomain, IndicatorDict, Institution, InstitutionReport, Organization,
+    Appointment, AppointmentComplaint, BookingGroup, HealthDomain, IndicatorDict, Institution, InstitutionReport, Organization,
     NotificationOutbox, Package, PackageVersion, ReportAccessLog, ReportAsset, ReportTextResult,
     User, WaitlistSubscription,
 )
@@ -188,6 +188,18 @@ def test_full_scale_story_reports_exactly_match_their_packages(app, tmp_path):
             row.value == "未见明显异常" and row.result_status == "normal"
             for row in hearing_rows
         )
+        latest_report = max(reports, key=lambda item: item.exam_date)
+        latest_abnormal = {
+            row.indicator_dict.code: (row.value, row.result_status)
+            for row in latest_report.indicators
+            if row.indicator_dict.code in {"SBP", "FBG", "LDL"}
+        }
+        assert latest_report.exam_date >= date.today().replace(day=1)
+        assert latest_abnormal == {
+            "SBP": ("146", "high"),
+            "FBG": ("6.42", "high"),
+            "LDL": ("3.68", "high"),
+        }
         u_pro_report = next(row.report for row in positive_rows if row.indicator_dict.code == "U_PRO")
         fobt_report = next(row.report for row in positive_rows if row.indicator_dict.code == "FOBT")
         assert any("清洁晨尿复查" in row.body for row in u_pro_report.text_results)
@@ -207,6 +219,30 @@ def test_v8_demo_rebuild_preserves_every_account_identity_field(app):
         assert result["package_versions"] == 27
         assert result["report_assets"] >= 3
         assert all(len(values) == len(ACCOUNT_IDENTITY_FIELDS) for values in after.values())
+
+
+def test_demo_complaints_use_realistic_user_facing_copy(app):
+    with app.app_context():
+        rows = AppointmentComplaint.query.order_by(AppointmentComplaint.id).all()
+        assert len(rows) == 5
+        assert {row.category for row in rows} == {
+            "service", "appointment", "report", "privacy"
+        }
+        visible_copy = " ".join(
+            filter(None, (
+                part
+                for row in rows
+                for part in (
+                    row.content,
+                    row.institution_reply,
+                    row.escalation_reason,
+                    row.admin_reply,
+                )
+            ))
+        )
+        assert "演示" not in visible_copy
+        assert "test1" not in visible_copy
+        assert all(len(row.content) >= 35 for row in rows)
 
 
 def test_v7_demo_reset_refuses_unknown_personal_accounts(app):

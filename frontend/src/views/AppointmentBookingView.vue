@@ -323,7 +323,7 @@
           <header>
             <div>
               <strong>{{ item.institution?.name || item.institution_name || "体检机构" }}</strong>
-              <small>{{ item.created_at || item.submitted_at }}</small>
+              <small>{{ formatDateTime(item.created_at || item.submitted_at) }}</small>
             </div>
             <el-tag :type="complaintMeta(item.status).type">{{ complaintMeta(item.status).label }}</el-tag>
           </header>

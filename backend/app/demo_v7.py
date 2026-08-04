@@ -1618,6 +1618,12 @@ TEST1_STORY_PLAN = (
     (2, 1, "都市年度综合体检", "comprehensive_exam"),
 )
 
+TEST1_CURRENT_ABNORMAL_VALUES = {
+    "SBP": "146",
+    "FBG": "6.42",
+    "LDL": "3.68",
+}
+
 
 def _expand_v10_test1(users, institutions, packages, indicators, domains, today, now):
     """Build test1's coherent four-year package-aligned adult health story."""
@@ -1687,9 +1693,13 @@ def _expand_v10_test1(users, institutions, packages, indicators, domains, today,
         ]
         story_phase = (sequence * 15 + final_sequence // 2) // final_sequence
         for definition in definitions:
-            value, explicit_status = _demo_indicator_value(
-                definition, sequence, value_sequence=story_phase,
-            )
+            if sequence == final_sequence and definition.code in TEST1_CURRENT_ABNORMAL_VALUES:
+                value = TEST1_CURRENT_ABNORMAL_VALUES[definition.code]
+                explicit_status = None
+            else:
+                value, explicit_status = _demo_indicator_value(
+                    definition, sequence, value_sequence=story_phase,
+                )
             status = explicit_status or evaluate_result_status(
                 definition,
                 value,
@@ -2034,6 +2044,36 @@ def _seed_v12_governance_workflows(users, now):
         ("test4", "platform_processing"),
         ("test5", "resolved"),
     )
+    complaint_stories = {
+        "test1": {
+            "category": "service",
+            "content": "到检后在前台等了近四十分钟才完成登记，期间几次询问都没有得到明确的排队说明，希望机构核对当天接待安排并改进引导。",
+        },
+        "test2": {
+            "category": "appointment",
+            "content": "预约短信写的是上午九点到检，但现场说系统里登记的是九点半，导致后续项目整体延后。请核实预约时间同步是否有误。",
+            "institution_reply": "我们已核对当天预约日志，确认分院排班调整后未及时同步到提醒短信。已向您致歉，并为后续到检预留优先登记时段，请确认处理结果。",
+        },
+        "test3": {
+            "category": "report",
+            "content": "报告已经发布，但血脂异常项只有数值，没有说明复查建议。我电话咨询两次都没有联系到报告解读人员，希望补充说明。",
+            "institution_reply": "报告解读医生已重新查看结果，并补充了血脂复查建议。客服曾在午休时段漏接来电，我们已安排专人回访。",
+            "escalation_reason": "机构补充了文字说明，但报告页面仍未显示复查建议，回访电话也没有按约定时间打来，请平台协助核实。",
+        },
+        "test4": {
+            "category": "privacy",
+            "content": "候检区工作人员当众念出了我的姓名和检查项目，周围还有其他受检者。我担心个人信息暴露，希望机构说明现场叫号规范。",
+            "institution_reply": "经核查，当班人员未按要求使用编号叫号。分院已暂停其前台排班并重新培训，同时将候检区改为编号与姓氏组合叫号。",
+            "escalation_reason": "我认可机构已经调整叫号方式，但希望平台确认整改是否已落实，并明确后续如何避免再次发生。",
+            "admin_reply": "平台已调取当日服务记录并核验分院整改材料。新的编号叫号流程已启用，我们将继续抽查执行情况，并要求机构完成书面回访。",
+        },
+        "test5": {
+            "category": "service",
+            "content": "肺功能检查前没有人说明需要先停下来平稳呼吸，我第一次操作失败后才重新讲解，整个过程比较仓促，希望加强检查前指导。",
+            "institution_reply": "分院已由检查组负责人回访并致歉，确认首次操作前的说明不完整。现已增加检查前口头确认步骤，并为相关人员完成复训。",
+            "resolved_note": "机构回访后解释清楚了操作要求，也告知了整改措施，我确认本次问题已经解决。",
+        },
+    }
     admin = users["demo_admin"]
     for offset, (username, status) in enumerate(states, start=1):
         user = users[username]
@@ -2043,14 +2083,15 @@ def _seed_v12_governance_workflows(users, now):
         ).order_by(Appointment.appointment_date.desc(), Appointment.id.desc()).first()
         if appointment is None:
             continue
+        story = complaint_stories[username]
         created_at = now - timedelta(days=10 - offset)
         item = AppointmentComplaint(
             appointment_id=appointment.id,
             institution_id=appointment.institution_id,
             complainant_user_id=user.id,
             complainant_username_snapshot=user.username,
-            category="service",
-            content=f"第六轮演示投诉：{username} 反馈接待和报告说明需要进一步沟通。",
+            category=story["category"],
+            content=story["content"],
             status=status,
             created_at=created_at,
             updated_at=created_at,
@@ -2074,7 +2115,7 @@ def _seed_v12_governance_workflows(users, now):
         ))
         if status in {"user_confirmation", "platform_pending", "platform_processing"}:
             reply_at = created_at + timedelta(hours=6)
-            item.institution_reply = "机构已核对记录并提出改进方案，请用户确认。"
+            item.institution_reply = story["institution_reply"]
             item.institution_replied_by_user_id = appointment.institution.administrator.id
             item.institution_replied_at = reply_at
             db.session.add(ComplaintEvent(
@@ -2094,7 +2135,7 @@ def _seed_v12_governance_workflows(users, now):
             ))
         if status in {"platform_pending", "platform_processing"}:
             escalated_at = created_at + timedelta(days=1)
-            item.escalation_reason = "对机构说明仍有疑问，申请平台进一步核验。"
+            item.escalation_reason = story["escalation_reason"]
             item.escalated_at = escalated_at
             db.session.add(ComplaintEvent(
                 complaint_id=item.id,
@@ -2124,7 +2165,7 @@ def _seed_v12_governance_workflows(users, now):
                 created_at=handled_at,
             ))
             admin_reply_at = handled_at + timedelta(hours=4)
-            item.admin_reply = "平台已核验预约和沟通记录，正在协调机构完成整改。"
+            item.admin_reply = story["admin_reply"]
             db.session.add(ComplaintEvent(
                 complaint_id=item.id,
                 event_type="admin_replied",
@@ -2141,7 +2182,7 @@ def _seed_v12_governance_workflows(users, now):
                 created_at=admin_reply_at,
             ))
         if status == "resolved":
-            item.institution_reply = "机构已完成回访与改进，用户确认问题解决。"
+            item.institution_reply = story["institution_reply"]
             item.institution_replied_by_user_id = appointment.institution.administrator.id
             item.institution_replied_at = created_at + timedelta(hours=4)
             item.resolved_at = created_at + timedelta(days=1)
@@ -2165,7 +2206,7 @@ def _seed_v12_governance_workflows(users, now):
                 event_type="user_confirmed",
                 actor_user_id=user.id,
                 actor_role="user",
-                content="用户确认投诉已解决。",
+                content=story["resolved_note"],
                 created_at=item.resolved_at,
             ))
 
