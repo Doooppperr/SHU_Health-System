@@ -393,4 +393,4 @@ git diff --check
 
 schema v11 新增 `/api/agent`、严格 Pydantic 工具和逐次确认；schema v12 继续沿用，但健康读取只允许当前有效账号，预约参与人类型为 `self/linked_account/health_code_token`。原始健康身份码由第一方安全输入在模型调用前换成短时令牌；真实 bearer 保存在独立加密 slot 映射中，模型消息、模型历史和出站请求只包含非秘密 slot，工具执行前才做字段级解析，工具审计不记录参数值。
 
-公共知识可通过 `RAG_HYBRID_ENABLED` 切换为 Dense + 中文词法 BM25 + RRF。现有 4GB 服务器不常驻通用小 LLM，`AGENT_ROUTER_ENABLED` 仅保留接口。完整协议、OAuth/MCP、OTel 和评测门禁见《第六轮Agent升级实施说明》。
+公共知识可通过 `RAG_HYBRID_ENABLED` 切换为 Dense + 中文词法 BM25 + RRF。现有 4GB 服务器不常驻通用小 LLM，`AGENT_ROUTER_ENABLED` 仅保留接口。OAuth/MCP、OTel 和评测门禁均在本文及《测试报告》《服务器部署与同步》中按当前实现维护。
