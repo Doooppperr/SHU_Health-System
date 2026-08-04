@@ -112,6 +112,14 @@ afterEach(() => {
 });
 
 describe("当前有效账号的健康页面", () => {
+  it("本月没有异常时显示近期健康状况良好", async () => {
+    const wrapper = mountView(TrendView, { domain_id: "1" });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("近期健康状况良好");
+    expect(wrapper.text()).not.toContain("不能替代医生诊断");
+  });
+
   it("体检数据始终读取当前有效账号且不再显示成员选择器", async () => {
     const wrapper = mountView(HealthDataView, { owner_id: "12" });
     await flushPromises();
@@ -189,7 +197,7 @@ describe("当前有效账号的健康页面", () => {
     wrapper.vm.dateRange = ["2022-01-01", "2026-07-31"];
     await wrapper.vm.applyCustomDateRange();
     await flushPromises();
-    expect(mocks.fetchHealthTrends).toHaveBeenLastCalledWith(1, expect.objectContaining({
+    expect(mocks.fetchHealthTrends).toHaveBeenCalledWith(1, expect.objectContaining({
       start_date: "2022-01-01",
       end_date: "2026-07-31",
     }));
@@ -260,15 +268,16 @@ describe("当前有效账号的健康页面", () => {
     expect(note.find("a").exists()).toBe(false);
   });
 
-  it("异常提示默认每指标只显示最近异常并可展开历史与进入详情", async () => {
+  it("异常提示只显示本月异常并可进入详情", async () => {
+    const month = new Date().toISOString().slice(0, 7);
     mocks.fetchHealthTrends.mockResolvedValue({
       data: {
         series_by_indicator: [{
           indicator: { id: 7, name: "收缩压", unit: "mmHg" },
           points: [
-            { date: "2026-07-20", value: 150, result_status: "high", health_data_id: "hd-i-20", source: { type: "institution", name: "澄心健康" } },
-            { date: "2026-07-28", value: 146, result_status: "high", health_data_id: "hd-i-28", source: { type: "institution", name: "澄心健康" } },
-            { date: "2026-07-29", value: 132, result_status: "normal", is_abnormal: false, health_data_id: "hd-s-1-2026-07-29", source: { type: "self" } },
+            { date: `${month}-01`, value: 150, result_status: "high", health_data_id: "hd-i-20", source: { type: "institution", name: "澄心健康" } },
+            { date: `${month}-02`, value: 146, result_status: "high", health_data_id: "hd-i-28", source: { type: "institution", name: "澄心健康" } },
+            { date: `${month}-03`, value: 132, result_status: "normal", is_abnormal: false, health_data_id: "hd-s-1", source: { type: "self" } },
           ],
           summary: { latest: 132, change: -14 },
           reference: { low: 90, high: 139 },
@@ -279,14 +288,12 @@ describe("当前有效账号的健康页面", () => {
     const wrapper = mountView(TrendView, { domain_id: "1" });
     await flushPromises();
 
-    expect(wrapper.text()).toContain("发现 1 项指标存在异常（共 2 条记录）");
+    expect(wrapper.text()).toContain("本月发现 1 项指标存在异常（共 2 条记录）");
     expect(wrapper.text()).toContain("146 mmHg");
-    expect(wrapper.text()).not.toContain("150 mmHg");
-    expect(wrapper.text()).toContain("90–139 mmHg");
-    expect(wrapper.text()).toContain("历史异常，最新已恢复正常");
-
-    await wrapper.get(".abnormal-panel__actions .el-button").trigger("click");
     expect(wrapper.text()).toContain("150 mmHg");
+    expect(wrapper.text()).toContain("90–139 mmHg");
+    expect(wrapper.text()).not.toContain("不能替代医生诊断");
+
     await wrapper.findAll(".abnormal-list__tail .el-button")[0].trigger("click");
     expect(mocks.router.push).toHaveBeenCalledWith({
       name: "health-data-detail",
@@ -295,14 +302,15 @@ describe("当前有效账号的健康页面", () => {
   });
 
   it("异常提示接收机构报告的非数值阳性结果", async () => {
+    const month = new Date().toISOString().slice(0, 7);
     mocks.fetchHealthTrends.mockResolvedValue({
       data: {
         series_by_indicator: [],
         qualitative_series_by_indicator: [{
           indicator: { id: 19, name: "尿蛋白", unit: "" },
           points: [
-            { date: "2026-07-20", value: "阳性", result_status: "positive", is_abnormal: true, health_data_id: "hd-i-19", reference: "阴性", source: { type: "institution", name: "虚构体检机构" } },
-            { date: "2026-07-29", value: "阴性", result_status: "negative", is_abnormal: false, health_data_id: "hd-i-29", reference: "阴性", source: { type: "institution", name: "虚构体检机构" } },
+            { date: `${month}-01`, value: "阳性", result_status: "positive", is_abnormal: true, health_data_id: "hd-i-19", reference: "阴性", source: { type: "institution", name: "虚构体检机构" } },
+            { date: `${month}-02`, value: "阴性", result_status: "negative", is_abnormal: false, health_data_id: "hd-i-29", reference: "阴性", source: { type: "institution", name: "虚构体检机构" } },
           ],
           reference: { label: "机构报告定性参考" },
         }],
@@ -315,7 +323,7 @@ describe("当前有效账号的健康页面", () => {
 
     expect(wrapper.text()).toContain("尿蛋白");
     expect(wrapper.text()).toContain("阳性");
-    expect(wrapper.text()).toContain("历史异常，最新已恢复正常");
+    expect(wrapper.text()).not.toContain("历史异常");
     expect(wrapper.findAll('[data-testid="trend-chart"]')).toHaveLength(0);
   });
 

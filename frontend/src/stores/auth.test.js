@@ -7,7 +7,6 @@ const api = vi.hoisted(() => ({
   refresh: vi.fn(),
 }));
 const friendsApi = vi.hoisted(() => ({
-  returnFriendSession: vi.fn(),
   switchFriendSession: vi.fn(),
 }));
 
@@ -33,7 +32,6 @@ beforeEach(() => {
   api.login.mockReset();
   api.logout.mockReset();
   api.refresh.mockReset();
-  friendsApi.returnFriendSession.mockReset();
   friendsApi.switchFriendSession.mockReset();
 });
 
@@ -114,16 +112,16 @@ describe("auth tab isolation", () => {
     expect(store.user).toBeNull();
   });
 
-  it("returns from a delegated account without requiring another login", async () => {
-    friendsApi.switchFriendSession.mockResolvedValue({
+  it("uses the same relation action to switch repeatedly in both directions", async () => {
+    friendsApi.switchFriendSession.mockResolvedValueOnce({
       data: {
         access_token: "delegated-access",
         refresh_token: "delegated-refresh",
         user: { id: 12, username: "relative", role: "user" },
-        session: { actor: { id: 1 }, subject: { id: 12 }, depth: 1 },
+        session: { delegated: true, actor: { id: 1 }, subject: { id: 12 }, depth: 1, relation_id: 7 },
       },
     });
-    friendsApi.returnFriendSession.mockResolvedValue({
+    friendsApi.switchFriendSession.mockResolvedValueOnce({
       data: {
         access_token: "returned-access",
         refresh_token: "returned-refresh",
@@ -140,11 +138,10 @@ describe("auth tab isolation", () => {
     expect(store.accessToken).toBe("delegated-access");
     expect(store.delegation).toEqual(expect.objectContaining({
       relationId: 7,
-      previousAccountName: "actor",
     }));
 
-    await store.returnToPreviousAccount();
-    expect(friendsApi.returnFriendSession).toHaveBeenCalledOnce();
+    await store.switchToFriend({ id: 9, counterparty: { username: "actor" } });
+    expect(friendsApi.switchFriendSession).toHaveBeenCalledTimes(2);
     expect(store.accessToken).toBe("returned-access");
     expect(store.refreshToken).toBe("returned-refresh");
     expect(store.user.username).toBe("actor");
@@ -160,7 +157,7 @@ describe("auth tab isolation", () => {
         access_token: "delegated-access",
         refresh_token: "delegated-refresh",
         user: { id: 12, username: "relative", role: "user" },
-        session: { actor: { id: 1 }, subject: { id: 12 }, depth: 1 },
+        session: { delegated: true, actor: { id: 1 }, subject: { id: 12 }, depth: 1 },
       },
     });
     api.logout.mockResolvedValue({

@@ -58,7 +58,7 @@ afterEach(() => {
 });
 
 describe("工作台关联账号入口", () => {
-  it("从顶部身份菜单链式切换，并在退出授权会话后回到登录页", async () => {
+  it("从左下角账号菜单反复切换，并与退出登录放在一起", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const auth = useAuthStore(pinia);
@@ -68,13 +68,8 @@ describe("工作台关联账号入口", () => {
       auth.delegation = {
         relationId: 17,
         ownerUsername: "亲友甲",
-        previousAccountName: "本人",
         session: { chain: [1, 2], depth: 1 },
       };
-    });
-    auth.returnToPreviousAccount = vi.fn(async () => {
-      auth.user = { id: 1, username: "test1", real_name: "本人", role: "user" };
-      auth.delegation = null;
     });
     auth.secureLogout = vi.fn(async () => {
       auth.logout();
@@ -99,20 +94,17 @@ describe("工作台关联账号入口", () => {
     await flushPromises();
 
     expect(mocks.fetchFriends).toHaveBeenCalled();
-    expect(wrapper.text()).toContain("本人账号 · 切换亲友");
+    const footer = wrapper.get(".workspace-sidebar-footer");
+    expect(footer.text()).toContain("切换账号");
+    expect(footer.text()).toContain("退出登录");
+    expect(wrapper.get(".workspace-top-actions").text()).not.toContain("切换账号");
     expect(wrapper.findComponent({ name: "BasicProfileGate" }).exists()).toBe(true);
     await wrapper.vm.switchRelatedAccount(17);
     await flushPromises();
     expect(auth.switchToFriend).toHaveBeenCalledWith(expect.objectContaining({ id: 17 }));
     expect(mocks.router.replace).toHaveBeenCalledWith({ name: "timeline" });
     expect(wrapper.findComponent({ name: "BasicProfileGate" }).exists()).toBe(true);
-    expect(wrapper.text()).toContain("返回 本人");
-
-    await wrapper.vm.returnToPreviousAccount();
-    await flushPromises();
-    expect(auth.returnToPreviousAccount).toHaveBeenCalledOnce();
-    expect(auth.user.username).toBe("test1");
-    expect(mocks.router.replace).toHaveBeenLastCalledWith({ name: "timeline" });
+    expect(wrapper.text()).not.toContain("返回 本人");
 
     await wrapper.vm.logout();
     expect(auth.secureLogout).toHaveBeenCalled();

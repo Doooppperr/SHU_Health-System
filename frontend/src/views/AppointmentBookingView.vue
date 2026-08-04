@@ -44,7 +44,7 @@
           </el-form-item>
           <div v-loading="availabilityLoading" class="booking-institution-grid">
             <button
-              v-for="option in availability"
+              v-for="option in pagedAvailability"
               :key="option.institution.id"
               type="button"
               class="booking-choice-card"
@@ -58,6 +58,15 @@
             </button>
             <el-empty v-if="!availabilityLoading && !availability.length" description="当天暂时没有可预约机构" />
           </div>
+          <el-pagination
+            v-if="availability.length > availabilityPageSize"
+            v-model:current-page="availabilityPage"
+            class="institution-result-pagination"
+            :page-size="availabilityPageSize"
+            :total="availability.length"
+            :pager-count="5"
+            layout="prev, pager, next"
+          />
         </el-form>
       </section>
 
@@ -179,150 +188,112 @@
 
     <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" show-icon />
 
-    <el-card shadow="never" class="user-panel subject-appointment-panel">
-      <template #header>
-        <div class="user-section-heading">
-          <div><span>受检者视角</span><h3>我的受检预约</h3></div>
-          <small>共 {{ appointmentPagination.total }} 条</small>
-        </div>
-      </template>
-      <el-alert
-        title="这里只显示你本人作为受检者的正式预约，包括他人为你代约的记录。取消与投诉均由你本人处理。"
-        type="info"
-        show-icon
-        :closable="false"
-        style="margin-bottom: 16px"
-      />
+    <section class="booking-record-entry-grid" aria-label="预约管理">
+      <button type="button" class="booking-record-entry" @click="bookingDrawerVisible = true">
+        <span class="booking-record-entry__icon">约</span>
+        <span><strong>预约记录</strong><small>查看全部预约、筛选进度与处理取消</small></span>
+        <b>{{ unifiedBookingRecords.length }} 条　›</b>
+      </button>
+      <button type="button" class="booking-record-entry" @click="waitlistDrawerVisible = true">
+        <span class="booking-record-entry__icon">排</span>
+        <span><strong>排队记录</strong><small>查看空位提醒与当前排队状态</small></span>
+        <b>{{ waitlistPagination.total }} 条　›</b>
+      </button>
+    </section>
+
+    <el-drawer v-model="bookingDrawerVisible" title="预约记录" direction="rtl" size="min(900px, 94vw)">
+      <div class="drawer-record-heading">
+        <div><span>全部预约</span><h3>我的预约</h3></div>
+        <small>共 {{ filteredBookingRecords.length }} 条</small>
+      </div>
+      <div class="booking-history-filters">
+        <el-select v-model="historyPreset" style="width: 150px" @change="applyHistoryPreset">
+          <el-option label="全部记录" value="all" />
+          <el-option label="近一周" value="week" />
+          <el-option label="近一月" value="month" />
+          <el-option label="近半年" value="half_year" />
+          <el-option label="自定义范围" value="custom" />
+        </el-select>
+        <el-date-picker
+          v-if="historyPreset === 'custom'"
+          v-model="historyRange"
+          type="daterange"
+          value-format="YYYY-MM-DD"
+          range-separator="至"
+          start-placeholder="开始日期"
+          end-placeholder="结束日期"
+          @change="historyRangeChanged"
+        />
+      </div>
       <div class="booking-record-list">
-        <article v-for="appointment in myAppointments" :key="appointment.id" class="booking-record-card">
+        <article v-for="record in pagedBookingRecords" :key="`${record.kind}:${record.id}`" class="booking-record-card">
           <div class="booking-record-card__date">
-            <strong>{{ dayOfMonth(appointment.appointment_date) }}</strong>
-            <span>{{ monthLabel(appointment.appointment_date) }}</span>
+            <strong>{{ dayOfMonth(record.appointment_date) }}</strong>
+            <span>{{ monthLabel(record.appointment_date) }}</span>
           </div>
-          <div class="booking-record-card__body">
-            <div><el-tag :type="appointmentMeta(appointment.status).type" effect="light">{{ appointmentMeta(appointment.status).label }}</el-tag></div>
-            <h4>{{ appointment.package_name || appointment.package?.name || "体检套餐" }}</h4>
-            <p>{{ appointment.institution?.name }} · {{ appointment.institution?.branch_name }}</p>
-            <AppointmentProgress :appointment="appointment" />
-            <small v-if="appointment.booked_by_user_id && appointment.booked_by_user_id !== auth.user?.id">
-              本次预约由已授权亲友代为提交
-            </small>
+          <div v-if="record.kind === 'group'" class="booking-record-card__body">
+            <div><el-tag v-for="status in record.status_codes || []" :key="status" :type="appointmentMeta(status).type" effect="light">{{ appointmentMeta(status).label }}</el-tag></div>
+            <h4>{{ record.package?.name || record.package_name || record.package_name_snapshot || "体检套餐" }}</h4>
+            <p>{{ record.institution?.name }} · {{ record.institution?.branch_name }}</p>
+            <div class="appointment-participant-list">
+              <article v-for="appointment in groupAppointments(record)" :key="appointment.id" class="appointment-participant-card">
+                <header>
+                  <div>
+                    <strong>{{ appointment.user?.display_name || appointment.user?.name || appointment.display_name || appointment.subject_name_snapshot || "受检者" }}</strong>
+                    <small>{{ participantTypeLabel(appointment.participant_type) }} · {{ appointmentMeta(appointment.status).label }}</small>
+                  </div>
+                  <el-button v-if="appointment.can_cancel" size="small" link type="danger" @click="cancelGroupMember(appointment)">取消该成员</el-button>
+                </header>
+                <AppointmentProgress :appointment="{ ...appointment, appointment_date: record.appointment_date }" />
+              </article>
+            </div>
           </div>
-          <div class="booking-record-card__actions">
+          <div v-else class="booking-record-card__body">
+            <div><el-tag :type="appointmentMeta(record.status).type" effect="light">{{ appointmentMeta(record.status).label }}</el-tag></div>
+            <h4>{{ record.package_name || record.package?.name || "体检套餐" }}</h4>
+            <p>{{ record.institution?.name }} · {{ record.institution?.branch_name }}</p>
+            <AppointmentProgress :appointment="record" />
+            <small v-if="record.booked_by_user_id && record.booked_by_user_id !== auth.user?.id">本次预约由已授权亲友代为提交</small>
+          </div>
+          <div v-if="record.kind === 'appointment'" class="booking-record-card__actions">
             <el-button
               size="small"
               plain
-              :type="complaintForAppointment(appointment.id) ? 'primary' : 'danger'"
-              @click="handleComplaintAction(appointment)"
+              :type="complaintForAppointment(record.id) ? 'primary' : 'danger'"
+              @click="handleComplaintAction(record)"
             >
-              {{ complaintForAppointment(appointment.id) ? "查看投诉" : "投诉机构" }}
+              {{ complaintForAppointment(record.id) ? "查看投诉" : "投诉机构" }}
             </el-button>
             <el-button
-              v-if="appointment.status === 'unfulfilled'"
+              v-if="record.status === 'unfulfilled'"
               size="small"
               link
               type="danger"
-              @click="cancelOwnAppointment(appointment)"
+              @click="cancelOwnAppointment(record)"
             >
-              取消本人预约
+              取消预约
             </el-button>
           </div>
+          <el-button v-else-if="record.can_cancel" link type="danger" @click="cancelGroup(record)">取消整组</el-button>
         </article>
-        <el-empty v-if="!myAppointments.length" description="还没有本人受检预约" :image-size="80" />
+        <el-empty v-if="!pagedBookingRecords.length" description="还没有预约记录" :image-size="80" />
       </div>
-      <footer v-if="appointmentPagination.total > 0" class="booking-pagination">
+      <footer v-if="filteredBookingRecords.length > 0" class="booking-pagination">
         <span class="booking-pagination__summary">
-          第 {{ appointmentPagination.page }} / {{ Math.max(appointmentPagination.pages, 1) }} 页 · 每页 {{ appointmentPagination.page_size }} 条
+          第 {{ bookingPagination.page }} / {{ bookingPages }} 页 · 每页 {{ bookingPagination.page_size }} 条
         </span>
         <el-pagination
-          v-model:current-page="appointmentPagination.page"
-          :page-size="appointmentPagination.page_size"
-          :total="appointmentPagination.total"
+          v-model:current-page="bookingPagination.page"
+          :page-size="bookingPagination.page_size"
+          :total="filteredBookingRecords.length"
           :pager-count="5"
           layout="prev, pager, next"
-          @current-change="loadMyAppointments"
         />
       </footer>
-    </el-card>
+    </el-drawer>
 
-    <section class="booking-management-grid">
-      <el-card shadow="never" class="user-panel">
-        <template #header><div class="user-section-heading"><div><span>发起人视角</span><h3>我发起的代预约回执</h3></div><small>共 {{ groupPagination.total }} 组</small></div></template>
-        <el-alert
-          title="回执仅展示脱敏受检者与预约状态。投诉必须由受检者登录本人账号后提交。"
-          type="info"
-          show-icon
-          :closable="false"
-          style="margin-bottom: 14px"
-        />
-        <div class="booking-history-filters">
-          <el-select v-model="historyPreset" style="width: 150px" @change="applyHistoryPreset">
-            <el-option label="全部记录" value="all" />
-            <el-option label="近一周" value="week" />
-            <el-option label="近一月" value="month" />
-            <el-option label="近半年" value="half_year" />
-            <el-option label="自定义范围" value="custom" />
-          </el-select>
-          <el-date-picker
-            v-if="historyPreset === 'custom'"
-            v-model="historyRange"
-            type="daterange"
-            value-format="YYYY-MM-DD"
-            range-separator="至"
-            start-placeholder="开始日期"
-            end-placeholder="结束日期"
-            @change="historyRangeChanged"
-          />
-        </div>
-        <div class="booking-record-list">
-          <article v-for="group in groups" :key="group.id" class="booking-record-card">
-            <div class="booking-record-card__date"><strong>{{ dayOfMonth(group.appointment_date) }}</strong><span>{{ monthLabel(group.appointment_date) }}</span></div>
-            <div class="booking-record-card__body">
-              <div><el-tag v-for="status in group.status_codes || []" :key="status" :type="appointmentMeta(status).type" effect="light">{{ appointmentMeta(status).label }}</el-tag></div>
-              <h4>{{ group.package?.name || group.package_name || group.package_name_snapshot }}</h4>
-              <p>{{ group.institution?.name }} · {{ group.institution?.branch_name }}</p>
-              <div class="appointment-participant-list">
-                <article v-for="appointment in groupAppointments(group)" :key="appointment.id" class="appointment-participant-card">
-                  <header>
-                    <div>
-                      <strong>{{ appointment.user?.display_name || appointment.user?.name || appointment.subject_name_snapshot || "受检者" }}</strong>
-                      <small>{{ participantTypeLabel(appointment.participant_type) }} · {{ appointmentMeta(appointment.status).label }}</small>
-                    </div>
-                    <el-button
-                      v-if="appointment.can_cancel"
-                      size="small"
-                      link
-                      type="danger"
-                      @click="cancelGroupMember(appointment)"
-                    >
-                      取消该成员
-                    </el-button>
-                  </header>
-                  <AppointmentProgress :appointment="{ ...appointment, appointment_date: group.appointment_date }" />
-                </article>
-              </div>
-            </div>
-            <el-button v-if="group.can_cancel" link type="danger" @click="cancelGroup(group)">取消整组</el-button>
-          </article>
-          <el-empty v-if="!groups.length" description="还没有预约记录" :image-size="80" />
-        </div>
-        <footer v-if="groupPagination.total > 0" class="booking-pagination">
-          <span class="booking-pagination__summary">
-            第 {{ groupPagination.page }} / {{ Math.max(groupPagination.pages, 1) }} 页 · 每页 {{ groupPagination.page_size }} 组
-          </span>
-          <el-pagination
-            v-model:current-page="groupPagination.page"
-            :page-size="groupPagination.page_size"
-            :total="groupPagination.total"
-            :pager-count="5"
-            layout="prev, pager, next"
-            @current-change="loadGroups"
-          />
-        </footer>
-      </el-card>
-
-      <el-card shadow="never" class="user-panel">
-        <template #header><div class="user-section-heading"><div><span>空位动态</span><h3>我的提醒</h3></div><small>{{ activeWaitlistCount }} 条生效中</small></div></template>
+    <el-drawer v-model="waitlistDrawerVisible" title="排队记录" direction="rtl" size="min(720px, 94vw)">
+        <div class="drawer-record-heading"><div><span>空位动态</span><h3>我的提醒</h3></div><small>{{ activeWaitlistCount }} 条生效中</small></div>
         <div class="waitlist-card-list">
           <article v-for="item in waitlists" :key="item.id" class="waitlist-card">
             <div><el-tag :type="item.status === 'active' ? 'warning' : 'info'" effect="light">{{ item.status_label || WAITLIST_STATUS[item.status] || "状态更新中" }}</el-tag><h4>{{ item.package?.name }}</h4><p>{{ item.institution?.name }} · {{ formatDate(item.appointment_date) }}</p></div>
@@ -338,8 +309,7 @@
           layout="prev, pager, next"
           @current-change="loadWaitlists"
         />
-      </el-card>
-    </section>
+    </el-drawer>
 
     <el-card shadow="never" class="user-panel complaint-history-panel">
       <template #header>
@@ -479,6 +449,8 @@ const route = useRoute();
 const auth = useAuthStore();
 const step = ref(1);
 const availability = ref([]);
+const availabilityPage = ref(1);
+const availabilityPageSize = 6;
 const groups = ref([]);
 const myAppointments = ref([]);
 const waitlists = ref([]);
@@ -497,6 +469,8 @@ const participantIntakes = reactive({});
 const selfRecent = reactive({ height: false, weight: false });
 const complaintDialogVisible = ref(false);
 const receiptVisible = ref(false);
+const bookingDrawerVisible = ref(false);
+const waitlistDrawerVisible = ref(false);
 const bookingReceipt = ref(null);
 const complaintForm = reactive({
   appointment_id: null,
@@ -507,8 +481,7 @@ const complaintForm = reactive({
 });
 const historyPreset = ref("all");
 const historyRange = ref([]);
-const groupPagination = reactive({ page: 1, page_size: 10, total: 0, pages: 0 });
-const appointmentPagination = reactive({ page: 1, page_size: 10, total: 0, pages: 0 });
+const bookingPagination = reactive({ page: 1, page_size: 10 });
 const waitlistPagination = reactive({ page: 1, page_size: 15, total: 0, pages: 0 });
 const complaintPagination = reactive({ page: 1, page_size: 10, total: 0, pages: 0 });
 const waitlistActiveCount = ref(0);
@@ -534,6 +507,10 @@ const form = reactive({
   notice_confirmed: false,
 });
 const selectedInstitution = computed(() => availability.value.find((item) => item.institution.id === form.institution_id));
+const pagedAvailability = computed(() => {
+  const start = (availabilityPage.value - 1) * availabilityPageSize;
+  return availability.value.slice(start, start + availabilityPageSize);
+});
 const selectedPackage = computed(() => selectedInstitution.value?.packages.find((item) => item.id === form.package_id));
 const profileReady = computed(() => isBasicProfileComplete(auth.user || {}));
 function relationCanBook(item) {
@@ -601,6 +578,43 @@ const complaints = computed(() => {
   const start = (complaintPagination.page - 1) * complaintPagination.page_size;
   return allComplaints.value.slice(start, start + complaintPagination.page_size);
 });
+const unifiedBookingRecords = computed(() => {
+  const groupedAppointmentIds = new Set(
+    groups.value.flatMap((group) => groupAppointments(group).map((item) => Number(item.id)))
+  );
+  return [
+    ...groups.value.map((group) => ({ ...group, kind: "group" })),
+    ...myAppointments.value
+      .filter((appointment) => !groupedAppointmentIds.has(Number(appointment.id)))
+      .map((appointment) => ({ ...appointment, kind: "appointment" })),
+  ].sort((first, second) => (
+    String(second.appointment_date || "").localeCompare(String(first.appointment_date || ""))
+    || Number(second.id || 0) - Number(first.id || 0)
+  ));
+});
+const filteredBookingRecords = computed(() => {
+  if (historyPreset.value === "all") return unifiedBookingRecords.value;
+  let start = null;
+  let end = localDate();
+  const offsets = { week: 7, month: 30, half_year: 183 };
+  if (offsets[historyPreset.value]) start = dateOffset(offsets[historyPreset.value]);
+  if (historyPreset.value === "custom" && historyRange.value?.length === 2) {
+    [start, end] = historyRange.value;
+  }
+  if (!start) return unifiedBookingRecords.value;
+  return unifiedBookingRecords.value.filter((record) => (
+    record.appointment_date >= start && record.appointment_date <= end
+  ));
+});
+const bookingPages = computed(() => Math.max(
+  Math.ceil(filteredBookingRecords.value.length / bookingPagination.page_size),
+  1,
+));
+const pagedBookingRecords = computed(() => {
+  const page = Math.min(bookingPagination.page, bookingPages.value);
+  const start = (page - 1) * bookingPagination.page_size;
+  return filteredBookingRecords.value.slice(start, start + bookingPagination.page_size);
+});
 const receiptSummary = computed(() => {
   const people = selectedParticipants.value;
   const proxyCount = people.filter((person) => person.kind !== "self").length;
@@ -627,6 +641,7 @@ function selectInstitution(option) {
 }
 
 async function dateChanged() {
+  availabilityPage.value = 1;
   form.institution_id = null;
   form.package_id = null;
   await loadAvailability();
@@ -636,6 +651,8 @@ async function loadAvailability() {
   availabilityLoading.value = true;
   try {
     availability.value = (await fetchAppointmentAvailability(form.appointment_date, institutionQuery.value.trim())).data.items || [];
+    const pages = Math.max(Math.ceil(availability.value.length / availabilityPageSize), 1);
+    if (availabilityPage.value > pages) availabilityPage.value = pages;
     if (form.institution_id && !selectedInstitution.value) {
       form.institution_id = null;
       form.package_id = null;
@@ -646,6 +663,7 @@ async function loadAvailability() {
 }
 
 function searchInstitutions() {
+  availabilityPage.value = 1;
   window.clearTimeout(searchTimer);
   searchTimer = window.setTimeout(loadAvailability, 300);
 }
@@ -764,35 +782,26 @@ function dateOffset(days) {
 
 async function applyHistoryPreset() {
   historyRange.value = [];
-  groupPagination.page = 1;
-  await loadGroups();
+  bookingPagination.page = 1;
 }
 
 async function historyRangeChanged() {
-  groupPagination.page = 1;
-  await loadGroups();
+  bookingPagination.page = 1;
 }
 
-function historyParams() {
-  const params = { page: groupPagination.page, page_size: 10 };
-  const offsets = { week: 7, month: 30, half_year: 183 };
-  if (offsets[historyPreset.value]) {
-    params.start_date = dateOffset(offsets[historyPreset.value]);
-    params.end_date = localDate();
-  } else if (historyPreset.value === "custom" && historyRange.value?.length === 2) {
-    [params.start_date, params.end_date] = historyRange.value;
+async function fetchEveryPage(fetcher, pageSize) {
+  const first = await fetcher({ page: 1, page_size: pageSize });
+  const items = [...(first.data.items || [])];
+  const pages = Math.max(Number(first.data.pagination?.pages || 1), 1);
+  if (pages > 1) {
+    const rest = await Promise.all(
+      Array.from({ length: pages - 1 }, (_, index) => (
+        fetcher({ page: index + 2, page_size: pageSize })
+      ))
+    );
+    items.push(...rest.flatMap((response) => response.data.items || []));
   }
-  return params;
-}
-
-async function loadGroups() {
-  const response = await fetchBookingGroups(historyParams());
-  groups.value = response.data.items || [];
-  Object.assign(groupPagination, response.data.pagination || { page: 1, page_size: 10, total: groups.value.length, pages: 1 });
-  if (!groups.value.length && groupPagination.total > 0 && groupPagination.page > groupPagination.pages) {
-    groupPagination.page = Math.max(groupPagination.pages, 1);
-    await loadGroups();
-  }
+  return items;
 }
 
 async function loadWaitlists() {
@@ -802,29 +811,14 @@ async function loadWaitlists() {
   Object.assign(waitlistPagination, response.data.pagination || { page: 1, page_size: 15, total: waitlists.value.length, pages: 1 });
 }
 
-async function loadMyAppointments() {
-  const response = await fetchMyAppointments({
-    page: appointmentPagination.page,
-    page_size: appointmentPagination.page_size,
-  });
-  myAppointments.value = response.data.items || [];
-  Object.assign(
-    appointmentPagination,
-    response.data.pagination || {
-      page: 1,
-      page_size: appointmentPagination.page_size,
-      total: myAppointments.value.length,
-      pages: myAppointments.value.length ? 1 : 0,
-    },
-  );
-  if (
-    !myAppointments.value.length
-    && appointmentPagination.total > 0
-    && appointmentPagination.page > appointmentPagination.pages
-  ) {
-    appointmentPagination.page = Math.max(appointmentPagination.pages, 1);
-    await loadMyAppointments();
-  }
+async function loadBookingRecords() {
+  const [appointmentItems, groupItems] = await Promise.all([
+    fetchEveryPage(fetchMyAppointments, 100),
+    fetchEveryPage(fetchBookingGroups, 50),
+  ]);
+  myAppointments.value = appointmentItems;
+  groups.value = groupItems;
+  if (bookingPagination.page > bookingPages.value) bookingPagination.page = bookingPages.value;
 }
 
 async function loadComplaints() {
@@ -856,7 +850,7 @@ async function loadComplaints() {
 }
 
 async function reload() {
-  await Promise.all([loadMyAppointments(), loadGroups(), loadWaitlists(), loadComplaints()]);
+  await Promise.all([loadBookingRecords(), loadWaitlists(), loadComplaints()]);
 }
 
 function payload() {
@@ -1187,8 +1181,80 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer));
 </script>
 
 <style scoped>
-.subject-appointment-panel {
-  margin-bottom: 18px;
+.booking-record-entry-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin: 18px 0;
+}
+
+.booking-record-entry {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 16px;
+  background: var(--el-bg-color);
+  color: var(--el-text-color-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.booking-record-entry:hover,
+.booking-record-entry:focus-visible {
+  border-color: var(--el-color-primary);
+  box-shadow: 0 8px 22px rgb(45 180 157 / 10%);
+}
+
+.booking-record-entry > span:nth-child(2) {
+  display: grid;
+  gap: 4px;
+}
+
+.booking-record-entry small,
+.drawer-record-heading span,
+.drawer-record-heading small {
+  color: var(--el-text-color-secondary);
+}
+
+.booking-record-entry b {
+  color: var(--el-color-primary);
+  font-size: 13px;
+}
+
+.booking-record-entry__icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 13px;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+  font-weight: 800;
+}
+
+.drawer-record-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.drawer-record-heading > div {
+  display: grid;
+  gap: 3px;
+}
+
+.drawer-record-heading h3 {
+  margin: 0;
+}
+
+.institution-result-pagination {
+  justify-content: center;
+  margin-top: 18px;
 }
 
 .booking-record-card__actions {
@@ -1336,6 +1402,10 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer));
 }
 
 @media (max-width: 720px) {
+  .booking-record-entry-grid {
+    grid-template-columns: 1fr;
+  }
+
   .health-code-participant {
     grid-template-columns: 1fr;
   }

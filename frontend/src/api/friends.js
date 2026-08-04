@@ -30,7 +30,3 @@ export function switchFriendSession(relationId) {
 export function exitFriendSession() {
   return http.post("/auth/delegation/exit");
 }
-
-export function returnFriendSession() {
-  return http.post("/auth/delegation/back");
-}

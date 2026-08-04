@@ -96,7 +96,7 @@ beforeEach(() => {
         party_size: 1,
         can_cancel: false,
       }],
-      pagination: { page: 1, page_size: 10, total: 11, pages: 2 },
+      pagination: { page: 1, page_size: 50, total: 1, pages: 1 },
     },
   });
   mocks.fetchMyAppointments.mockResolvedValue({
@@ -109,7 +109,7 @@ beforeEach(() => {
         institution: { name: "澄心健康管理中心", branch_name: "徐汇综合院区" },
         booked_by_user_id: 2,
       }],
-      pagination: { page: 1, page_size: 10, total: 1, pages: 1 },
+      pagination: { page: 1, page_size: 100, total: 1, pages: 1 },
     },
   });
   mocks.fetchWaitlistSubscriptions.mockResolvedValue({
@@ -144,21 +144,45 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("预约记录分页", () => {
-  it("固定每页十组并明确显示当前页", async () => {
+describe("预约记录抽屉", () => {
+  it("从页面按钮打开统一记录并保留筛选与分页", async () => {
     const wrapper = mountView(AppointmentBookingView);
     await flushPromises();
 
     expect(mocks.fetchBookingGroups).toHaveBeenCalledWith(
-      expect.objectContaining({ page: 1, page_size: 10 }),
+      expect.objectContaining({ page: 1, page_size: 50 }),
     );
-    expect(mocks.fetchMyAppointments).toHaveBeenCalledWith({ page: 1, page_size: 10 });
-    expect(wrapper.text()).toContain("我的受检预约");
-    expect(wrapper.text()).toContain("我发起的代预约回执");
-    const paginationSummaries = wrapper.findAll(".booking-pagination__summary");
-    expect(paginationSummaries.some((item) => item.text().includes("第 1 / 2 页"))).toBe(true);
-    expect(paginationSummaries.some((item) => item.text().includes("每页 10 组"))).toBe(true);
-    expect(wrapper.find(".el-pagination").exists()).toBe(true);
+    expect(mocks.fetchMyAppointments).toHaveBeenCalledWith({ page: 1, page_size: 100 });
+    expect(wrapper.text()).toContain("预约记录");
+    expect(wrapper.text()).toContain("排队记录");
+    const recordButton = wrapper.findAll(".booking-record-entry").find((button) => button.text().includes("预约记录"));
+    await recordButton.trigger("click");
+    await flushPromises();
+    expect(wrapper.vm.bookingDrawerVisible).toBe(true);
+    expect(wrapper.vm.filteredBookingRecords).toHaveLength(2);
+    expect(wrapper.vm.bookingPagination).toEqual(expect.objectContaining({ page: 1, page_size: 10 }));
+    expect(wrapper.text()).not.toContain("受检者视角");
+    expect(wrapper.text()).not.toContain("发起人视角");
+  });
+
+  it("机构选择每页显示六家并可翻页", async () => {
+    mocks.fetchAppointmentAvailability.mockResolvedValue({
+      data: {
+        items: Array.from({ length: 7 }, (_, index) => ({
+          institution: { id: index + 1, name: `机构 ${index + 1}`, branch_name: `分院 ${index + 1}` },
+          packages: [],
+          remaining: 10,
+        })),
+      },
+    });
+    const wrapper = mountView(AppointmentBookingView);
+    await flushPromises();
+
+    expect(wrapper.findAll(".booking-choice-card")).toHaveLength(6);
+    wrapper.vm.availabilityPage = 2;
+    await wrapper.vm.$nextTick();
+    expect(wrapper.findAll(".booking-choice-card")).toHaveLength(1);
+    expect(wrapper.text()).toContain("机构 7");
   });
 
   it("restores appointment_date, institution and package after login", async () => {
@@ -304,7 +328,7 @@ describe("预约记录分页", () => {
       pages: 11,
     }));
     expect(wrapper.text()).toContain("虚构第 101 条深链投诉");
-    expect(wrapper.text()).toContain("查看投诉");
+    expect(wrapper.vm.complaintForAppointment(91)).toEqual(expect.objectContaining({ id: 999 }));
   });
 });
 

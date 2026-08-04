@@ -37,36 +37,32 @@ beforeEach(() => {
   });
 });
 
-describe("关联账号逐级返回", () => {
-  it("把链路中的上一级账号显示为返回操作而不是再次切换", async () => {
+describe("关联账号重复切换", () => {
+  it("链路中的账号仍然使用相同的切换操作", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const auth = useAuthStore(pinia);
     auth.user = { id: 4, display_name: "亲友丙", role: "user" };
     auth.delegation = {
-      previousAccountName: "亲友乙",
       session: { chain: [1, 2, 4], depth: 2 },
     };
-    auth.returnToPreviousAccount = vi.fn(async () => {
+    auth.switchToFriend = vi.fn(async () => {
       auth.user = { id: 2, display_name: "亲友乙", role: "user" };
-      auth.delegation = { session: { chain: [1, 2], depth: 1 } };
     });
-    auth.switchToFriend = vi.fn();
 
     const wrapper = mount(FriendManageView, {
       global: { plugins: [pinia, ElementPlus] },
     });
     await flushPromises();
 
-    const returnButton = wrapper.findAll("button").find(
-      (button) => button.text().includes("返回 亲友乙")
+    const switchButton = wrapper.findAll("button").find(
+      (button) => button.text().includes("切换至此账号")
     );
-    expect(returnButton).toBeTruthy();
-    await returnButton.trigger("click");
+    expect(switchButton).toBeTruthy();
+    await switchButton.trigger("click");
     await flushPromises();
 
-    expect(auth.returnToPreviousAccount).toHaveBeenCalledOnce();
-    expect(auth.switchToFriend).not.toHaveBeenCalled();
+    expect(auth.switchToFriend).toHaveBeenCalledWith(expect.objectContaining({ id: 24 }));
     expect(mocks.router.push).toHaveBeenCalledWith({ name: "timeline" });
     wrapper.unmount();
   });

@@ -41,7 +41,37 @@
             <small>{{ roleName }}</small>
           </span>
         </div>
-        <button type="button" class="workspace-logout" @click="logout">退出登录</button>
+        <div v-if="workspaceType === 'user'" class="workspace-session-actions">
+          <el-dropdown trigger="click" placement="top-start" @command="switchRelatedAccount">
+            <button
+              type="button"
+              class="workspace-session-button"
+              :disabled="accountSwitchingId !== null"
+              aria-label="切换关联账号"
+            >
+              <span>切换账号</span><span aria-hidden="true">⌃</span>
+            </button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item disabled>当前：{{ currentAccountName }}</el-dropdown-item>
+                <el-dropdown-item
+                  v-for="relation in switchableRelations"
+                  :key="relation.id"
+                  :command="relation.id"
+                  divided
+                  :disabled="accountSwitchingId === relation.id"
+                >
+                  切换至 {{ relationDisplayName(relation) }}
+                </el-dropdown-item>
+                <el-dropdown-item v-if="!switchableRelations.length" disabled divided>
+                  暂无可切换的关联账号
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+          <button type="button" class="workspace-logout" @click="logout">退出登录</button>
+        </div>
+        <button v-else type="button" class="workspace-logout" @click="logout">退出登录</button>
         <small class="workspace-build">{{ buildLabel() }}</small>
       </div>
     </aside>
@@ -70,60 +100,11 @@
           <AiAssistantLauncher />
           <AppearanceQuickControls />
           <router-link class="workspace-portal-link" to="/">返回门户</router-link>
-          <el-dropdown
-            v-if="workspaceType === 'user'"
-            trigger="click"
-            placement="bottom-end"
-            @command="switchRelatedAccount"
-          >
-            <button type="button" class="workspace-account-switch" aria-label="切换关联账号">
-              <span class="workspace-account-switch__avatar">{{ userInitial }}</span>
-              <span class="workspace-account-switch__identity">
-                <strong>{{ currentAccountName }}</strong>
-                <small>{{ authStore.delegation ? "授权账号 · 可返回或继续切换" : "本人账号 · 切换亲友" }}</small>
-              </span>
-              <span aria-hidden="true">⌄</span>
-            </button>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item disabled>当前：{{ currentAccountName }}</el-dropdown-item>
-                <el-dropdown-item
-                  v-if="authStore.delegation"
-                  command="__delegation_back__"
-                  divided
-                  :disabled="returning"
-                >
-                  返回 {{ authStore.delegation.previousAccountName || "上一级账号" }}
-                </el-dropdown-item>
-                <el-dropdown-item
-                  v-for="relation in switchableRelations"
-                  :key="relation.id"
-                  :command="relation.id"
-                  divided
-                  :disabled="accountSwitchingId === relation.id"
-                >
-                  切换至 {{ relationDisplayName(relation) }}
-                </el-dropdown-item>
-                <el-dropdown-item v-if="!switchableRelations.length" disabled divided>
-                  暂无其他可切换的关联账号
-                </el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-          <span v-else class="workspace-role-badge">{{ roleName }}</span>
+          <span v-if="workspaceType !== 'user'" class="workspace-role-badge">{{ roleName }}</span>
         </div>
       </header>
 
       <main id="main-content" class="workspace-content" tabindex="-1">
-        <div v-if="authStore.delegation" class="delegation-banner">
-          <span>
-            已进入 <strong>{{ authStore.delegation.ownerUsername }}</strong> 的关联账号，
-            可按当前账号权限操作，真实操作者会留痕。
-          </span>
-          <el-button size="small" type="primary" :loading="returning" @click="returnToPreviousAccount">
-            返回 {{ authStore.delegation.previousAccountName || "上一级账号" }}
-          </el-button>
-        </div>
         <div
           v-if="workspaceType === 'institution_admin' && authStore.user?.must_change_initial_password"
           class="initial-password-banner"
@@ -167,7 +148,6 @@ let lastFocusedElement = null;
 let mobileMediaQuery = null;
 let careMobileMediaQuery = null;
 const unreadReplies = ref(0);
-const returning = ref(false);
 const relatedAccounts = ref([]);
 const accountSwitchingId = ref(null);
 
@@ -221,32 +201,14 @@ const currentAccountName = computed(() => (
   || "用户"
 ));
 const switchableRelations = computed(() => {
-  const visitedIds = new Set(
-    (authStore.delegation?.session?.chain || []).map((value) => Number(value))
-  );
   return relatedAccounts.value.filter((item) => {
     const canSwitch = item.can_switch ?? item.relationship_status === "active";
-    const person = item.counterparty || item.friend_user || item.user || {};
-    return canSwitch && !visitedIds.has(Number(person.id));
+    return canSwitch;
   });
 });
 const homeRoute = computed(() => dashboardRouteForRole(authStore.user?.role));
 const pageTitle = computed(() => route.meta.title || workspaceName.value);
 const pageEyebrow = computed(() => route.meta.eyebrow || workspaceName.value);
-
-async function returnToPreviousAccount() {
-  returning.value = true;
-  try {
-    await authStore.returnToPreviousAccount();
-    ElMessage.success(`已返回 ${currentAccountName.value}`);
-    await router.replace({ name: "timeline" });
-    await loadRelatedAccounts();
-  } catch (error) {
-    ElMessage.error(error?.response?.data?.message || error?.message || "返回账号失败");
-  } finally {
-    returning.value = false;
-  }
-}
 
 function relationDisplayName(relation) {
   const person = relation.counterparty || relation.friend_user || relation.user || {};
@@ -268,10 +230,6 @@ async function loadRelatedAccounts() {
 }
 
 async function switchRelatedAccount(relationId) {
-  if (relationId === "__delegation_back__") {
-    await returnToPreviousAccount();
-    return;
-  }
   const relation = relatedAccounts.value.find((item) => item.id === Number(relationId));
   if (!relation || accountSwitchingId.value) return;
   accountSwitchingId.value = relation.id;
@@ -371,19 +329,6 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.delegation-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 18px;
-  padding: 12px 16px;
-  border: 1px solid #8bc9bb;
-  border-radius: 14px;
-  background: #edf9f5;
-  color: #245b51;
-}
-
 .initial-password-banner {
   display: flex;
   align-items: center;
@@ -404,67 +349,44 @@ onBeforeUnmount(() => {
   text-align: center;
 }
 
-.workspace-account-switch {
-  display: inline-flex;
+.workspace-session-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.workspace-session-actions :deep(.el-dropdown) {
+  width: 100%;
+}
+
+.workspace-session-button {
+  display: flex;
   align-items: center;
-  gap: 9px;
-  min-width: 172px;
-  padding: 7px 10px;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 9px;
   border: 1px solid var(--el-border-color);
-  border-radius: 13px;
-  background: var(--el-bg-color);
+  border-radius: 10px;
+  background: transparent;
   color: var(--el-text-color-primary);
   cursor: pointer;
-  text-align: left;
 }
 
-.workspace-account-switch:hover,
-.workspace-account-switch:focus-visible {
+.workspace-session-button:hover,
+.workspace-session-button:focus-visible {
   border-color: var(--el-color-primary);
+  color: var(--el-color-primary);
 }
 
-.workspace-account-switch__avatar {
-  display: grid;
-  width: 32px;
-  height: 32px;
-  flex: 0 0 32px;
-  place-items: center;
-  border-radius: 10px;
-  background: #e9f5f1;
-  color: #207766;
-  font-weight: 800;
-}
-
-.workspace-account-switch__identity {
-  display: grid;
-  min-width: 0;
-  flex: 1;
-}
-
-.workspace-account-switch__identity strong,
-.workspace-account-switch__identity small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-account-switch__identity small {
-  color: var(--el-text-color-secondary);
-  font-size: 11px;
+.workspace-session-actions .workspace-logout {
+  margin-top: 0;
 }
 
 @media (max-width: 620px) {
-  .delegation-banner {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .workspace-account-switch__identity {
-    display: none;
-  }
-
-  .workspace-account-switch {
-    min-width: auto;
+  .workspace-session-actions {
+    grid-template-columns: 1fr;
   }
 }
 </style>

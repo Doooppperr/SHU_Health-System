@@ -40,8 +40,7 @@
         </div>
         <el-switch
           v-model="form.allow_health_id_proxy_booking"
-          active-text="允许"
-          inactive-text="关闭"
+          aria-label="允许使用健康身份码为我代预约"
         />
       </div>
       <el-form label-position="top" style="max-width: 760px">

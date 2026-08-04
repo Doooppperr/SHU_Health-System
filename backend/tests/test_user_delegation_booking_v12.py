@@ -274,7 +274,7 @@ def test_bidirectional_friend_switch_is_audited_and_exit_revokes_chain(
         assert "/api/auth/delegation/exit" in paths
 
 
-def test_delegation_can_return_one_level_without_relogin(app, client):
+def test_delegation_can_switch_repeatedly_in_both_directions(app, client):
     actor_headers, _ = _login(client, "test1")
     with app.app_context():
         test1 = User.query.filter_by(username="test1").one()
@@ -329,7 +329,7 @@ def test_delegation_can_return_one_level_without_relogin(app, client):
     }
 
     returned_to_test2 = client.post(
-        "/api/auth/delegation/back",
+        f"/api/friends/{second_relation_id}/switch-session",
         headers=second_headers,
     )
     assert returned_to_test2.status_code == 200, returned_to_test2.get_json()
@@ -346,7 +346,7 @@ def test_delegation_can_return_one_level_without_relogin(app, client):
     assert client.get("/api/users/me", headers=second_headers).status_code == 401
 
     returned_to_test1 = client.post(
-        "/api/auth/delegation/back",
+        f"/api/friends/{first_relation_id}/switch-session",
         headers=returned_test2_headers,
     )
     assert returned_to_test1.status_code == 200, returned_to_test1.get_json()
@@ -360,17 +360,27 @@ def test_delegation_can_return_one_level_without_relogin(app, client):
     ).get_json()["user"]["username"] == "test1"
     assert client.get("/api/users/me", headers=first_headers).status_code == 401
 
+    switched_again = client.post(
+        f"/api/friends/{first_relation_id}/switch-session",
+        headers=returned_test1_headers,
+    )
+    assert switched_again.status_code == 200, switched_again.get_json()
+    assert switched_again.get_json()["session"]["depth"] == 1
+    switched_again_headers = {
+        "Authorization": f"Bearer {switched_again.get_json()['access_token']}"
+    }
+    assert client.get(
+        "/api/users/me",
+        headers=switched_again_headers,
+    ).get_json()["user"]["username"] == "test2"
+
     with app.app_context():
         sessions = DelegationSessionAudit.query.filter_by(
             actor_user_id=actor_id,
         ).all()
-        assert len(sessions) == 2
-        assert {row.status for row in sessions} == {"exited"}
-        back_audits = DelegatedActionAudit.query.filter_by(
-            path="/api/auth/delegation/back",
-            status_code=200,
-        ).all()
-        assert len(back_audits) == 2
+        assert len(sessions) == 3
+        assert sum(row.status == "exited" for row in sessions) == 2
+        assert sum(row.status == "active" for row in sessions) == 1
 
 
 def test_friend_request_accepts_both_directions_and_any_side_revokes(

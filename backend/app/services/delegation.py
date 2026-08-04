@@ -244,17 +244,14 @@ def start_delegation(current_user, relation, current_claims=None):
             },
             409,
         )
+    if target.id in chain:
+        return switch_to_delegation_ancestor(current_claims, target.id)
     if len(chain) - 1 >= MAX_DELEGATION_DEPTH:
         return None, (
             {
                 "message": "亲友账号最多允许连续切换3层",
                 "code": "DELEGATION_DEPTH_EXCEEDED",
             },
-            409,
-        )
-    if target.id in chain:
-        return None, (
-            {"message": "不能在同一切换链路中重复进入账号", "code": "DELEGATION_CYCLE"},
             409,
         )
 
@@ -479,8 +476,8 @@ def revoke_actor_login(actor_user_id, reason="actor logged out"):
     return close_actor_delegations(actor.id, reason)
 
 
-def return_from_delegation(payload):
-    """Return exactly one hop while preserving the authenticated login chain."""
+def switch_to_delegation_ancestor(payload, target_user_id):
+    """Switch to an earlier account through the same relation-switch action."""
     audit = db.session.get(
         DelegationSessionAudit,
         payload.get("delegation_session_id"),
@@ -495,29 +492,65 @@ def return_from_delegation(payload):
             401,
         )
 
-    parent = None
-    target = None
-    if audit.parent_session_id:
+    try:
+        target_id = int(target_user_id)
+    except (TypeError, ValueError):
+        return None, (
+            {"message": "目标账号无效", "code": "DELEGATION_TARGET_UNAVAILABLE"},
+            409,
+        )
+
+    chain = [int(value) for value in (audit.chain_user_ids or [])]
+    if target_id not in chain[:-1]:
+        return None, (
+            {"message": "该账号不在当前切换链路中", "code": "DELEGATION_TARGET_UNAVAILABLE"},
+            409,
+        )
+
+    selected_session = None
+    sessions_to_close = [audit]
+    cursor = audit
+    while cursor.parent_session_id:
         parent = db.session.get(
             DelegationSessionAudit,
-            audit.parent_session_id,
+            cursor.parent_session_id,
             populate_existing=True,
         )
-        parent_claims = {
-            **(_claims_from_audit(parent) if parent is not None else {}),
-            "sub": str(parent.subject_user_id) if parent is not None else "",
-        }
-        if parent is None or not validate_delegation_claims(parent_claims):
+        if parent is None or parent.status != "active":
             return None, (
                 {
-                    "message": "上一级关联账号会话已失效，请重新登录",
+                    "message": "账号切换链路已失效，请重新登录",
                     "code": "DELEGATION_PARENT_REVOKED",
                 },
                 401,
             )
-        target = db.session.get(User, parent.subject_user_id, populate_existing=True)
+        if parent.subject_user_id == target_id:
+            selected_session = parent
+            break
+        sessions_to_close.append(parent)
+        cursor = parent
+
+    if target_id != audit.actor_user_id and selected_session is None:
+        return None, (
+            {"message": "账号切换链路已失效，请重新登录", "code": "DELEGATION_CHAIN_INVALID"},
+            409,
+        )
+
+    target = db.session.get(User, target_id, populate_existing=True)
+    if selected_session is not None:
+        selected_claims = {
+            **_claims_from_audit(selected_session),
+            "sub": str(selected_session.subject_user_id),
+        }
+        if not validate_delegation_claims(selected_claims):
+            return None, (
+                {
+                    "message": "目标账号会话已失效，请重新登录",
+                    "code": "DELEGATION_PARENT_REVOKED",
+                },
+                401,
+            )
     else:
-        target = db.session.get(User, audit.actor_user_id, populate_existing=True)
         snapshots = audit.token_version_snapshot or {}
         if (
             target is None
@@ -544,7 +577,7 @@ def return_from_delegation(payload):
             {
                 DelegationSessionAudit.status: "exited",
                 DelegationSessionAudit.ended_at: now,
-                DelegationSessionAudit.end_reason: "user returned to previous account",
+                DelegationSessionAudit.end_reason: "user switched to linked account",
             },
             synchronize_session=False,
         )
@@ -554,15 +587,43 @@ def return_from_delegation(payload):
         return None, (
             {
                 "message": "账号已在其他请求中切换，请刷新后重试",
-                "code": "DELEGATION_RETURN_CONFLICT",
+                "code": "DELEGATION_SWITCH_CONFLICT",
             },
             409,
         )
 
-    # A stale browser tab may have created descendants from this session.
-    # Closing the selected branch prevents those older tokens from surviving
-    # after the user has explicitly returned to its parent.
-    closed_ids = {audit.id}
+    closed_ids = set()
+    for row in sessions_to_close:
+        if row.id == audit.id:
+            closed_ids.add(row.id)
+            continue
+        closed = (
+            db.session.query(DelegationSessionAudit)
+            .filter(
+                DelegationSessionAudit.id == row.id,
+                DelegationSessionAudit.status == "active",
+            )
+            .update(
+                {
+                    DelegationSessionAudit.status: "exited",
+                    DelegationSessionAudit.ended_at: now,
+                    DelegationSessionAudit.end_reason: "user switched to linked account",
+                },
+                synchronize_session=False,
+            )
+        )
+        if closed != 1:
+            db.session.rollback()
+            return None, (
+                {
+                    "message": "账号已在其他请求中切换，请刷新后重试",
+                    "code": "DELEGATION_SWITCH_CONFLICT",
+                },
+                409,
+            )
+        closed_ids.add(row.id)
+
+    # Close any stale descendants of sessions abandoned by the switch.
     active_rows = DelegationSessionAudit.query.filter_by(
         actor_user_id=audit.actor_user_id,
         status="active",
@@ -575,16 +636,16 @@ def return_from_delegation(payload):
                 continue
             row.status = "exited"
             row.ended_at = now
-            row.end_reason = "ancestor returned to previous account"
+            row.end_reason = "ancestor switched to linked account"
             closed_ids.add(row.id)
             changed = True
 
-    if parent is not None:
-        tokens = issue_delegated_tokens(parent)
+    if selected_session is not None:
+        tokens = issue_delegated_tokens(selected_session)
         return {
             **tokens,
             "user": redacted_user(target),
-            "session": _session_payload(parent, target),
+            "session": _session_payload(selected_session, target),
         }, None
 
     tokens = issue_normal_tokens(target)

@@ -50,29 +50,20 @@
 
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
 
-    <el-card v-if="abnormalItems.length" shadow="never" class="abnormal-panel">
+    <el-card v-if="monthlyAbnormalItems.length" shadow="never" class="abnormal-panel">
       <template #header>
         <div class="abnormal-panel__heading">
           <div>
             <span>异常提示</span>
-            <strong>发现 {{ latestAbnormalItems.length }} 项指标存在异常（共 {{ allAbnormalItems.length }} 条记录）</strong>
+            <strong>本月发现 {{ monthlyAbnormalIndicatorCount }} 项指标存在异常（共 {{ monthlyAbnormalItems.length }} 条记录）</strong>
           </div>
           <div class="abnormal-panel__actions">
-            <el-button
-              v-if="allAbnormalItems.length > latestAbnormalItems.length"
-              link
-              type="primary"
-              @click="showAllAbnormal = !showAllAbnormal"
-            >
-              {{ showAllAbnormal ? "收起历史异常" : `展开全部 ${allAbnormalItems.length} 条异常` }}
-            </el-button>
             <el-tag type="danger" effect="dark">请重点关注</el-tag>
           </div>
         </div>
       </template>
-      <p class="abnormal-panel__notice">异常提示用于帮助定位需要关注的数据，不能替代医生诊断；如有不适请及时就医。</p>
       <div class="abnormal-list">
-        <article v-for="item in abnormalItems" :key="item.key">
+        <article v-for="item in monthlyAbnormalItems" :key="item.key">
           <div class="abnormal-list__identity">
             <strong>{{ item.indicator }}</strong>
             <span>{{ item.domain }} · {{ item.source }}</span>
@@ -81,7 +72,6 @@
           <p>
             <b>{{ item.value }} {{ item.unit }}</b>
             <el-tag type="danger" effect="light">{{ item.direction }}</el-tag>
-            <el-tag v-if="item.latestRecovered" type="success" effect="light">历史异常，最新已恢复正常</el-tag>
           </p>
           <div class="abnormal-list__tail">
             <time>{{ item.date }}</time>
@@ -89,6 +79,10 @@
           </div>
         </article>
       </div>
+    </el-card>
+    <el-card v-else-if="!loading" shadow="never" class="health-good-panel">
+      <span class="health-good-panel__icon">✓</span>
+      <div><span>异常提示</span><strong>近期健康状况良好</strong></div>
     </el-card>
 
     <el-card v-if="rawSeries.length" shadow="never" class="user-panel">
@@ -168,23 +162,16 @@ const domains = ref([]);
 const sourceOptions = ref([{ value: "all", label: "全部来源" }, { value: "self", label: "个人日常测量" }, { value: "institution", label: "全部机构体检" }]);
 const rawSeries = ref([]);
 const qualitativeSeries = ref([]);
+const monthlyAbnormalSeries = ref([]);
 const selectedIndicatorIds = ref([]);
 const series = computed(() => rawSeries.value.filter((entry) => selectedIndicatorIds.value.includes(entry.indicator.id)));
 const currentDomain = computed(() => domains.value.find((domain) => domain.id === filters.domain_id) || null);
-const showAllAbnormal = ref(false);
-const allAbnormalItems = computed(() => collectAbnormalTrendItems(
-  [...rawSeries.value, ...qualitativeSeries.value],
+const monthlyAbnormalItems = computed(() => collectAbnormalTrendItems(
+  monthlyAbnormalSeries.value,
   currentDomain.value,
 ));
-const latestAbnormalItems = computed(() => {
-  const latestByIndicator = new Map();
-  for (const item of allAbnormalItems.value) {
-    if (!latestByIndicator.has(item.indicatorId)) latestByIndicator.set(item.indicatorId, item);
-  }
-  return [...latestByIndicator.values()];
-});
-const abnormalItems = computed(() => (
-  showAllAbnormal.value ? allAbnormalItems.value : latestAbnormalItems.value
+const monthlyAbnormalIndicatorCount = computed(() => (
+  new Set(monthlyAbnormalItems.value.map((item) => item.indicatorId)).size
 ));
 const loading = ref(false);
 const error = ref("");
@@ -270,6 +257,13 @@ function dateOffset(days) {
   return localDate(value);
 }
 
+function monthStart() {
+  const value = new Date();
+  value.setHours(0, 0, 0, 0);
+  value.setDate(1);
+  return localDate(value);
+}
+
 function dateFilterParams() {
   const offsets = { week: 7, month: 30, half_year: 183 };
   if (offsets[datePreset.value]) {
@@ -291,10 +285,23 @@ async function load() {
       institution_id: filters.source.startsWith("institution:") ? Number(filters.source.split(":")[1]) : undefined,
       ...dateFilterParams(),
     });
-    const { data } = await fetchHealthTrends(filters.domain_id, params);
+    const monthlyParams = cleanParams({
+      source_type: filters.source.startsWith("institution") ? "institution" : filters.source,
+      institution_id: filters.source.startsWith("institution:") ? Number(filters.source.split(":")[1]) : undefined,
+      start_date: monthStart(),
+      end_date: localDate(),
+    });
+    const [trendResponse, monthlyResponse] = await Promise.all([
+      fetchHealthTrends(filters.domain_id, params),
+      fetchHealthTrends(filters.domain_id, monthlyParams),
+    ]);
+    const { data } = trendResponse;
     rawSeries.value = data.series_by_indicator || [];
     qualitativeSeries.value = data.qualitative_series_by_indicator || [];
-    showAllAbnormal.value = false;
+    monthlyAbnormalSeries.value = [
+      ...(monthlyResponse.data.series_by_indicator || []),
+      ...(monthlyResponse.data.qualitative_series_by_indicator || []),
+    ];
     const availableIds = rawSeries.value.map((entry) => entry.indicator.id);
     const retained = selectedIndicatorIds.value.filter((id) => availableIds.includes(id));
     selectedIndicatorIds.value = retained.length ? retained : availableIds;
@@ -385,7 +392,11 @@ onBeforeUnmount(() => { clearTimeout(analysisTimer); analysisController?.abort()
 .abnormal-panel{margin:18px 0;border-color:#f5b8b8}
 .abnormal-panel__heading,.abnormal-panel__actions{display:flex;align-items:center;justify-content:space-between;gap:16px}
 .abnormal-panel__heading>div:first-child{display:grid;gap:4px}
-.abnormal-panel__heading span,.abnormal-panel__notice{color:var(--el-text-color-secondary)}
+.abnormal-panel__heading span{color:var(--el-text-color-secondary)}
+.health-good-panel{margin:18px 0;border-color:#8bc9bb}
+.health-good-panel :deep(.el-card__body){display:flex;align-items:center;gap:12px}
+.health-good-panel__icon{display:grid;width:34px;height:34px;place-items:center;border-radius:50%;background:#dff5ec;color:#17735e;font-weight:800}
+.health-good-panel div{display:grid;gap:3px}.health-good-panel div>span{color:var(--el-text-color-secondary);font-size:13px}
 .abnormal-list{display:grid;gap:10px;max-height:360px;overflow:auto}
 .abnormal-list article{display:grid;grid-template-columns:minmax(180px,1fr) auto auto;align-items:center;gap:16px;padding:12px 14px;border-radius:12px;background:#fff3f3}
 .abnormal-list__identity,.abnormal-list__tail{display:grid;gap:3px}

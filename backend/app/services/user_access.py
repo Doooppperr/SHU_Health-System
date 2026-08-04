@@ -19,7 +19,6 @@ IDENTITY_WRITE_ALLOWLIST = {
     "/api/auth/email",
     "/api/auth/refresh",
     "/api/auth/logout",
-    "/api/auth/delegation/back",
     "/api/auth/delegation/exit",
 }
 

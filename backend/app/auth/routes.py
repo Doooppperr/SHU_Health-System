@@ -687,21 +687,3 @@ def exit_delegated_session():
         return error
     db.session.commit()
     return result, 200
-
-
-@auth_bp.post("/delegation/back")
-@jwt_required()
-def return_to_previous_delegated_account():
-    claims = get_jwt()
-    if claims.get("delegated") is not True:
-        return {
-            "message": "当前不是关联账号登录状态",
-            "code": "DELEGATION_NOT_ACTIVE",
-        }, 409
-    from app.services.delegation import return_from_delegation
-
-    result, error = return_from_delegation(claims)
-    if error:
-        return error
-    db.session.commit()
-    return result, 200
