@@ -23,7 +23,9 @@ test("访客可浏览机构套餐，预约登录跳转保留上下文", async ({
   await expect(page.getByText("021-114514")).toBeVisible();
   await expect(page.getByText("shucs666@shu.edu.cn")).toBeVisible();
 
-  await page.goto("/explore/institutions/1?appointment_date=2030-01-01");
+  const catalog = await (await page.request.get("/api/public/organizations")).json();
+  const institutionId = catalog.items[0].branches[0].id;
+  await page.goto(`/explore/institutions/${institutionId}?appointment_date=2030-01-01`);
   await expect(page.getByRole("heading", { name: "服务介绍" })).toBeVisible();
   const bookingButton = page.getByRole("button", { name: "登录后预约" }).first();
   await expect(bookingButton).toBeVisible();
@@ -32,7 +34,7 @@ test("访客可浏览机构套餐，预约登录跳转保留上下文", async ({
 
   const redirect = new URL(page.url()).searchParams.get("redirect");
   expect(redirect).toContain("/appointments?");
-  expect(redirect).toContain("institution_id=1");
+  expect(redirect).toContain(`institution_id=${institutionId}`);
   expect(redirect).toMatch(/package_id=\d+/);
   expect(redirect).toContain("appointment_date=2030-01-01");
 });
@@ -59,12 +61,20 @@ test("未实名认证账号登录后立即提示一次性实名认证", async ({
 });
 
 test("用户预约页展示个人投诉闭环与可操作状态", async ({ page }) => {
-  await login(page, "test1");
+  await login(page, "test2");
   await page.goto("/appointments");
 
-  await expect(page.getByRole("heading", { name: "我的投诉" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "投诉与退款" })).toBeVisible();
+  await page.getByRole("button", { name: /预约记录/ }).click();
+  const payButton = page.getByRole("button", { name: "立即付款" }).first();
+  await expect(payButton).toBeVisible();
+  await payButton.click();
+  const paymentDialog = page.getByRole("dialog", { name: "订单付款" });
+  await expect(paymentDialog).toBeVisible();
+  await paymentDialog.getByRole("button", { name: "立即付款" }).click();
+  await expect(paymentDialog.getByText("付款成功", { exact: true })).toBeVisible();
   await expect(page.locator(".complaint-card").first()).toBeVisible();
-  await expect(page.locator(".complaint-card").first().getByText(/待机构处理|待你确认|平台处理中|已解决/)).toBeVisible();
+  await expect(page.locator(".complaint-card").first().getByText(/待机构处理|待用户确认|平台处理中|已解决/)).toBeVisible();
 });
 
 test("机构端可进入画像、报告复核和投诉处理工作台", async ({ page }) => {
@@ -81,6 +91,9 @@ test("机构端可进入画像、报告复核和投诉处理工作台", async ({
 
   await page.goto("/org/complaints");
   await expect(page.getByRole("heading", { name: "投诉处理" })).toBeVisible();
+
+  await page.goto("/org/finance");
+  await expect(page.getByRole("heading", { name: "收款与退款", level: 2 })).toBeVisible();
 });
 
 test("管理员可进入评论处罚申诉与平台投诉工作台", async ({ page }) => {
@@ -91,4 +104,21 @@ test("管理员可进入评论处罚申诉与平台投诉工作台", async ({ pa
 
   await page.goto("/admin/complaints");
   await expect(page.getByRole("heading", { name: "投诉记录" })).toBeVisible();
+
+  await page.goto("/admin/finance");
+  await expect(page.getByRole("heading", { name: "托管、服务费与退款治理" })).toBeVisible();
+});
+
+test("移动端机构财务页面保持可操作且不产生页面级横向溢出", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page, "institution1_staff1");
+  await page.goto("/org/finance");
+
+  await expect(page.getByRole("heading", { name: "收款与退款", level: 2 })).toBeVisible();
+  await expect(page.getByText("可用余额", { exact: true })).toBeVisible();
+  const viewportMetrics = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(viewportMetrics.scrollWidth).toBeLessThanOrEqual(viewportMetrics.clientWidth);
 });

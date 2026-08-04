@@ -387,12 +387,12 @@ def test_failed_local_additive_repair_keeps_source_and_recovery_backup(
         connection.commit()
     before_hash = hashlib.sha256(database_path.read_bytes()).hexdigest()
 
-    with pytest.raises(RuntimeError, match="foreign_key_check"):
+    with pytest.raises(RuntimeError, match="foreign[-_]key"):
         rebuild_database(database_path)
 
     assert hashlib.sha256(database_path.read_bytes()).hexdigest() == before_hash
     backups = list(tmp_path.glob(
-        "additive-copy-on-write-failure.before-schema-v12-*.db"
+        "additive-copy-on-write-failure.before-schema-v13-*.db"
     ))
     assert len(backups) == 1
     assert backups[0].exists()

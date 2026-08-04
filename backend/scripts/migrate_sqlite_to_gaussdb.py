@@ -520,14 +520,14 @@ def migrate(
             target.execute(
                 text(
                     "INSERT INTO alembic_version (version_num) "
-                    "VALUES ('20260730_schema_v12')"
+                    "VALUES ('20260804_schema_v13')"
                 )
             )
             if target.dialect.name == "sqlite":
                 # SQLite is supported as an isolated rehearsal target even
                 # though production uses openGauss. Keep its native marker in
-                # sync so the same strict v12 validator can inspect the copy.
-                target.exec_driver_sql("PRAGMA user_version=12")
+                # sync so the same strict v13 validator can inspect the copy.
+                target.exec_driver_sql("PRAGMA user_version=13")
 
             for table_name, expected in expected_counts.items():
                 actual = target.execute(

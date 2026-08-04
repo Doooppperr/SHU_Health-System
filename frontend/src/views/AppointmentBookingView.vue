@@ -181,7 +181,7 @@
         <el-button v-if="step < 3" type="primary" :disabled="!canContinue || !profileReady" @click="step += 1">继续</el-button>
         <template v-else>
           <el-button v-if="!enough" @click="joinWaitlist">到空位时提醒我</el-button>
-          <el-button type="primary" :disabled="!canBook" :loading="submitting" @click="book">确认预约</el-button>
+          <el-button type="primary" :disabled="!canBook" :loading="submitting" @click="book">提交订单</el-button>
         </template>
       </footer>
     </el-card>
@@ -235,6 +235,11 @@
             <div><el-tag v-for="status in record.status_codes || []" :key="status" :type="appointmentMeta(status).type" effect="light">{{ appointmentMeta(status).label }}</el-tag></div>
             <h4>{{ record.package?.name || record.package_name || record.package_name_snapshot || "体检套餐" }}</h4>
             <p>{{ record.institution?.name }} · {{ record.institution?.branch_name }}</p>
+            <div v-if="record.payment_order" class="booking-payment-line">
+              <el-tag :type="paymentTone(record.payment_order.status)">{{ record.payment_order.status_label }}</el-tag>
+              <span>订单 {{ record.payment_order.order_no }} · ¥ {{ Number(record.payment_order.amount || 0).toFixed(2) }}</span>
+              <el-button v-if="record.payment_order.status === 'pending'" size="small" type="primary" @click="openPayment(record.payment_order, record)">立即付款</el-button>
+            </div>
             <div class="appointment-participant-list">
               <article v-for="appointment in groupAppointments(record)" :key="appointment.id" class="appointment-participant-card">
                 <header>
@@ -257,12 +262,13 @@
           </div>
           <div v-if="record.kind === 'appointment'" class="booking-record-card__actions">
             <el-button
+              v-if="record.booked_by_user_id === auth.user?.id && record.payment"
               size="small"
               plain
               :type="complaintForAppointment(record.id) ? 'primary' : 'danger'"
               @click="handleComplaintAction(record)"
             >
-              {{ complaintForAppointment(record.id) ? "查看投诉" : "投诉机构" }}
+              {{ complaintForAppointment(record.id) ? "查看投诉与退款" : "投诉与退款" }}
             </el-button>
             <el-button
               v-if="record.status === 'unfulfilled'"
@@ -314,7 +320,7 @@
     <el-card shadow="never" class="user-panel complaint-history-panel">
       <template #header>
         <div class="user-section-heading">
-          <div><span>服务反馈</span><h3>我的投诉</h3></div>
+          <div><span>服务反馈</span><h3>投诉与退款</h3></div>
           <small>{{ complaintPagination.total }} 条</small>
         </div>
       </template>
@@ -329,6 +335,15 @@
           </header>
           <h4>{{ item.category_label || complaintCategoryLabel(item.category) }}</h4>
           <p>{{ item.content || item.description }}</p>
+          <div v-if="item.refund" class="booking-payment-line">
+            <el-tag :type="item.refund.status === 'refunded' ? 'success' : item.refund.status === 'denied' ? 'info' : 'warning'">
+              {{ refundStatusLabel(item.refund.status) }}
+            </el-tag>
+            <span>申请退款 ¥ {{ Number(item.refund.amount || 0).toFixed(2) }}</span>
+            <span>资金位置：{{ item.refund.fund_location }}</span>
+            <small v-if="item.refund.due_at">机构处理期限：{{ formatDateTime(item.refund.due_at) }}</small>
+            <small v-if="item.refund.decision_note">责任认定：{{ item.refund.decision_note }}</small>
+          </div>
           <div v-if="item.institution_reply" class="complaint-reply"><strong>机构回复</strong><p>{{ item.institution_reply }}</p></div>
           <div v-if="item.admin_reply" class="complaint-reply"><strong>平台回复</strong><p>{{ item.admin_reply }}</p></div>
           <el-timeline v-if="conversationMessages(item).length" class="complaint-message-timeline">
@@ -362,7 +377,7 @@
       </footer>
     </el-card>
 
-    <el-dialog v-model="complaintDialogVisible" title="提交机构投诉" width="min(540px, 92vw)">
+    <el-dialog v-model="complaintDialogVisible" title="提交投诉与退款申请" width="min(540px, 92vw)">
       <el-alert
         :title="`${complaintForm.institution_name || '该机构'} · ${complaintForm.subject_name || '本次预约'}`"
         type="info"
@@ -386,11 +401,27 @@
       </el-form>
       <template #footer>
         <el-button @click="complaintDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="complaintSubmitting" @click="submitComplaint">提交投诉</el-button>
+        <el-button type="primary" :loading="complaintSubmitting" @click="submitComplaint">提交投诉与退款申请</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="receiptVisible" title="预约成功" width="min(560px, 92vw)">
+    <el-dialog v-model="paymentVisible" title="订单付款" width="min(600px, 94vw)" :close-on-click-modal="false">
+      <div v-if="paymentOrder" class="payment-dialog-card">
+        <div><span>订单号</span><strong>{{ paymentOrder.order_no }}</strong></div>
+        <div><span>体检服务</span><strong>{{ bookingReceipt?.package?.name || bookingReceipt?.package_name || selectedPackage?.name }}</strong></div>
+        <div><span>受检人数</span><strong>{{ paymentOrder.items?.length || bookingReceipt?.party_size || 1 }} 人</strong></div>
+        <div><span>应付金额</span><strong class="payment-amount">¥ {{ Number(paymentOrder.amount || 0).toFixed(2) }}</strong></div>
+        <el-alert v-if="paymentOrder.status === 'pending'" :title="`请在 ${paymentCountdown(paymentOrder)} 内完成付款，超时后名额将自动释放。`" type="warning" show-icon :closable="false" />
+        <el-result v-else-if="paymentOrder.status === 'paid'" icon="success" title="付款成功" sub-title="预约已经正式确认，可在预约记录中查看后续进度。" />
+      </div>
+      <template #footer>
+        <el-button @click="paymentVisible = false">稍后处理</el-button>
+        <el-button v-if="paymentOrder?.status === 'pending'" type="primary" :loading="paying" @click="completePayment">立即付款</el-button>
+        <el-button v-else type="primary" @click="paymentVisible = false">完成</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="receiptVisible" title="付款成功，预约已确认" width="min(560px, 92vw)">
       <el-result icon="success" title="预约已提交">
         <template #sub-title>
           <p>{{ receiptSummary }}</p>
@@ -417,6 +448,7 @@ import {
   fetchBookingGroups,
   fetchMyAppointments,
   fetchWaitlistSubscriptions,
+  payPaymentOrder,
   resolveBookingParticipantToken,
 } from "../api/appointments";
 import { fetchFriends } from "../api/friends";
@@ -469,6 +501,10 @@ const participantIntakes = reactive({});
 const selfRecent = reactive({ height: false, weight: false });
 const complaintDialogVisible = ref(false);
 const receiptVisible = ref(false);
+const paymentVisible = ref(false);
+const paymentOrder = ref(null);
+const paying = ref(false);
+const paymentClock = ref(Date.now());
 const bookingDrawerVisible = ref(false);
 const waitlistDrawerVisible = ref(false);
 const bookingReceipt = ref(null);
@@ -891,8 +927,9 @@ async function book() {
   try {
     const { data } = await createBookingGroup(payload());
     bookingReceipt.value = data.item || data.group || data;
-    receiptVisible.value = true;
-    ElMessage.success("预约成功，所有受检者都已加入本次安排");
+    paymentOrder.value = data.payment_order || bookingReceipt.value?.payment_order || null;
+    paymentVisible.value = Boolean(paymentOrder.value);
+    ElMessage.success("订单已创建，请完成付款以确认预约");
     step.value = 1;
     form.notice_confirmed = false;
     resetParticipantsAfterBooking();
@@ -1171,16 +1208,67 @@ onMounted(async () => {
   }
 });
 
+function refundStatusLabel(status) {
+  return ({
+    requested: "退款申请处理中",
+    institution_approved: "机构已同意退款",
+    platform_awarded: "平台已支持退款",
+    institution_action_required: "等待机构退款",
+    refunded: "已原路退款",
+    denied: "本次不支持退款",
+  })[status] || "退款处理中";
+}
+
+function paymentTone(status) {
+  return ({ pending: "warning", paid: "success", partially_refunded: "warning", refunded: "info", expired: "info" })[status] || "info";
+}
+
+function paymentCountdown(order) {
+  if (!order?.expires_at) return "15 分钟";
+  const seconds = Math.max(0, Math.floor((new Date(order.expires_at).getTime() - paymentClock.value) / 1000));
+  return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function openPayment(order, record = null) {
+  paymentOrder.value = order;
+  if (record) bookingReceipt.value = record;
+  paymentVisible.value = true;
+}
+
+async function completePayment() {
+  if (!paymentOrder.value?.id) return;
+  paying.value = true;
+  try {
+    const { data } = await payPaymentOrder(paymentOrder.value.id);
+    paymentOrder.value = data.item;
+    ElMessage.success("付款成功，预约已正式确认");
+    await Promise.all([loadAvailability(), reload()]);
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.message || "付款没有完成，请稍后重试");
+  } finally {
+    paying.value = false;
+  }
+}
+
 watch(() => route.query.complaint_id, async (value, previous) => {
   if (!value || value === previous) return;
   await loadComplaints();
   focusComplaintById(value);
 });
 
-onBeforeUnmount(() => window.clearTimeout(searchTimer));
+const paymentTimer = window.setInterval(() => { paymentClock.value = Date.now(); }, 1000);
+onBeforeUnmount(() => {
+  window.clearTimeout(searchTimer);
+  window.clearInterval(paymentTimer);
+});
 </script>
 
 <style scoped>
+.booking-payment-line { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin:10px 0; color:#526d70; font-size:13px; }
+.payment-dialog-card { display:grid; gap:14px; }
+.payment-dialog-card>div { display:flex; align-items:center; justify-content:space-between; gap:18px; padding:12px 0; border-bottom:1px solid var(--color-border,#e4ecea); }
+.payment-dialog-card span { color:#748789; }
+.payment-amount { color:#d45b32; font-size:24px; }
 .booking-record-entry-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

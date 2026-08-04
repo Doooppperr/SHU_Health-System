@@ -32,6 +32,13 @@ from .v11 import (
 )
 from .moderation import CommentAppeal, CommentSanction
 from .analytics import InstitutionAudienceInsightCache
+from .finance import (
+    FinanceLedgerEntry,
+    FinanceTransaction,
+    PaymentOrder,
+    PaymentOrderItem,
+    RefundCase,
+)
 
 # Internal compatibility names for the existing AI reasoning layer only.  The
 # old health_records/health_indicators tables and public CRUD routes are gone.
@@ -42,6 +49,8 @@ __all__ = [
     "User", "Comment", "CommentReply", "CommentSanction", "CommentAppeal",
     "AppointmentComplaint", "ComplaintEvent", "ComplaintMessage",
     "InstitutionAudienceInsightCache",
+    "PaymentOrder", "PaymentOrderItem", "FinanceTransaction",
+    "FinanceLedgerEntry", "RefundCase",
     "PasswordVerificationChallenge", "FriendRelation", "DelegationSessionAudit",
     "DelegatedActionAudit",
     "Organization", "Institution", "InstitutionImage",

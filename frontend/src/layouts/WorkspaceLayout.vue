@@ -96,7 +96,7 @@
           <h1>{{ pageTitle }}</h1>
         </div>
         <div class="workspace-top-actions">
-          <NotificationCenter v-if="workspaceType === 'user'" />
+          <NotificationCenter />
           <AiAssistantLauncher />
           <AppearanceQuickControls />
           <router-link class="workspace-portal-link" to="/">返回门户</router-link>
@@ -170,6 +170,7 @@ const menus = {
     { name: "org-packages", label: "体检套餐", icon: "套" },
     { name: "org-reports", label: "体检管理", icon: "检" },
     { name: "org-complaints", label: "投诉处理", icon: "诉" },
+    { name: "org-finance", label: "收款与退款", icon: "款" },
     { name: "org-package-reviews", label: "信息审核", icon: "审" },
   ],
   admin: [
@@ -177,6 +178,7 @@ const menus = {
     { name: "admin-institutions", label: "机构与套餐", icon: "院" },
     { name: "admin-users", label: "用户与角色", icon: "用" },
     { name: "admin-complaints", label: "投诉记录", icon: "诉" },
+    { name: "admin-finance", label: "平台财务", icon: "款" },
     { name: "admin-comments", label: "评论审核", icon: "评" },
     { name: "admin-package-reviews", label: "机构审核记录", icon: "审" },
     { name: "admin-agent-ops", label: "Agent 运营", icon: "智" },

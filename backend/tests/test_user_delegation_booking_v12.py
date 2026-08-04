@@ -916,6 +916,10 @@ def test_health_id_token_dto_and_missing_proxy_intake_fill(app, client):
         },
     )
     assert booked.status_code == 201, booked.get_json()
+    assert client.post(
+        f"/api/payment-orders/{booked.get_json()['payment_order']['id']}/pay",
+        headers=booker_headers,
+    ).status_code == 200
     participant = booked.get_json()["item"]["participants"][0]
     assert participant["participant_type"] == "health_code_token"
     assert "height_cm" not in participant

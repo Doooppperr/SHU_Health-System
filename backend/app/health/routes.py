@@ -17,6 +17,8 @@ from app.services.indicator_values import IndicatorValueError, evaluate_result_s
 
 
 APPOINTMENT_TIMELINE_STATUS = {
+    "pending_payment": ("等待付款", "请在十五分钟内完成付款以确认预约"),
+    "payment_expired": ("付款超时", "订单已关闭，预约名额已经释放"),
     "unfulfilled": ("预约成功", "请按预约日期前往机构体检"),
     "awaiting_report": ("等待健康数据", "已确认到检，等待机构归档健康数据"),
     "fulfilled": ("已完成", "健康数据已由机构提交并归档"),

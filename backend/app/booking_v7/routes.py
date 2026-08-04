@@ -13,7 +13,7 @@ from app.models import (
     BookingParticipantAuthorization, FriendRelation, Institution,
     NotificationOutbox, Organization, Package, PackageVersion,
     PackageVersionDomain, User, WaitlistSubscription, SelfMeasurement, IndicatorDict,
-    WaitlistSubscriptionParticipant, AvailabilityNotificationEvent,
+    WaitlistSubscriptionParticipant, AvailabilityNotificationEvent, PaymentOrder,
 )
 from app.services.domain_rules import current_package_version
 from app.services.account_email import effective_account_email
@@ -32,9 +32,11 @@ from app.services.user_access import (
 )
 
 
-ACTIVE_STATUSES = ("unfulfilled", "awaiting_report", "fulfilled")
+ACTIVE_STATUSES = ("pending_payment", "unfulfilled", "awaiting_report", "fulfilled")
 BUSINESS_TZ = ZoneInfo("Asia/Shanghai")
 STATUS_LABELS = {
+    "pending_payment": "待付款",
+    "payment_expired": "付款超时",
     "unfulfilled": "预约成功",
     "awaiting_report": "等待健康数据",
     "fulfilled": "已完成",
@@ -44,6 +46,9 @@ STATUS_LABELS = {
     "cancelled": "已取消",
 }
 RECEIPT_EVENT_TYPES = {
+    "order_created",
+    "payment_completed",
+    "payment_expired",
     "booked",
     "attended",
     "report_uploaded",
@@ -326,6 +331,8 @@ def _group_payload(row):
         "status_labels": [STATUS_LABELS.get(status, status) for status in statuses],
         "can_cancel": any(item.status == "unfulfilled" for item in row.appointments),
     })
+    payment_order = PaymentOrder.query.filter_by(booking_group_id=row.id).first()
+    payload["payment_order"] = payment_order.to_dict() if payment_order else None
     return payload
 
 
@@ -444,6 +451,9 @@ def enqueue_available(institution, day, slot):
 @booking_v7_bp.get("/booking-groups")
 @roles_required(ROLE_USER)
 def groups():
+    from app.services.finance import run_due_finance_tasks
+    run_due_finance_tasks()
+    db.session.commit()
     query = BookingGroup.query.filter_by(booked_by_user_id=g.current_user.id)
     try:
         start = date.fromisoformat(request.args["start_date"]) if request.args.get("start_date") else None
@@ -483,6 +493,7 @@ def create_booking_group_for_user(booker, payload, *, commit=True):
     institution = Institution.query.join(Institution.organization).filter(
         Institution.id == institution_id,
         Institution.is_active.is_(True),
+        Institution.operations_suspended_at.is_(None),
         Organization.is_active.is_(True),
     ).first()
     if not institution: return {"message": "institution not found"}, 404
@@ -522,7 +533,7 @@ def create_booking_group_for_user(booker, payload, *, commit=True):
         intake = intakes[participant.id]
         appointment = Appointment(user_id=participant.id, booked_by_user_id=booker.id,
             booking_group_id=group.id, institution_id=institution.id, package_id=package.id,
-            package_version_id=version.id, appointment_date=day, active_date_key=day, status="unfulfilled",
+            package_version_id=version.id, appointment_date=day, active_date_key=day, status="pending_payment",
             user_name_snapshot=participant.real_name or participant.username, user_health_id_snapshot=participant.health_id,
             user_birth_date_snapshot=participant.birth_date, user_gender_snapshot=participant.gender,
             user_contact_snapshot=participant.phone or effective_account_email(participant), package_name_snapshot=version.name_snapshot,
@@ -541,111 +552,14 @@ def create_booking_group_for_user(booker, payload, *, commit=True):
             participant_token_id=participant_item.get("participant_token_id"),
             created_at=now,
         ))
-        db.session.add(AppointmentEvent(appointment_id=appointment.id, event_type="booked",
-                                        status_snapshot="unfulfilled", message="预约成功",
+        db.session.add(AppointmentEvent(appointment_id=appointment.id, event_type="order_created",
+                                        status_snapshot="pending_payment", message="订单已创建，等待付款",
                                         actor_user_id=booker.id, occurred_at=now))
     slot.revision += 1
     after = _remaining(institution, day)
     _reset_unsatisfied(institution.id, day, after)
-    recipient = institution.notification_email or next(
-        (effective_account_email(admin) for admin in institution.administrators if effective_account_email(admin)),
-        None,
-    )
-    if institution.notification_enabled and recipient:
-        db.session.add(NotificationOutbox(event_type="booking_group_created",
-            idempotency_key=f"booking-group:{group.id}:created", recipient=recipient,
-            payload={"group_code": group.group_code, "institution": institution.name,
-                     "appointment_date": day.isoformat(), "package": version.name_snapshot,
-                     "party_size": len(participants), "login_url": "/login"}))
-        if remaining is not None and remaining > 0 and after == 0:
-            db.session.add(NotificationOutbox(event_type="appointment_date_full",
-                idempotency_key=f"institution:{institution.id}:date:{day.isoformat()}:full:{slot.revision}",
-                recipient=recipient, payload={"institution": institution.name,
-                    "appointment_date": day.isoformat(), "message": "该日期预约名额已满", "login_url": "/login"}))
-    # User confirmations are independent of the institution's notification switch.
-    # One logical account receives one message; accounts sharing an address still
-    # receive their own traceable confirmation.
-    participant_by_id = {
-        item["user"].id: item["user"]
-        for item in participants
-    }
-    participant_meta = {
-        item["user"].id: item
-        for item in participants
-    }
-    notification_users = dict(participant_by_id)
-    notification_users[booker.id] = booker
-    participant_summary = [
-        {
-            "name": (
-                masked_name(item["user"])
-                if item["participant_type"]
-                in {"health_code", "health_code_token"}
-                else item["user"].real_name or item["user"].username
-            ),
-            "health_id_masked": _masked_health_id(item["user"].health_id),
-            "participant_type": item["participant_type"],
-        }
-        for item in participants
-    ]
-    participant_text = "、".join(
-        f"{item['name']}（{item['health_id_masked']}）" for item in participant_summary
-    )
-    for notification_user in notification_users.values():
-        is_organizer = notification_user.id == booker.id
-        own = participant_by_id.get(notification_user.id)
-        receipt_participant_text = participant_text if is_organizer else (
-            f"{own.real_name or own.username}（{_masked_health_id(own.health_id)}）"
-            if own else "您代预约的受检者"
-        )
-        email_payload = {
-                "group_code": group.group_code,
-                "institution": institution.name,
-                "branch": institution.branch_name,
-                "address": institution.address,
-                "consult_phone": institution.consult_phone,
-                "appointment_date": day.isoformat(),
-                "package": version.name_snapshot,
-                "booking_notice": version.booking_notice_snapshot,
-                "recipient_name": notification_user.real_name or "用户",
-                "is_organizer": is_organizer,
-                "participant": ({
-                    "name": own.real_name,
-                    "health_id_masked": _masked_health_id(own.health_id),
-                    "participant_type": participant_meta[own.id]["participant_type"],
-                } if own else None),
-                "participants": participant_summary if is_organizer else [],
-                "preparation_items": [
-                    "身份证原件",
-                    "HealthDoc 预约凭证",
-                    "病历本",
-                    "既往体检报告或影像资料",
-                    "正在使用的药物清单",
-                ],
-                "login_url": "/appointments",
-            }
-        enqueue_user_notification(
-            notification_user,
-            event_type="booking_user_confirmed",
-            idempotency_key=f"booking-group:{group.id}:user:{notification_user.id}:confirmed",
-            title="体检预约成功",
-            body=(
-                f"{day.isoformat()} {institution.name}·{institution.branch_name}，地址：{institution.address}，"
-                f"电话：{institution.consult_phone or '请在机构详情查看'}，套餐：{version.name_snapshot}，"
-                f"受检者：{receipt_participant_text}。请携带身份证原件、HealthDoc预约凭证、病历本、"
-                f"既往体检报告或影像资料和用药清单。机构已审核须知："
-                f"{version.booking_notice_snapshot or '暂无额外准备要求'}"
-            ),
-            action_url="/appointments",
-            payload={"booking_group_id": group.id},
-            email_payload=email_payload,
-        )
-    participant_ids = {item["user"].id for item in participants}
-    for sub in WaitlistSubscription.query.filter_by(subscriber_user_id=booker.id,
-            institution_id=institution.id, package_id=package.id, appointment_date=day,
-            party_size=len(participants), status="active").all():
-        if {row.subject_user_id for row in sub.participants} == participant_ids:
-            sub.status = "closed"; sub.closed_at = now
+    from app.services.finance import create_payment_order
+    payment_order = create_payment_order(group, booker, now=now)
     try:
         db.session.commit() if commit else db.session.flush()
     except IntegrityError:
@@ -657,7 +571,10 @@ def create_booking_group_for_user(booker, payload, *, commit=True):
             "appointment_date": day.isoformat(),
             "conflicts": [],
         }, 409
-    return {"item": _group_payload(group)}, 201
+    return {
+        "item": _group_payload(group),
+        "payment_order": payment_order.to_dict(),
+    }, 201
 
 
 @booking_v7_bp.post("/booking-groups")
@@ -706,6 +623,11 @@ def cancel_booking_group_for_user(user, group_id, *, commit=True):
         db.session.add(AppointmentEvent(appointment_id=row.id, event_type="cancelled",
             status_snapshot="cancelled", message="预约组中的未完成预约已取消",
             actor_user_id=user.id, occurred_at=now))
+        from app.models import PaymentOrderItem
+        from app.services.finance import refund_item
+        payment_item = PaymentOrderItem.query.filter_by(appointment_id=row.id).first()
+        if payment_item is not None:
+            refund_item(payment_item, actor_user=user, reason="user_cancellation")
     slot = _lock_capacity(institution, group.appointment_date); slot.revision += 1
     enqueue_available(institution, group.appointment_date, slot)
     db.session.commit() if commit else db.session.flush()
@@ -772,6 +694,7 @@ def create_waitlist_for_user(user, payload, *, commit=True):
     institution = Institution.query.join(Institution.organization).filter(
         Institution.id == institution_id,
         Institution.is_active.is_(True),
+        Institution.operations_suspended_at.is_(None),
         Organization.is_active.is_(True),
     ).first()
     if not institution: return {"message": "institution not found"}, 404

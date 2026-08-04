@@ -9,13 +9,13 @@ from sqlalchemy.exc import OperationalError
 
 from app.appointments import appointments_bp
 from app.extensions import db
-from app.models import Appointment, AppointmentEvent, Institution, Organization, Package
+from app.models import Appointment, AppointmentEvent, Institution, Organization, Package, PaymentOrderItem
 from app.public_api.routes import public_package_payload
 from app.services.permissions import ROLE_USER, roles_required
 from app.services.user_access import complete_profile_required
 
 
-ACTIVE_CAPACITY_STATUSES = ("unfulfilled", "awaiting_report", "fulfilled")
+ACTIVE_CAPACITY_STATUSES = ("pending_payment", "unfulfilled", "awaiting_report", "fulfilled")
 BUSINESS_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
@@ -126,6 +126,7 @@ def availability():
         return error
     query = Institution.query.join(Institution.organization).filter(
         Institution.is_active.is_(True),
+        Institution.operations_suspended_at.is_(None),
         Organization.is_active.is_(True),
     )
     keyword = (request.args.get("q") or "").strip()
@@ -146,6 +147,9 @@ def availability():
 @appointments_bp.get("")
 @roles_required(ROLE_USER)
 def list_appointments():
+    from app.services.finance import run_due_finance_tasks
+    run_due_finance_tasks()
+    db.session.commit()
     query = Appointment.query.filter_by(user_id=g.current_user.id)
     page = max(request.args.get("page", 1, type=int) or 1, 1)
     size = min(max(request.args.get("page_size", 15, type=int) or 15, 1), 100)
@@ -168,7 +172,7 @@ def list_appointments():
 @roles_required(ROLE_USER)
 @complete_profile_required
 def create_appointment():
-    """Compatibility adapter for the canonical v12 group-booking workflow.
+    """Compatibility adapter for the canonical v13 group-booking workflow.
 
     The legacy endpoint remains available to older clients, but it no longer
     has an independent write path. A one-person request is normalized to a
@@ -206,6 +210,7 @@ def create_appointment():
     return {
         "item": item.to_dict(),
         "booking_group": group_payload,
+        "payment_order": result.get("payment_order"),
     }, 201
 
 
@@ -244,6 +249,10 @@ def cancel_appointment(appointment_id):
         actor_user_id=g.current_user.id,
         occurred_at=cancelled_at,
     ))
+    payment_item = PaymentOrderItem.query.filter_by(appointment_id=item.id).first()
+    if payment_item is not None:
+        from app.services.finance import refund_item
+        refund_item(payment_item, actor_user=g.current_user, reason="user_cancellation")
     from app.booking_v7.routes import _lock_capacity, enqueue_available
     slot = _lock_capacity(item.institution, item.appointment_date); slot.revision += 1
     enqueue_available(item.institution, item.appointment_date, slot)

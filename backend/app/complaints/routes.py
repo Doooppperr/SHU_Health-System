@@ -10,6 +10,8 @@ from app.models import (
     AppointmentComplaint,
     ComplaintEvent,
     ComplaintMessage,
+    PaymentOrderItem,
+    RefundCase,
     User,
 )
 from app.services.notifications import enqueue_user_notification
@@ -175,12 +177,20 @@ def create_complaint():
         appointment_id = int(payload.get("appointment_id"))
     except (TypeError, ValueError):
         return {"message": "appointment_id is required"}, 400
-    appointment = Appointment.query.filter_by(
-        id=appointment_id,
-        user_id=g.current_user.id,
+    appointment = Appointment.query.filter(
+        Appointment.id == appointment_id,
+        Appointment.booked_by_user_id == g.current_user.id,
     ).first()
     if appointment is None:
-        return {"message": "未找到可投诉的预约记录"}, 404
+        return {"message": "只有原付款人可以发起投诉与退款"}, 404
+    payment_item = PaymentOrderItem.query.filter_by(appointment_id=appointment.id).first()
+    if (
+        payment_item is None
+        or payment_item.order.payer_user_id != g.current_user.id
+        or payment_item.order.status in {"pending", "expired"}
+        or payment_item.fund_status == "refunded"
+    ):
+        return {"message": "该预约没有可申请退款的已付款订单"}, 409
     category = str(payload.get("category") or "service").strip()
     if category not in COMPLAINT_CATEGORIES:
         return {"message": "投诉类型不受支持"}, 400
@@ -206,6 +216,12 @@ def create_complaint():
     db.session.add(item)
     try:
         db.session.flush()
+        db.session.add(RefundCase(
+            complaint_id=item.id,
+            payment_item_id=payment_item.id,
+            requested_by_user_id=g.current_user.id,
+            status="requested",
+        ))
         _message(item, content, created_at=item.created_at)
         _event(item, "created", content=content)
         _notify_institution(
@@ -255,6 +271,10 @@ def confirm_complaint_resolved(complaint_id):
         db.session.rollback()
         return _state_conflict("投诉状态已变化，请刷新后重试")
     _event(item, "user_confirmed", content="用户确认机构处理结果，投诉已解决")
+    if item.refund_case and item.refund_case.status == "requested":
+        item.refund_case.status = "denied"
+        item.refund_case.decision = "user_accepted_no_refund"
+        item.refund_case.decided_at = now
     _notify_institution(
         item,
         event_type="complaint_user_confirmed",

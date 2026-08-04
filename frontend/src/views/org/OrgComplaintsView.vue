@@ -3,7 +3,7 @@
     <section class="page-intro">
       <div>
         <p>用户服务反馈</p>
-        <h2>投诉处理</h2>
+        <h2>投诉与退款</h2>
         <span>及时说明处理措施。机构回复后，由用户确认解决或申请平台介入。</span>
       </div>
       <el-select v-model="status" clearable placeholder="全部状态" style="width: 180px" @change="statusChanged">
@@ -33,6 +33,7 @@
           <div><dt>投诉类型</dt><dd>{{ item.category_label || item.category || "其他" }}</dd></div>
         </dl>
         <p class="complaint-content">{{ item.content || item.description }}</p>
+        <div v-if="item.refund" class="reply-box is-warning"><strong>退款申请 ¥ {{ Number(item.refund.amount || 0).toFixed(2) }}</strong><p>{{ refundLabel(item.refund.status) }}<span v-if="item.refund.due_at"> · 截止 {{ formatTime(item.refund.due_at) }}</span></p></div>
         <div v-if="item.institution_reply" class="reply-box">
           <strong>机构已回复</strong><p>{{ item.institution_reply }}</p>
         </div>
@@ -57,7 +58,8 @@
           >
             回复并提交处理结果
           </el-button>
-          <span v-else>当前阶段无需机构操作</span>
+          <el-button v-if="item.status === 'institution_pending' && item.refund" type="danger" plain @click="approveRefund(item)">同意全额退款</el-button>
+          <span v-if="!['institution_pending', 'pending_institution', 'institution_processing'].includes(item.status)">当前阶段无需机构操作</span>
         </footer>
       </article>
       <el-empty v-if="!loading && !items.length" description="当前没有投诉记录" />
@@ -95,10 +97,10 @@
 
 <script setup>
 import { nextTick, onMounted, reactive, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { useRoute } from "vue-router";
 
-import { fetchOrgComplaints, replyOrgComplaint } from "../../api/complaints";
+import { approveOrgComplaintRefund, fetchOrgComplaints, replyOrgComplaint } from "../../api/complaints";
 import { complaintMeta } from "../../utils/v12";
 
 const loading = ref(false);
@@ -168,6 +170,18 @@ async function locateComplaint(complaintId) {
 
 function formatTime(value) {
   return value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "—";
+}
+function refundLabel(value) { return ({ requested:"等待机构处理", institution_action_required:"请在三天内退款", refunded:"已原路退款", denied:"本次不支持退款", platform_awarded:"平台支持退款" })[value] || "退款处理中"; }
+
+async function approveRefund(item) {
+  try {
+    await ElMessageBox.confirm(`确认将 ¥${Number(item.refund?.amount || 0).toFixed(2)} 全额原路退回？`, "同意退款", { type: "warning", confirmButtonText: "确认退款" });
+    await approveOrgComplaintRefund(item.id);
+    ElMessage.success("退款已完成并原路退回");
+    await load();
+  } catch (error) {
+    if (error !== "cancel" && error !== "close") ElMessage.error(error?.response?.data?.message || "退款没有完成");
+  }
 }
 
 async function statusChanged() {

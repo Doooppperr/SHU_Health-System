@@ -859,6 +859,64 @@ def list_platform_complaints():
     )
 
 
+@admin_bp.get("/finance/summary")
+@roles_required(ROLE_ADMIN)
+def platform_finance_summary_route():
+    from app.services.finance import platform_finance_summary, run_due_finance_tasks
+    run_due_finance_tasks()
+    db.session.commit()
+    return {"summary": platform_finance_summary()}, 200
+
+
+@admin_bp.get("/finance/orders")
+@roles_required(ROLE_ADMIN)
+def platform_finance_orders():
+    from app.models import FinanceTransaction, PaymentOrderItem
+    from app.services.finance import run_due_finance_tasks
+    run_due_finance_tasks()
+    db.session.commit()
+    page = max(request.args.get("page", 1, type=int) or 1, 1)
+    size = min(max(request.args.get("page_size", 15, type=int) or 15, 1), 100)
+    query = PaymentOrderItem.query
+    status = str(request.args.get("status") or "").strip()
+    if status:
+        query = query.filter_by(fund_status=status)
+    total = query.count()
+    rows = query.order_by(PaymentOrderItem.created_at.desc(), PaymentOrderItem.id.desc()).offset(
+        (page - 1) * size
+    ).limit(size).all()
+    items = []
+    for row in rows:
+        transactions = FinanceTransaction.query.filter_by(
+            payment_item_id=row.id,
+        ).order_by(FinanceTransaction.created_at.asc()).all()
+        items.append({
+            **row.to_dict(),
+            "order_no": row.order.order_no,
+            "order_status": row.order.status,
+            "institution": {
+                "id": row.institution.id,
+                "name": row.institution.name,
+                "branch_name": row.institution.branch_name,
+            },
+            "refund": row.refund_case.to_dict() if row.refund_case else None,
+            "complaint_id": row.refund_case.complaint_id if row.refund_case else None,
+            "ledger_changes": [{
+                "transaction_no": transaction.transaction_no,
+                "type": transaction.transaction_type,
+                "created_at": transaction.created_at.isoformat(),
+                "entries": [{
+                    "account": entry.account_type,
+                    "amount": float(entry.amount),
+                } for entry in transaction.entries],
+            } for transaction in transactions],
+        })
+    return {
+        "items": items,
+        "pagination": {"page": page, "page_size": size, "total": total, "pages": (total + size - 1) // size},
+    }, 200
+
+
 @admin_bp.post("/complaints/<int:complaint_id>/start")
 @roles_required(ROLE_ADMIN)
 def start_platform_complaint(complaint_id):
@@ -979,6 +1037,14 @@ def resolve_platform_complaint(complaint_id):
             "message": "请先回复用户，再关闭投诉",
             "code": "COMPLAINT_STATE_CONFLICT",
         }, 409
+    payload = request.get_json(silent=True) or {}
+    decision = str(payload.get("decision") or "").strip()
+    if item.refund_case is not None and decision not in {
+        "institution_fault_refund",
+        "no_refund",
+    }:
+        return {"message": "请选择机构责任并退款或不支持退款"}, 400
+    decision_note = str(payload.get("decision_note") or item.admin_reply or "").strip()
     now = datetime.now(timezone.utc)
     if not _transition_platform_complaint_cas(
         item,
@@ -1001,7 +1067,11 @@ def resolve_platform_complaint(complaint_id):
         event_type="admin_resolved",
         actor_user_id=g.current_user.id,
         actor_role=g.current_user.role,
-        content="平台管理员关闭投诉并标记为已解决",
+        content=(
+            "平台认定机构责任并支持全额退款"
+            if decision == "institution_fault_refund"
+            else "平台完成处理，本次不支持退款"
+        ),
         created_at=now,
     ))
     _notify_complainant(
@@ -1016,6 +1086,37 @@ def resolve_platform_complaint(complaint_id):
         title="平台投诉处理已完成",
         body=f"投诉 #{item.id} 已由平台关闭并标记为已解决。",
     )
+    if item.refund_case is not None:
+        from app.services.finance import refund_item, require_institution_refund
+        refund_case = item.refund_case
+        refund_case.decision = decision
+        refund_case.decision_note = decision_note
+        refund_case.decided_by_user_id = g.current_user.id
+        refund_case.decided_at = now
+        refund_case.updated_at = now
+        if decision == "institution_fault_refund":
+            payment_item = refund_case.payment_item
+            if payment_item.fund_status in {"held", "scheduled"}:
+                refund_case.status = "platform_awarded"
+                refund_item(
+                    payment_item,
+                    actor_user=g.current_user,
+                    complaint=item,
+                    now=now,
+                    reason="platform_awarded",
+                )
+            elif payment_item.fund_status in {"settled", "refund_required"}:
+                require_institution_refund(
+                    refund_case,
+                    decided_by=g.current_user,
+                    note=decision_note,
+                    now=now,
+                )
+            elif payment_item.fund_status != "refunded":
+                db.session.rollback()
+                return {"message": "当前订单资金状态不能执行退款"}, 409
+        else:
+            refund_case.status = "denied"
     db.session.commit()
     return {"item": item.to_dict(), "message": "投诉已关闭并标记为已解决"}, 200
 

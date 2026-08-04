@@ -17,7 +17,7 @@
           <header class="notification-header">
             <div>
               <strong id="notification-panel-title">站内通知</strong>
-              <small>预约、报告与空位提醒</small>
+              <small>预约、付款、报告与服务提醒</small>
             </div>
             <button type="button" class="notification-close" aria-label="关闭站内通知" @click="close">×</button>
           </header>

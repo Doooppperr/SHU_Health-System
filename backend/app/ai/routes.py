@@ -760,6 +760,7 @@ def _institution_context_for_message(message):
     today = datetime.now(BUSINESS_TZ).date()
     institutions = Institution.query.filter(
         Institution.is_active.is_(True),
+        Institution.operations_suspended_at.is_(None),
         Institution.organization.has(is_active=True),
     ).order_by(Institution.id).all()
     ranked = []
@@ -809,7 +810,7 @@ def _institution_context_for_message(message):
             booked = Appointment.query.filter(
                 Appointment.institution_id == institution.id,
                 Appointment.appointment_date == day,
-                Appointment.status.in_(("unfulfilled", "awaiting_report", "fulfilled")),
+                Appointment.status.in_(("pending_payment", "unfulfilled", "awaiting_report", "fulfilled")),
             ).count()
             remaining = None if institution.daily_appointment_limit is None else max(institution.daily_appointment_limit - booked, 0)
             if remaining is None or remaining > 0:

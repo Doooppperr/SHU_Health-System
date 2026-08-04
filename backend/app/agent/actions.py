@@ -62,6 +62,8 @@ def execute_approved_action(action: AgentPendingAction, user):
         result = {
             "action_type": action.action_type,
             "booking_group": domain["item"],
+            "payment_order": domain["payment_order"],
+            "message": "订单已创建，请由付款人在预约记录中完成付款",
         }
     elif action.action_type == "cancellation":
         from app.booking_v7.routes import cancel_booking_group_for_user

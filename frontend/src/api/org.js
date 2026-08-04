@@ -84,3 +84,6 @@ export const invalidateOrgAppointment = (id) => http.post(`/org/appointments/${i
 export const closeOrgAppointment = (id, payload) => http.post(`/org/appointments/${id}/close`, payload);
 export const fetchOrgAppointmentCapacity = () => http.get("/org/appointment-capacity");
 export const updateOrgAppointmentCapacity = (dailyAppointmentLimit) => http.put("/org/appointment-capacity", { daily_appointment_limit: dailyAppointmentLimit });
+export const fetchOrgFinanceSummary = () => http.get("/org/finance/summary");
+export const fetchOrgFinanceOrders = (params = {}) => http.get("/org/finance/orders", { params });
+export const refundOrgFinanceOrder = (id) => http.post(`/org/finance/orders/${id}/refund`);

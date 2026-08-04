@@ -84,10 +84,10 @@ function Invoke-ReleaseJson([string]$Uri, [string]$Step) {
     throw "$Step failed after three attempts: $($lastFailure.Exception.Message)"
 }
 
-function Test-ExactSchemaVersion12($Value) {
+function Test-ExactSchemaVersion13($Value) {
     return (
         (($Value -is [int]) -or ($Value -is [long])) -and
-        ([long]$Value -eq 12)
+        ([long]$Value -eq 13)
     )
 }
 
@@ -132,7 +132,7 @@ try {
     }
     [System.IO.File]::WriteAllText(
         (Join-Path $frontendBuildPath "release.json"),
-        "{`"release_commit`":`"$releaseCommit`",`"schema_version`":12}`n",
+        "{`"release_commit`":`"$releaseCommit`",`"schema_version`":13}`n",
         (New-Object System.Text.UTF8Encoding($false))
     )
     [System.IO.File]::WriteAllText(
@@ -220,7 +220,7 @@ finally:
         & (Join-Path $projectRoot "backend\.venv\Scripts\python.exe") -c $snapshotCode $sourceDatabase $demoSnapshotPath
         Assert-LastExitCode "Demo database snapshot"
         & (Join-Path $projectRoot "backend\.venv\Scripts\python.exe") `
-            (Join-Path $projectRoot "backend\scripts\validate_v12_demo.py") `
+            (Join-Path $projectRoot "backend\scripts\validate_v13_demo.py") `
             --database $demoSnapshotPath `
             --upload-dir (Join-Path $projectRoot "backend\uploads")
         Assert-LastExitCode "Snapshotted business dataset alignment validation"
@@ -252,8 +252,8 @@ finally:
         New-Item -ItemType Directory -Path $demoAssetsStageRoot -Force | Out-Null
         $mediaManifestPath = Join-Path $projectRoot "backend\report_media_manifest.json"
         $mediaManifest = Get-Content -LiteralPath $mediaManifestPath -Raw | ConvertFrom-Json
-        if ($mediaManifest.version -ne 12 -or $null -eq $mediaManifest.items -or $mediaManifest.items.Count -eq 0) {
-            throw "Schema-v12 report media manifest is missing or empty."
+        if ($mediaManifest.version -ne 13 -or $null -eq $mediaManifest.items -or $mediaManifest.items.Count -eq 0) {
+            throw "Schema-v13 report media manifest is missing or empty."
         }
         $uploadsCanonical = [System.IO.Path]::GetFullPath($uploadsRoot)
         $approvedStorageKeys = [System.Collections.Generic.HashSet[string]]::new(
@@ -365,19 +365,19 @@ with open(sys.argv[2], "w", encoding="utf-8", newline="\n") as output:
         "Published API version check"
     if (
         [string]$healthPayload.status -ne "ok" -or
-        -not (Test-ExactSchemaVersion12 $healthPayload.schema_version) -or
+        -not (Test-ExactSchemaVersion13 $healthPayload.schema_version) -or
         [string]$healthPayload.release_commit -ne $releaseCommit
     ) {
-        throw "Published API does not match release $releaseCommit and schema v12."
+        throw "Published API does not match release $releaseCommit and schema v13."
     }
     $frontendPayload = Invoke-ReleaseJson `
         "$publicAppUrl/release.json?release_check=$releaseId" `
         "Published frontend version check"
     if (
-        -not (Test-ExactSchemaVersion12 $frontendPayload.schema_version) -or
+        -not (Test-ExactSchemaVersion13 $frontendPayload.schema_version) -or
         [string]$frontendPayload.release_commit -ne $releaseCommit
     ) {
-        throw "Published frontend does not match release $releaseCommit and schema v12."
+        throw "Published frontend does not match release $releaseCommit and schema v13."
     }
     [void](Assert-ReleaseSourceState $releaseCommit)
 

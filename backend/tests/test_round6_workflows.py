@@ -247,6 +247,10 @@ def _create_reviewable_report(client, user_headers, org_headers):
     assert appointment.status_code == 201
     appointment_id = appointment.get_json()["item"]["id"]
     assert client.post(
+        f"/api/payment-orders/{appointment.get_json()['payment_order']['id']}/pay",
+        headers=user_headers,
+    ).status_code == 200
+    assert client.post(
         f"/api/org/appointments/{appointment_id}/attend",
         headers=org_headers,
     ).status_code == 200

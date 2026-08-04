@@ -206,6 +206,10 @@ def test_institution_cancellation_notifies_user_with_sibling_snapshot(app, clien
         "notice_confirmed": True,
     })
     appointment_id = booked.get_json()["item"]["appointments"][0]["id"]
+    assert client.post(
+        f"/api/payment-orders/{booked.get_json()['payment_order']['id']}/pay",
+        headers=user_headers,
+    ).status_code == 200
     org_headers = login(client, "institution1_staff1")
     closed = client.post(f"/api/org/appointments/{appointment_id}/close", headers=org_headers, json={
         "reason_type": "institution_cancelled",
@@ -259,14 +263,19 @@ def test_ai_institution_recommendation_is_grounded_in_platform_data(app, client)
 def test_structured_asset_slot_rejects_duplicate_upload(app, client):
     user_headers = login(client, "test1")
     institution_id, package_id = first_booking_target(app)
-    appointment = client.post("/api/appointments", headers=user_headers, json={
+    booked = client.post("/api/appointments", headers=user_headers, json={
         "institution_id": institution_id,
         "package_id": package_id,
         "appointment_date": (date.today() + timedelta(days=25)).isoformat(),
         "height_cm": 170,
         "weight_kg": 65,
         "notice_confirmed": True,
-    }).get_json()["item"]
+    })
+    appointment = booked.get_json()["item"]
+    assert client.post(
+        f"/api/payment-orders/{booked.get_json()['payment_order']['id']}/pay",
+        headers=user_headers,
+    ).status_code == 200
     org_headers = login(client, "institution1_staff1")
     assert client.post(f"/api/org/appointments/{appointment['id']}/attend", headers=org_headers).status_code == 200
     report = client.post("/api/org/reports", headers=org_headers, json={"appointment_id": appointment["id"]}).get_json()["item"]

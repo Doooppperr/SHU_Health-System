@@ -3,7 +3,7 @@ from datetime import date, timedelta
 from app.extensions import db
 from app.models import (
     Appointment, FriendRelation, HealthDomain, IndicatorDict, Institution,
-    InstitutionReport, NotificationOutbox, Package, ReportAccessLog, User,
+    InstitutionReport, NotificationOutbox, Package, PaymentOrder, ReportAccessLog, User,
     WaitlistSubscription,
 )
 from app.health_data_v7.routes import _numeric_reference
@@ -184,11 +184,18 @@ def test_booking_group_is_atomic_and_proxy_booking_is_separate(app, client):
         ],
     })
     assert response.status_code == 201, response.get_json()
+    assert client.post(
+        f"/api/payment-orders/{response.get_json()['payment_order']['id']}/pay",
+        headers=booker,
+    ).status_code == 200
     item = response.get_json()["item"]
     assert item["party_size"] == 2 and len(item["appointments"]) == 2
     with app.app_context():
         rows = Appointment.query.filter_by(booking_group_id=item["id"]).all()
         assert len(rows) == 2 and {row.user_id for row in rows} == {ids[0], ids[1]}
+        order = db.session.get(PaymentOrder, response.get_json()["payment_order"]["id"])
+        assert len(order.items) == 2
+        assert order.amount == sum((line.gross_amount for line in order.items), 0)
         user_mail = NotificationOutbox.query.filter_by(event_type="booking_user_confirmed").all()
         assert len(user_mail) == 2
         assert len({row.idempotency_key for row in user_mail}) == 2
@@ -228,6 +235,10 @@ def test_waitlist_only_notifies_after_capacity_crosses_threshold(app, client):
         "participant_intakes": [{"user_id": filler_id, "height_cm": 163, "weight_kg": 59}],
     })
     assert filled.status_code == 201
+    assert client.post(
+        f"/api/payment-orders/{filled.get_json()['payment_order']['id']}/pay",
+        headers=filler,
+    ).status_code == 200
     subscription = client.post("/api/waitlist-subscriptions", headers=subscriber, json={
         "institution_id": institution_id, "package_id": package_id,
         "appointment_date": day.isoformat(), "participant_user_ids": [],
@@ -268,6 +279,10 @@ def test_report_indicator_outside_package_domain_is_blocked(app, client):
     })
     assert appointment.status_code == 201
     appointment_id = appointment.get_json()["item"]["id"]
+    assert client.post(
+        f"/api/payment-orders/{appointment.get_json()['payment_order']['id']}/pay",
+        headers=user,
+    ).status_code == 200
     assert client.post(f"/api/org/appointments/{appointment_id}/attend", headers=org).status_code == 200
     report = client.post("/api/org/reports", headers=org, json={"appointment_id": appointment_id})
     assert report.status_code == 201

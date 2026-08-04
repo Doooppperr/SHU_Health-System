@@ -223,6 +223,7 @@ def _read_indicator_trend(user, args: IndicatorTrendArgs):
 def _read_institutions(_user, args: SearchInstitutionsArgs):
     query = Institution.query.join(Institution.organization).filter(
         Institution.is_active.is_(True),
+        Institution.operations_suspended_at.is_(None),
         Institution.organization.has(is_active=True),
     )
     if args.district:
@@ -264,6 +265,7 @@ def _read_packages(_user, args: ComparePackagesArgs):
         Package.institution.has(
             db.and_(
                 Institution.is_active.is_(True),
+                Institution.operations_suspended_at.is_(None),
                 Institution.organization.has(is_active=True),
             )
         ),
@@ -318,11 +320,12 @@ def _read_availability(_user, args: AvailabilityArgs):
     institution = Institution.query.filter(
         Institution.id == args.institution_id,
         Institution.is_active.is_(True),
+        Institution.operations_suspended_at.is_(None),
         Institution.organization.has(is_active=True),
     ).first()
     if institution is None:
         raise LookupError("没有找到可预约机构")
-    active = ("unfulfilled", "awaiting_report", "fulfilled")
+    active = ("pending_payment", "unfulfilled", "awaiting_report", "fulfilled")
     booked = Appointment.query.filter(
         Appointment.institution_id == institution.id,
         Appointment.appointment_date == args.appointment_date,

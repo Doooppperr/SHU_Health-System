@@ -1,4 +1,4 @@
-"""Run an isolated schema-v12 demo backend for Playwright.
+"""Run an isolated schema-v13 demo backend for Playwright.
 
 The process creates its database and uploads in a temporary directory, exposes
 captcha answers only through Flask's existing testing configuration, and
@@ -31,8 +31,8 @@ def _copy_manifest_media(source_root: Path, destination_root: Path) -> int:
     with manifest_path.open("r", encoding="utf-8") as manifest_file:
         manifest = json.load(manifest_file)
 
-    if manifest.get("version") != 12:
-        raise RuntimeError("E2E media manifest must use schema version 12")
+    if manifest.get("version") != 13:
+        raise RuntimeError("E2E media manifest must use schema version 13")
     items = manifest.get("items")
     if not isinstance(items, list) or not items:
         raise RuntimeError("E2E media manifest does not contain approved media")

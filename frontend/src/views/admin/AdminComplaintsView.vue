@@ -3,7 +3,7 @@
     <section class="page-intro">
       <div>
         <p>服务质量治理</p>
-        <h2>投诉记录</h2>
+        <h2>投诉与退款裁决</h2>
         <span>查看机构处理进度；用户升级后由平台接手、回复并关闭投诉。</span>
       </div>
       <div class="admin-complaint-filter">
@@ -57,6 +57,7 @@
           <el-descriptions-item label="机构回复">{{ current.institution_reply || "尚未回复" }}</el-descriptions-item>
           <el-descriptions-item label="升级原因">{{ current.escalation_reason || "未申请平台介入" }}</el-descriptions-item>
           <el-descriptions-item label="平台回复">{{ current.admin_reply || "尚未回复" }}</el-descriptions-item>
+          <el-descriptions-item v-if="current.refund" label="退款申请">¥ {{ Number(current.refund.amount || 0).toFixed(2) }} · {{ current.refund.status }}</el-descriptions-item>
         </el-descriptions>
         <el-timeline v-if="(current.events || current.timeline)?.length" style="margin-top: 20px">
           <el-timeline-item v-for="event in current.events || current.timeline" :key="event.id || event.created_at" :timestamp="event.created_at">
@@ -227,8 +228,22 @@ async function resolve(row) {
       });
       await replyAdminComplaint(row.id, value.trim());
     }
-    await resolveAdminComplaint(row.id);
-    ElMessage.success("投诉已关闭并标记为已解决");
+    let decision = "no_refund";
+    if (row.refund) {
+      try {
+        await ElMessageBox.confirm(
+          "请选择最终责任认定。认定机构责任后，平台将立即退款或要求机构在三天内退款。",
+          "退款裁决",
+          { distinguishCancelAndClose: true, type: "warning", confirmButtonText: "机构责任并退款", cancelButtonText: "不支持退款" },
+        );
+        decision = "institution_fault_refund";
+      } catch (choice) {
+        if (choice === "cancel") decision = "no_refund";
+        else throw choice;
+      }
+    }
+    await resolveAdminComplaint(row.id, { decision, decision_note: row.admin_reply || "平台已完成核查" });
+    ElMessage.success(decision === "institution_fault_refund" ? "责任已认定，退款流程已启动" : "投诉已关闭，本次不支持退款");
     await load();
   } catch (error) {
     if (error !== "cancel" && error !== "close") {

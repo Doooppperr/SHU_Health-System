@@ -12,3 +12,5 @@ export const fetchWaitlistSubscriptions = (params = {}) => http.get("/waitlist-s
 export const createWaitlistSubscription = (payload) => http.post("/waitlist-subscriptions", payload);
 export const cancelWaitlistSubscription = (id) => http.delete(`/waitlist-subscriptions/${id}`);
 export const resolveBookingParticipantToken = (healthId) => http.post("/booking-participants/resolve", { health_id: healthId });
+export const fetchPaymentOrder = (id) => http.get(`/payment-orders/${id}`);
+export const payPaymentOrder = (id) => http.post(`/payment-orders/${id}/pay`);

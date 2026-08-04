@@ -1,4 +1,6 @@
 export const APPOINTMENT_STATUS = {
+  pending_payment: { label: "待付款", type: "warning", hint: "请在付款时间内确认订单" },
+  payment_expired: { label: "付款超时", type: "info", hint: "订单已关闭，名额已经释放" },
   unfulfilled: { label: "已预约", type: "primary", hint: "等待到店体检" },
   awaiting_report: { label: "待出结果", type: "warning", hint: "机构正在整理本次健康数据" },
   fulfilled: { label: "已完成", type: "success", hint: "本次健康数据已归档" },

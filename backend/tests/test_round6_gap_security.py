@@ -967,6 +967,10 @@ def test_report_draft_creates_explicit_uploaded_timeline_event(
     assert booking.status_code == 201, booking.get_json()
     appointment_id = booking.get_json()["item"]["id"]
     assert client.post(
+        f"/api/payment-orders/{booking.get_json()['payment_order']['id']}/pay",
+        headers=headers,
+    ).status_code == 200
+    assert client.post(
         f"/api/org/appointments/{appointment_id}/attend",
         headers=org_headers,
     ).status_code == 200

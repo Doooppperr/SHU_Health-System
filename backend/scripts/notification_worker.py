@@ -234,6 +234,9 @@ def run_batch(
     lease_seconds=DEFAULT_CLAIM_LEASE_SECONDS,
 ):
     now = datetime.now(timezone.utc)
+    from app.services.finance import run_due_finance_tasks
+    run_due_finance_tasks(now=now)
+    db.session.commit()
     _recover_stale_claims(now)
     row_ids = [
         row_id

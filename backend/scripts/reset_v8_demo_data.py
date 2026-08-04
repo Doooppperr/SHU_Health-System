@@ -1,6 +1,6 @@
 """Historical schema-v8 compatibility wrapper for the current demo reset.
 
-New documentation and automation should call ``reset_v12_demo_data.py``.
+New documentation and automation should call ``reset_v13_demo_data.py``.
 """
 
 from reset_v7_demo_data import main

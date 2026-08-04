@@ -283,6 +283,10 @@ def dashboard():
     review_rows = PackageChangeRequest.query.filter_by(institution_id=institution.id).order_by(
         PackageChangeRequest.requested_at.desc(), PackageChangeRequest.id.desc()
     ).limit(3).all()
+    from app.services.finance import institution_finance_summary, run_due_finance_tasks
+    run_due_finance_tasks()
+    db.session.commit()
+    finance_summary = institution_finance_summary(institution)
     return {"summary": {
         "institution": institution_payload(institution),
         "report_status_counts": counts,
@@ -301,7 +305,71 @@ def dashboard():
         },
         "tasks": tasks,
         "recent_package_reviews": [row.to_dict() for row in review_rows],
+        "finance": finance_summary,
     }}, 200
+
+
+@org_bp.get("/finance/summary")
+@roles_required(ROLE_INSTITUTION_ADMIN)
+def finance_summary():
+    institution, error = managed_institution()
+    if error:
+        return error
+    from app.services.finance import institution_finance_summary, run_due_finance_tasks
+    run_due_finance_tasks()
+    db.session.commit()
+    return {"summary": institution_finance_summary(institution)}, 200
+
+
+@org_bp.get("/finance/orders")
+@roles_required(ROLE_INSTITUTION_ADMIN)
+def finance_orders():
+    institution, error = managed_institution()
+    if error:
+        return error
+    from app.models import PaymentOrderItem
+    from app.services.finance import run_due_finance_tasks
+    run_due_finance_tasks()
+    db.session.commit()
+    page = max(request.args.get("page", 1, type=int) or 1, 1)
+    size = min(max(request.args.get("page_size", 15, type=int) or 15, 1), 100)
+    query = PaymentOrderItem.query.filter_by(institution_id=institution.id)
+    status = str(request.args.get("status") or "").strip()
+    if status:
+        query = query.filter_by(fund_status=status)
+    total = query.count()
+    rows = query.order_by(PaymentOrderItem.created_at.desc(), PaymentOrderItem.id.desc()).offset(
+        (page - 1) * size
+    ).limit(size).all()
+    return {
+        "items": [{**row.to_dict(), "order_no": row.order.order_no, "order_status": row.order.status} for row in rows],
+        "pagination": {"page": page, "page_size": size, "total": total, "pages": (total + size - 1) // size},
+    }, 200
+
+
+@org_bp.post("/finance/orders/<int:item_id>/refund")
+@roles_required(ROLE_INSTITUTION_ADMIN)
+def refund_finance_order(item_id):
+    institution, error = managed_institution()
+    if error:
+        return error
+    from app.models import PaymentOrderItem
+    from app.services.finance import refund_item
+    item = PaymentOrderItem.query.filter_by(
+        id=item_id,
+        institution_id=institution.id,
+    ).with_for_update().first()
+    if item is None:
+        return {"message": "未找到该到账订单"}, 404
+    if item.fund_status not in {"settled", "refund_required"}:
+        return {"message": "当前订单不能由机构退款"}, 409
+    complaint = item.refund_case.complaint if item.refund_case else None
+    refund_item(item, actor_user=g.current_user, complaint=complaint, reason="institution_refund")
+    if complaint and complaint.status != "resolved":
+        complaint.status = "resolved"
+        complaint.resolved_at = datetime.now(timezone.utc)
+    db.session.commit()
+    return {"item": item.to_dict(), "message": "退款已完成并原路退回"}, 200
 
 
 @org_bp.get("/context")
@@ -850,6 +918,55 @@ def reply_to_complaint(complaint_id):
     return {"item": item.to_dict(), "message": "处理回复已提交，等待用户确认"}, 200
 
 
+@org_bp.post("/complaints/<int:complaint_id>/approve-refund")
+@roles_required(ROLE_INSTITUTION_ADMIN)
+def approve_complaint_refund(complaint_id):
+    institution, error = managed_institution()
+    if error:
+        return error
+    item = AppointmentComplaint.query.filter_by(
+        id=complaint_id,
+        institution_id=institution.id,
+    ).with_for_update().first()
+    if item is None:
+        return {"message": "未找到该投诉与退款记录"}, 404
+    if item.status != "institution_pending" or item.refund_case is None:
+        return {"message": "当前案件不能由机构直接退款", "code": "COMPLAINT_STATE_CONFLICT"}, 409
+    from app.services.finance import refund_item
+    now = datetime.now(timezone.utc)
+    if not refund_item(
+        item.refund_case.payment_item,
+        actor_user=g.current_user,
+        complaint=item,
+        now=now,
+        reason="institution_approved",
+    ):
+        return {"message": "当前订单资金状态不能退款"}, 409
+    item.status = "resolved"
+    item.resolved_at = now
+    item.updated_at = now
+    item.institution_reply = "机构已同意全额退款"
+    item.institution_replied_by_user_id = g.current_user.id
+    item.institution_replied_at = now
+    db.session.add(ComplaintEvent(
+        complaint_id=item.id,
+        event_type="institution_replied",
+        actor_user_id=g.current_user.id,
+        actor_role=g.current_user.role,
+        content="机构同意全额退款，退款已原路退回",
+        created_at=now,
+    ))
+    db.session.add(ComplaintMessage(
+        complaint_id=item.id,
+        sender_user_id=g.current_user.id,
+        sender_role=g.current_user.role,
+        content="机构已同意全额退款",
+        created_at=now,
+    ))
+    db.session.commit()
+    return {"item": item.to_dict(), "message": "退款已完成并原路退回"}, 200
+
+
 def _reply_to_complaint_cas(
     *,
     complaint_id,
@@ -944,6 +1061,11 @@ def _close_appointment(item, institution, *, reason_type, reason_code, reason_te
     enqueue_available(institution, item.appointment_date, slot)
 
     if reason_type == "institution_cancelled":
+        from app.models import PaymentOrderItem
+        from app.services.finance import refund_item
+        payment_item = PaymentOrderItem.query.filter_by(appointment_id=item.id).first()
+        if payment_item is not None:
+            refund_item(payment_item, actor_user=g.current_user, reason="institution_cancellation")
         alternatives = [
             {
                 "id": branch.id,
@@ -1783,6 +1905,8 @@ def _review_and_publish_report(report_id):
         if report.appointment is not None:
             report.appointment.status = "fulfilled"
             report.appointment.fulfilled_at = now
+            from app.services.finance import schedule_settlement_for_appointment
+            schedule_settlement_for_appointment(report.appointment, published_at=now)
             db.session.add(AppointmentEvent(
                 appointment_id=report.appointment.id,
                 event_type="report_published",

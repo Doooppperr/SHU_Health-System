@@ -44,6 +44,10 @@ def test_capacity_is_rechecked_and_cancellation_releases_the_slot(app, client):
     assert selected["remaining"] == 0 and selected["is_full"] is True
     full = client.post("/api/appointments", headers=user2, json=payload)
     assert full.status_code == 409 and full.get_json()["code"] == "APPOINTMENT_FULL"
+    assert client.post(
+        f"/api/payment-orders/{first.get_json()['payment_order']['id']}/pay",
+        headers=user1,
+    ).status_code == 200
     assert client.post(f"/api/appointments/{first.get_json()['item']['id']}/cancel", headers=user1).status_code == 200
     assert client.post("/api/appointments", headers=user2, json=payload).status_code == 201
 
@@ -87,6 +91,10 @@ def test_institution_invalidation_is_final_and_visible_in_friend_timeline(app, c
         "notice_confirmed": True,
     })
     appointment_id = created.get_json()["item"]["id"]
+    assert client.post(
+        f"/api/payment-orders/{created.get_json()['payment_order']['id']}/pay",
+        headers=owner,
+    ).status_code == 200
     with app.app_context():
         owner_id = User.query.filter_by(username="test2").first().id
     relation = next(

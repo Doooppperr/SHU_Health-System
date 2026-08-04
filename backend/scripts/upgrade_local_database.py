@@ -1,4 +1,4 @@
-"""Upgrade the local SQLite database to HealthDoc schema v12.
+"""Upgrade the local SQLite database to HealthDoc schema v13.
 
 The v6-to-v7 path preserves all current business data while adding health
 domains, package versions, booking groups, waitlists and private assets. Older
@@ -21,11 +21,12 @@ from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import create_engine
+from flask import Flask
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_DATABASE = BACKEND_DIR / "instance" / "health_system.db"
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 ADDITIVE_V12_SECURITY_COLUMNS = {
     "password_verification_challenges.token_version_snapshot": (
         "password_verification_challenges",
@@ -61,7 +62,8 @@ sys.path.insert(0, str(BACKEND_DIR))
 
 from app import models as _models  # noqa: E402,F401
 from app.demo_indicator_values import DEMO_REALISTIC_SERIES, demo_realistic_status  # noqa: E402
-from app.extensions import db  # noqa: E402
+from app.config import DevelopmentConfig  # noqa: E402
+from app.extensions import db, init_extensions  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -77,7 +79,7 @@ class SchemaReport:
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Upgrade the local SQLite database to schema v12.")
+    parser = argparse.ArgumentParser(description="Upgrade the local SQLite database to schema v13.")
     parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE)
     parser.add_argument("--check-only", action="store_true")
     parser.add_argument(
@@ -216,7 +218,7 @@ def validate(connection):
         raise RuntimeError(f"SQLite foreign_key_check found {len(violations)} violation(s)")
     report = inspect_schema(connection)
     if not report.is_current:
-        raise RuntimeError(f"schema v12 validation failed: {report}")
+        raise RuntimeError(f"schema v13 validation failed: {report}")
 
 
 def repair_result_statuses(connection):
@@ -267,6 +269,26 @@ def repair_result_statuses(connection):
     return connection.total_changes
 
 
+def backfill_v13_finance(database_path: Path) -> int:
+    """Backfill historical fulfilled visits inside the isolated candidate."""
+    app = Flask("healthdoc-schema-v13-upgrade")
+    app.config.from_object(DevelopmentConfig)
+    app.config.update(
+        SQLALCHEMY_DATABASE_URI=f"sqlite:///{database_path.as_posix()}",
+        SQLALCHEMY_ENGINE_OPTIONS={},
+        SQLALCHEMY_TRACK_MODIFICATIONS=False,
+    )
+    init_extensions(app)
+    with app.app_context():
+        from app.services.finance import backfill_historical_settlements
+
+        created = backfill_historical_settlements()
+        db.session.commit()
+        db.session.remove()
+        db.engine.dispose()
+        return created
+
+
 def read_admin(connection):
     if "users" not in table_names(connection):
         return None
@@ -283,7 +305,7 @@ def read_admin(connection):
 
 def backup_path(database):
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return database.with_name(f"{database.stem}.before-schema-v12-{stamp}-{uuid.uuid4().hex[:6]}.db")
+    return database.with_name(f"{database.stem}.before-schema-v13-{stamp}-{uuid.uuid4().hex[:6]}.db")
 
 
 def prepare_v8_source(database_path):
@@ -407,12 +429,13 @@ def rebuild_database(database_path, *, allow_data_loss=False):
         admin = read_admin(source)
         available_tables = table_names(source)
 
-    if report.version in {4, 5, 6, 7, 8, 9, 10, 11}:
+    if report.version in {4, 5, 6, 7, 8, 9, 10, 11, 12}:
         from scripts.migrate_sqlite_to_gaussdb import migrate
 
-        temporary = database_path.with_name(f".{database_path.stem}.v12-{uuid.uuid4().hex}.db")
+        temporary = database_path.with_name(f".{database_path.stem}.v13-{uuid.uuid4().hex}.db")
         prepared = prepare_v8_source(database_path)
         backup = backup_path(database_path)
+        shutil.copy2(database_path, backup)
         try:
             migrate(
                 prepared,
@@ -420,16 +443,15 @@ def rebuild_database(database_path, *, allow_data_loss=False):
                 replace=True,
                 allow_legacy_source=True,
             )
+            backfill_v13_finance(temporary)
             with closing(sqlite3.connect(temporary)) as target:
                 target.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 repair_result_statuses(target)
                 target.commit()
                 validate(target)
-            shutil.copy2(database_path, backup)
             os.replace(temporary, database_path)
         except Exception:
             temporary.unlink(missing_ok=True)
-            backup.unlink(missing_ok=True)
             raise
         finally:
             prepared.unlink(missing_ok=True)
@@ -441,7 +463,7 @@ def rebuild_database(database_path, *, allow_data_loss=False):
             "administrator-only rebuild without --allow-data-loss"
         )
 
-    temporary = database_path.with_name(f".{database_path.stem}.v12-{uuid.uuid4().hex}.db")
+    temporary = database_path.with_name(f".{database_path.stem}.v13-{uuid.uuid4().hex}.db")
     backup = backup_path(database_path)
     engine = create_engine(f"sqlite:///{temporary.as_posix()}")
     try:

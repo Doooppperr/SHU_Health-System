@@ -5,7 +5,10 @@ from flask import g, request
 from app.extensions import db
 from app.models import UserNotification
 from app.notifications import notifications_bp
-from app.services.permissions import ROLE_USER, roles_required
+from app.services.permissions import ROLE_ADMIN, ROLE_INSTITUTION_ADMIN, ROLE_USER, roles_required
+
+
+NOTIFICATION_ROLES = (ROLE_USER, ROLE_INSTITUTION_ADMIN, ROLE_ADMIN)
 
 
 def _pagination(default_size=15):
@@ -15,7 +18,7 @@ def _pagination(default_size=15):
 
 
 @notifications_bp.get("")
-@roles_required(ROLE_USER)
+@roles_required(*NOTIFICATION_ROLES)
 def list_notifications():
     page, size = _pagination()
     query = UserNotification.query.filter_by(user_id=g.current_user.id)
@@ -44,7 +47,7 @@ def list_notifications():
 
 
 @notifications_bp.get("/unread-count")
-@roles_required(ROLE_USER)
+@roles_required(*NOTIFICATION_ROLES)
 def unread_count():
     count = UserNotification.query.filter_by(
         user_id=g.current_user.id,
@@ -54,7 +57,7 @@ def unread_count():
 
 
 @notifications_bp.post("/<int:notification_id>/read")
-@roles_required(ROLE_USER)
+@roles_required(*NOTIFICATION_ROLES)
 def mark_read(notification_id):
     item = UserNotification.query.filter_by(
         id=notification_id,
@@ -68,7 +71,7 @@ def mark_read(notification_id):
 
 
 @notifications_bp.post("/read-all")
-@roles_required(ROLE_USER)
+@roles_required(*NOTIFICATION_ROLES)
 def mark_all_read():
     now = datetime.now(timezone.utc)
     updated = UserNotification.query.filter_by(

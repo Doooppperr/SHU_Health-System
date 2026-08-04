@@ -1,13 +1,13 @@
 # 康康健健 HealthDoc 后端
 
-Flask 后端负责三角色授权、实名认证、受控关联账号会话、健康身份码多人预约、预约资料副本、报告复核、投诉、评论处罚/申诉、机构画像、站内/邮件通知、104 项成人体检指标、OCR，以及受类型化工具、逐次确认和幂等执行保护的 HealthDoc Agent。本地使用 SQLite schema v12；服务器通过 `DATABASE_URL` 连接 GaussDB/openGauss，并使用 v12 保留式增量迁移。
+Flask 后端负责三角色授权、实名认证、付款托管、结算退款、受控关联账号会话、健康身份码多人预约、报告复核、投诉与退款、评论治理、站内/邮件通知及 HealthDoc Agent。本地使用 SQLite schema v13；服务器通过 `DATABASE_URL` 连接 GaussDB/openGauss，并使用 v13 保留式增量迁移。
 
 ## 1.0—3.0 后端演进
 
 - 1.0 建立 Flask API、JWT 三角色授权、机构/套餐、基础预约和健康记录。
 - 2.0 增加自主测量、报告草稿/发布、时间线、趋势、亲友授权和 AI/OCR 权限链。
 - 3.0 引入健康领域、套餐版本、预约组、容量候补、通知 outbox、图文报告；schema v8 进一步增加机构主体、分院和跨院访问审计。
-- 当前只维护 schema v12 的统一模型和接口；schema v11 Agent 文档作为历史基线保留，旧数据库通过迁移脚本升级。
+- 当前只维护 schema v13 的统一模型和接口；旧数据库通过保留式迁移升级。
 
 ## 环境与安装
 
@@ -31,9 +31,9 @@ if (-not (Test-Path .env)) {
 
 根目录的 `scripts/start-full-dev.ps1` 和 `scripts/start-full-prod.ps1` 会在后端就绪后自动启动隐藏的常驻 worker，每 5 秒处理一次 Outbox，并在前端命令退出时停止。单独运行可使用 `scripts/start-notification-worker.ps1`，或在后端目录执行 `python scripts/notification_worker.py --watch --interval-seconds 5`。条件更新保证误开两个 worker 时同一条通知只会被一个进程并发领取；`sending` 使用 300 秒租约，崩溃遗留的过期租约会返回重试队列。收到 SIGTERM 后 worker 不再领取下一条，而是完成当前 SMTP 结果落库后退出。SMTP 与数据库无法组成原子事务，因此这里明确采用 at-least-once：极端崩溃发生在 SMTP 已接收、数据库尚未落库之间时可能重发，但不会把记录永久卡在 `sending`。发送前会把 Outbox 载荷转换为连续的中文业务文本，不会把 JSON 原文发给用户。生产 systemd 单元还传入 `--start-gate-file /var/lib/healthdoc/notification-worker.enabled`：发布候选阶段 worker 可以启动并等待，但门闩文件创建前不会领取或发送任何 Outbox。
 
-## 数据库与 schema v12
+## 数据库与 schema v13
 
-默认数据库为 `instance/health_system.db`。SQLite 连接启用外键和 30 秒写锁等待；`PRAGMA user_version=12` 标识当前结构。新空库直接创建 v12，v4–v11 使用原子升级脚本；生产 openGauss/GaussDB 使用 `migrations/versions/20260730_schema_v12.py` 与 `scripts/migrate_schema_v12.py`。
+默认数据库为 `instance/health_system.db`。SQLite 连接启用外键和 30 秒写锁等待；`PRAGMA user_version=13` 标识当前结构。新空库直接创建 v13，旧库使用原子副本升级；生产 openGauss/GaussDB 使用 `migrations/versions/20260804_schema_v13.py` 与 `scripts/migrate_schema_v13.py`。
 
 ```powershell
 .\.venv\Scripts\python.exe .\scripts\upgrade_local_database.py --check-only
@@ -43,9 +43,9 @@ if (-not (Test-Path .env)) {
 验收业务数据可通过专用脚本重建；`--check-only` 只校验目标库和账号边界，`--apply --yes` 才会覆盖验收业务记录并保留全部验收账号及密码哈希：
 
 ```powershell
-.\.venv\Scripts\python.exe .\scripts\reset_v12_demo_data.py --check-only
-.\.venv\Scripts\python.exe .\scripts\reset_v12_demo_data.py --apply --yes
-.\.venv\Scripts\python.exe .\scripts\validate_v12_demo.py `
+.\.venv\Scripts\python.exe .\scripts\reset_v13_demo_data.py --check-only
+.\.venv\Scripts\python.exe .\scripts\reset_v13_demo_data.py --apply --yes
+.\.venv\Scripts\python.exe .\scripts\validate_v13_demo.py `
   --database .\instance\health_system.db --upload-dir .\uploads
 ```
 

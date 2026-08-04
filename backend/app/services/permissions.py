@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from functools import wraps
 
-from flask import g
+from flask import g, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from app.extensions import db
@@ -42,6 +42,22 @@ def role_error(user: User | None, *allowed_roles: str):
         or not user.managed_institution.organization.is_active
     ):
         return {"message": "该账号所属分院已停用"}, 403
+    if (
+        user.role == ROLE_INSTITUTION_ADMIN
+        and user.managed_institution.operations_suspended_at is not None
+        and request.method not in {"GET", "HEAD", "OPTIONS"}
+        and request.endpoint not in {
+            "org.refund_finance_order",
+            "org.approve_complaint_refund",
+            "notifications.mark_read",
+            "notifications.mark_all_read",
+        }
+        and not (request.endpoint or "").startswith(("profile.", "auth.", "notifications."))
+    ):
+        return {
+            "message": "分院运营已暂停，请先在收款与退款中完成全部逾期退款",
+            "code": "INSTITUTION_OPERATIONS_SUSPENDED",
+        }, 403
     return None
 
 

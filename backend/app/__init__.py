@@ -26,6 +26,7 @@ from .observability import init_observability
 from .org import org_bp
 from .organizations import organizations_bp
 from .oauth import oauth_bp
+from .payments import payments_bp
 from .profile import profile_bp
 from .public_api import public_bp
 from .schema import CURRENT_SCHEMA_VERSION, initialize_or_validate_schema
@@ -100,6 +101,7 @@ def create_app(config_name="development"):
     app.register_blueprint(comments_bp, url_prefix="/api/comments")
     app.register_blueprint(complaints_bp, url_prefix="/api/complaints")
     app.register_blueprint(notifications_bp, url_prefix="/api/notifications")
+    app.register_blueprint(payments_bp, url_prefix="/api/payment-orders")
     app.register_blueprint(oauth_bp)
 
     # Capture the real actor before any business guard can short-circuit the

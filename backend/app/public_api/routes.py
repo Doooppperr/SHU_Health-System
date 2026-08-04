@@ -116,6 +116,7 @@ def organizations():
             Organization.description.ilike(pattern, escape="\\"),
             Organization.branches.any(and_(
                 Institution.is_active.is_(True),
+                Institution.operations_suspended_at.is_(None),
                 or_(
                     Institution.branch_name.ilike(pattern, escape="\\"),
                     Institution.district.ilike(pattern, escape="\\"),
@@ -129,7 +130,7 @@ def organizations():
         branches = [
             public_branch_payload(branch)
             for branch in row.branches
-            if branch.is_active
+            if branch.is_active and branch.operations_suspended_at is None
         ]
         if term:
             folded = term.casefold()
@@ -158,6 +159,7 @@ def _active_branch(institution_id):
     return Institution.query.join(Institution.organization).filter(
         Institution.id == institution_id,
         Institution.is_active.is_(True),
+        Institution.operations_suspended_at.is_(None),
         Organization.is_active.is_(True),
     ).first()
 

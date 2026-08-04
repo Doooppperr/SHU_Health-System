@@ -611,13 +611,18 @@ import os
 from sqlalchemy import create_engine, inspect, text
 
 
-expected_revision = "20260730_schema_v12"
+expected_revision = "20260804_schema_v13"
 required_tables = {
     "appointment_complaints",
     "booking_participant_tokens",
     "comment_sanctions",
     "delegated_action_audits",
     "institution_audience_insight_cache",
+    "payment_orders",
+    "payment_order_items",
+    "finance_transactions",
+    "finance_ledger_entries",
+    "refund_cases",
 }
 engine = create_engine(os.environ["DATABASE_URL"], pool_pre_ping=True)
 try:
@@ -634,10 +639,15 @@ try:
         tables = set(inspector.get_table_names())
         missing = required_tables - tables
         if missing:
-            raise RuntimeError(f"schema-v12 tables missing: {sorted(missing)}")
+            raise RuntimeError(f"schema-v13 tables missing: {sorted(missing)}")
         user_columns = {item["name"] for item in inspector.get_columns("users")}
         if "identity_completed_at" not in user_columns:
-            raise RuntimeError("schema-v12 users.identity_completed_at is missing")
+            raise RuntimeError("schema-v13 users.identity_completed_at is missing")
+        institution_columns = {
+            item["name"] for item in inspector.get_columns("institutions")
+        }
+        if not {"operations_suspended_at", "operations_suspension_reason"} <= institution_columns:
+            raise RuntimeError("schema-v13 institution suspension columns are missing")
 finally:
     engine.dispose()
 PY
@@ -660,7 +670,7 @@ valid = (
     isinstance(payload, dict)
     and payload.get("release_commit") == required_commit
     and type(payload.get("schema_version")) is int
-    and payload["schema_version"] == 12
+    and payload["schema_version"] == 13
 )
 if payload_kind == "health":
     valid = valid and payload.get("status") == "ok"
@@ -991,9 +1001,9 @@ if [[ -z "${DATABASE_URL:-}" ]]; then
 fi
 if ! wait_for_database_connection || ! (
     cd "$release/backend"
-    "$release_python" scripts/migrate_schema_v12.py
+    "$release_python" scripts/migrate_schema_v13.py
 ); then
-    echo "Schema v12 migration failed; automatic rollback will restore the previous state." >&2
+    echo "Schema v13 migration failed; automatic rollback will restore the previous state." >&2
     unset DATABASE_URL
     exit 1
 fi
@@ -1131,7 +1141,7 @@ if ! (
     set +a
     verify_database_contract
 ); then
-    echo "The live database does not satisfy the schema-v12 contract." >&2
+    echo "The live database does not satisfy the schema-v13 contract." >&2
     healthy=0
 fi
 

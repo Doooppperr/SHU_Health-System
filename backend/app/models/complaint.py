@@ -92,6 +92,12 @@ class AppointmentComplaint(db.Model):
             ComplaintMessage.id.asc(),
         ),
     )
+    refund_case = db.relationship(
+        "RefundCase",
+        back_populates="complaint",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
 
     def to_dict(self, *, include_events=True):
         appointment = self.appointment
@@ -138,6 +144,7 @@ class AppointmentComplaint(db.Model):
         if include_events:
             result["events"] = [event.to_dict() for event in self.events]
         result["messages"] = [message.to_dict() for message in self.messages]
+        result["refund"] = self.refund_case.to_dict() if self.refund_case else None
         return result
 
 

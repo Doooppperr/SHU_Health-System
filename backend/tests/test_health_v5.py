@@ -54,6 +54,10 @@ def create_appointment(client, user_headers, org_headers, institution_id, packag
     })
     assert response.status_code == 201
     appointment_id = response.get_json()["item"]["id"]
+    assert client.post(
+        f"/api/payment-orders/{response.get_json()['payment_order']['id']}/pay",
+        headers=user_headers,
+    ).status_code == 200
     assert client.post(f"/api/org/appointments/{appointment_id}/attend", headers=org_headers).status_code == 200
     return appointment_id
 

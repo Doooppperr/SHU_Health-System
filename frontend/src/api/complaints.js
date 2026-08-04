@@ -7,8 +7,9 @@ export const escalateComplaint = (id, reason = "") => http.post(`/complaints/${i
 
 export const fetchOrgComplaints = (params = {}) => http.get("/org/complaints", { params });
 export const replyOrgComplaint = (id, content) => http.post(`/org/complaints/${id}/reply`, { content });
+export const approveOrgComplaintRefund = (id) => http.post(`/org/complaints/${id}/approve-refund`);
 
 export const fetchAdminComplaints = (params = {}) => http.get("/admin/complaints", { params });
 export const startAdminComplaint = (id) => http.post(`/admin/complaints/${id}/start`);
 export const replyAdminComplaint = (id, content) => http.post(`/admin/complaints/${id}/reply`, { content });
-export const resolveAdminComplaint = (id) => http.post(`/admin/complaints/${id}/resolve`);
+export const resolveAdminComplaint = (id, payload = {}) => http.post(`/admin/complaints/${id}/resolve`, payload);

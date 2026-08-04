@@ -1,6 +1,6 @@
 """Historical compatibility wrapper for the current demo reset.
 
-New documentation and automation should call ``reset_v12_demo_data.py``.
+New documentation and automation should call ``reset_v13_demo_data.py``.
 This filename remains executable so older local workflows do not break.
 """
 

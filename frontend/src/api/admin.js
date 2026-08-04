@@ -1,5 +1,8 @@
 import http from "./http";
 
+export const fetchAdminFinanceSummary = () => http.get("/admin/finance/summary");
+export const fetchAdminFinanceOrders = (params = {}) => http.get("/admin/finance/orders", { params });
+
 export const fetchAdminOrganizations = () => http.get("/admin/organizations");
 export const createAdminOrganization = (payload) => http.post("/admin/organizations", payload);
 export const updateAdminOrganization = (id, payload) => http.put(`/admin/organizations/${id}`, payload);

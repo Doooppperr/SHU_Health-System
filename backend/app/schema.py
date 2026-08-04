@@ -5,7 +5,7 @@ from sqlalchemy import Date, DateTime, ForeignKeyConstraint, UniqueConstraint, i
 from app.extensions import db
 
 
-CURRENT_SCHEMA_VERSION = 12
+CURRENT_SCHEMA_VERSION = 13
 
 
 class SchemaUpgradeRequired(RuntimeError):
@@ -176,7 +176,7 @@ def _schema_shape_issues(connection) -> list[str]:
 
 
 def initialize_or_validate_schema() -> None:
-    """Create a fresh v12 schema or reject a non-empty legacy database.
+    """Create a fresh v13 schema or reject a non-empty legacy database.
 
     ``db.create_all`` cannot add columns or replace SQLite CHECK constraints.
     Rejecting legacy files before creating missing tables prevents a partially
@@ -194,7 +194,7 @@ def initialize_or_validate_schema() -> None:
                 preview = "; ".join(issues[:5])
                 raise SchemaUpgradeRequired(
                     f"openGauss/GaussDB schema upgrade required: {preview}. "
-                    "Run the schema v12 Alembic migration before starting the application."
+                    "Run the schema v13 Alembic migration before starting the application."
                 )
             return
 
@@ -223,7 +223,7 @@ def initialize_or_validate_schema() -> None:
             if len(issues) > 5:
                 preview += f"; and {len(issues) - 5} more"
             raise SchemaUpgradeRequired(
-                "SQLite schema is marked as v12 but its structure is incomplete: "
+                "SQLite schema is marked as v13 but its structure is incomplete: "
                 f"{preview}. Stop the backend and run "
                 "backend/scripts/upgrade_local_database.py --check-only."
             )

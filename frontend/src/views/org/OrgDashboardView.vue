@@ -23,6 +23,17 @@
       </article>
     </section>
 
+    <section class="org-panel">
+      <header class="org-panel-header"><div><p class="org-kicker">资金账户</p><h3>收款概览</h3></div><el-button link type="primary" @click="router.push({ name: 'org-finance' })">查看收款与退款</el-button></header>
+      <el-alert v-if="finance.operations_suspended" type="error" show-icon :closable="false" title="分院运营已暂停" :description="finance.operations_suspension_reason" />
+      <div class="finance-overview-grid">
+        <article><small>可用余额</small><strong>¥ {{ currency(finance.available_balance) }}</strong><span>到账增加，退款减少</span></article>
+        <article><small>累计到账</small><strong>¥ {{ currency(finance.cumulative_credited) }}</strong><span>已扣除平台服务费</span></article>
+        <article><small>待结算</small><strong>¥ {{ currency(finance.pending_settlement) }}</strong><span>报告发布七日后到账</span></article>
+        <article><small>累计退款</small><strong>¥ {{ currency(finance.cumulative_refunded) }}</strong><span>{{ finance.refund_required_count || 0 }} 笔等待处理</span></article>
+      </div>
+    </section>
+
     <section class="org-task-layout">
       <article class="org-panel">
         <header class="org-panel-header">
@@ -162,6 +173,8 @@ const insightHasData = computed(() => Number(aggregate.value.report_count || 0) 
 const appointmentCounts = computed(() => summary.value.appointment_status_counts || {});
 const today = computed(() => summary.value.today || {});
 const recentReviews = computed(() => summary.value.recent_package_reviews || []);
+const finance = computed(() => summary.value.finance || {});
+const currency = (value) => Number(value || 0).toFixed(2);
 const metrics = computed(() => [
   { label: "今日已预约", value: today.value.booked ?? appointmentCounts.value.unfulfilled ?? 0, icon: "约", note: today.value.capacity ? `接待能力 ${today.value.capacity} 人` : "今日服务安排" },
   { label: "等待到检", value: today.value.awaiting_arrival ?? appointmentCounts.value.unfulfilled ?? 0, icon: "到", note: "需要核对身份并接待" },
@@ -221,6 +234,7 @@ onMounted(async () => {
 .org-overview-card small,.org-task small,.org-guide small { display:block; color:#758789; }
 .org-overview-card strong { display:block; margin:4px 0; color:#173f42; font-size:26px; }
 .org-overview-card p { margin:0; color:#758789; font-size:12px; }
+.finance-overview-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:14px}.finance-overview-grid article{padding:16px;border:1px solid #e4ecea;border-radius:13px;background:#fbfdfc}.finance-overview-grid small,.finance-overview-grid span{display:block;color:#758789}.finance-overview-grid strong{display:block;margin:6px 0;color:#173f42;font-size:23px}
 .org-task-layout { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(320px,.65fr); gap:18px; }
 .org-panel { padding:22px; border:1px solid #e0e9e7; border-radius:16px; background:#fff; }
 .org-panel-header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
@@ -236,10 +250,10 @@ onMounted(async () => {
 .org-guide :deep(.el-alert) { margin-top:18px; }
 .review-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:12px}.review-strip article{display:grid;align-content:start;gap:7px;padding:14px;border:1px solid #e5eceb;border-radius:12px;background:#fbfdfc}.review-strip :deep(.el-tag){width:max-content}.review-strip strong{color:#2b4c4f}.review-strip span{color:#738587;font-size:12px;line-height:1.55}
 .audience-filters{display:flex;gap:8px}.audience-filters :deep(.el-select){width:130px}.audience-note{margin:0 0 12px;color:#718486;font-size:13px}.audience-sample-summary{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}.audience-layout{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.audience-chart,.audience-ai-card{padding:16px;border:1px solid #e4ecea;border-radius:14px;background:#fbfdfc}.audience-chart h4,.audience-ai-card h4{margin:0 0 14px;color:#294c4f}.audience-bar{display:grid;grid-template-columns:minmax(58px,.7fr) minmax(70px,1.2fr) auto;align-items:center;gap:8px;margin-top:10px;font-size:12px}.audience-bar>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.audience-bar i{height:8px;border-radius:99px;background:#e4efec;overflow:hidden}.audience-bar b{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#55ad9d,#2e8174)}.audience-bar strong{color:#456062;font-size:12px}.audience-ai-card{grid-column:1/-1;border-color:#bcdcd5;background:linear-gradient(135deg,#edf8f5,#f9fcfb)}.audience-ai-card>span{color:#217769;font-size:12px;font-weight:800}.audience-ai-card p{color:#506a6c;line-height:1.7}.audience-ai-card ul{display:grid;gap:6px;margin:0;padding-left:20px;color:#385b5b}
-@media(max-width:1100px){.org-overview-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.org-task-layout{grid-template-columns:1fr}}
+@media(max-width:1100px){.org-overview-grid,.finance-overview-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.org-task-layout{grid-template-columns:1fr}}
 @media(max-width:900px){.audience-layout{grid-template-columns:1fr}.audience-ai-card{grid-column:auto}}
 @media(max-width:800px){.review-strip{grid-template-columns:1fr}}
-@media(max-width:650px){.org-hero{align-items:flex-start;flex-direction:column;padding:20px}.org-hero-actions{width:100%}.org-hero-actions :deep(.el-button){flex:1}.org-overview-grid{grid-template-columns:1fr}.org-task{grid-template-columns:auto minmax(0,1fr) auto}.org-task i{display:none}.org-panel-header{align-items:flex-start;flex-direction:column}.audience-filters{width:100%}.audience-filters :deep(.el-select){width:100%}}
+@media(max-width:650px){.org-hero{align-items:flex-start;flex-direction:column;padding:20px}.org-hero-actions{width:100%}.org-hero-actions :deep(.el-button){flex:1}.org-overview-grid,.finance-overview-grid{grid-template-columns:1fr}.org-task{grid-template-columns:auto minmax(0,1fr) auto}.org-task i{display:none}.org-panel-header{align-items:flex-start;flex-direction:column}.audience-filters{width:100%}.audience-filters :deep(.el-select){width:100%}}
 :global(html[data-theme="dark"]) .org-hero,
 :global(html[data-theme="dark"]) .org-overview-card,
 :global(html[data-theme="dark"]) .org-panel,

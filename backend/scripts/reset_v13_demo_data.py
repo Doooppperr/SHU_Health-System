@@ -1,4 +1,4 @@
-"""Compatibility wrapper; new automation uses reset_v13_demo_data.py."""
+"""Canonical schema-v13 acceptance-data reset command."""
 
 from reset_v7_demo_data import main
 

@@ -15,6 +15,7 @@ def list_institutions():
     institutions = (
         Institution.query.join(Institution.organization).filter(
             Institution.is_active.is_(True),
+            Institution.operations_suspended_at.is_(None),
             Institution.organization.has(is_active=True),
         )
         .order_by(Institution.id.asc())

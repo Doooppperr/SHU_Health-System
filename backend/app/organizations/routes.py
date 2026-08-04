@@ -33,6 +33,7 @@ def list_organizations():
         pattern = _escaped_like_pattern(term)
         branch_match = and_(
             Institution.is_active.is_(True),
+            Institution.operations_suspended_at.is_(None),
             or_(
                 Institution.branch_name.ilike(pattern, escape="\\"),
                 Institution.district.ilike(pattern, escape="\\"),

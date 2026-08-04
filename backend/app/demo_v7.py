@@ -45,6 +45,8 @@ from app.models import (
     ComplaintEvent,
     ComplaintMessage,
     FriendRelation,
+    FinanceLedgerEntry,
+    FinanceTransaction,
     HealthDomain,
     Institution,
     InstitutionAudienceInsightCache,
@@ -59,6 +61,9 @@ from app.models import (
     PackageChangeRequest,
     PackageVersion,
     PackageVersionDomain,
+    PaymentOrder,
+    PaymentOrderItem,
+    RefundCase,
     ReportAsset,
     ReportAssetAnnotation,
     ReportIndicator,
@@ -75,7 +80,7 @@ from app.models import (
 
 
 DEMO_PASSWORD = "Shuhealthdoc！"
-DEMO_DATASET_VERSION = 12
+DEMO_DATASET_VERSION = 13
 DEMO_UPLOAD_DOCTOR_NAME = "周明远"
 DEMO_REVIEW_DOCTOR_NAME = "许文静"
 DEMO_USERNAMES = tuple(f"test{index}" for index in range(1, 7))
@@ -2779,13 +2784,14 @@ def _clear_demo_business_data() -> None:
     """Delete in FK-safe order while deliberately leaving every user row intact."""
     models = (
         UserNotification, InstitutionAudienceInsightCache, ComplaintMessage,
-        ComplaintEvent,
+        ComplaintEvent, RefundCase, FinanceLedgerEntry, FinanceTransaction,
         AppointmentComplaint, CommentAppeal, CommentSanction,
         ReportAccessLog, ReportAssetAnnotation, ReportAsset, ReportTextResult, ReportIndicator,
         InstitutionReport, AppointmentEvent, NotificationDelivery, NotificationOutbox,
         AvailabilityNotificationEvent, WaitlistSubscriptionParticipant,
         WaitlistSubscription, BookingParticipantAuthorization,
-        BookingParticipantToken, Appointment, BookingGroup,
+        BookingParticipantToken, PaymentOrderItem, PaymentOrder,
+        Appointment, BookingGroup,
         AppointmentCapacitySlot,
         PackageChangeRequest, Comment, FriendRelation, SelfMeasurement,
         InstitutionInvite, InstitutionImage, PackageVersionAssetRequirement, PackageVersionDomain,
@@ -2796,6 +2802,159 @@ def _clear_demo_business_data() -> None:
     PackageVersion.query.delete(synchronize_session=False)
     Package.query.delete(synchronize_session=False)
     db.session.flush()
+
+
+def _seed_v13_finance_scenarios(now: datetime) -> None:
+    """Add coherent finance fixtures without changing the clinical demo story."""
+    from app.services.finance import (
+        _transaction,
+        backfill_historical_settlements,
+        money,
+        refund_item,
+        schedule_settlement_for_appointment,
+        split_amount,
+    )
+
+    def add_order(appointment, *, status, fund_status, expires_at=None, paid_at=None):
+        gross, fee, net = split_amount(appointment.package_price_snapshot)
+        order = PaymentOrder(
+            order_no=f"DEMO13-{appointment.id:06d}-{status.upper()}",
+            booking_group_id=(
+                appointment.booking_group_id
+                if appointment.booking_group and appointment.booking_group.party_size == 1
+                else None
+            ),
+            payer_user_id=appointment.booked_by_user_id or appointment.user_id,
+            amount=gross,
+            status=status,
+            source="online",
+            expires_at=expires_at,
+            paid_at=paid_at,
+            expired_at=now if status == "expired" else None,
+            created_at=appointment.created_at or now,
+            updated_at=now,
+        )
+        db.session.add(order)
+        db.session.flush()
+        item = PaymentOrderItem(
+            order_id=order.id,
+            appointment_id=appointment.id,
+            institution_id=appointment.institution_id,
+            gross_amount=gross,
+            fee_rate=Decimal("0.025000"),
+            fee_amount=fee,
+            net_amount=net,
+            fund_status=fund_status,
+            created_at=appointment.created_at or now,
+        )
+        db.session.add(item)
+        db.session.flush()
+        if fund_status in {"held", "scheduled"}:
+            _transaction(
+                transaction_type="payment_received",
+                idempotency_key=f"payment-item:{item.id}:received",
+                item=item,
+                actor_user_id=order.payer_user_id,
+                occurred_at=paid_at or now,
+                entries=[("platform_custody", None, money(item.gross_amount))],
+            )
+        return order, item
+
+    unfulfilled = Appointment.query.filter_by(status="unfulfilled").filter(
+        Appointment.booking_group.has(BookingGroup.party_size == 1)
+    ).order_by(Appointment.id).all()
+    if len(unfulfilled) >= 2:
+        pending = unfulfilled[0]
+        pending.status = "pending_payment"
+        add_order(
+            pending,
+            status="pending",
+            fund_status="pending",
+            expires_at=now + timedelta(minutes=15),
+        )
+        expired = unfulfilled[1]
+        expired.status = "payment_expired"
+        expired.active_date_key = None
+        add_order(
+            expired,
+            status="expired",
+            fund_status="pending",
+            expires_at=now - timedelta(minutes=1),
+        )
+
+    awaiting = Appointment.query.filter_by(status="awaiting_report").filter(
+        Appointment.booking_group.has(BookingGroup.party_size == 1)
+    ).order_by(Appointment.id).first()
+    if awaiting is not None:
+        add_order(awaiting, status="paid", fund_status="held", paid_at=now - timedelta(days=1))
+
+    scheduled_appointment = Appointment.query.filter_by(status="fulfilled").filter(
+        Appointment.booking_group.has(BookingGroup.party_size == 1)
+    ).order_by(Appointment.id).first()
+    if scheduled_appointment is not None:
+        _order, scheduled_item = add_order(
+            scheduled_appointment,
+            status="paid",
+            fund_status="held",
+            paid_at=now - timedelta(days=1),
+        )
+        schedule_settlement_for_appointment(scheduled_appointment, published_at=now)
+        scheduled_item.settlement_due_at = now + timedelta(days=7)
+
+    cancelled = Appointment.query.filter_by(status="cancelled").filter(
+        Appointment.booking_group.has(BookingGroup.party_size == 1)
+    ).order_by(Appointment.id).first()
+    if cancelled is not None:
+        _order, cancelled_item = add_order(
+            cancelled,
+            status="paid",
+            fund_status="held",
+            paid_at=now - timedelta(days=2),
+        )
+        refund_item(cancelled_item, now=now - timedelta(days=1), reason="normal_cancellation")
+
+    backfill_historical_settlements(now=now)
+
+    complaints = AppointmentComplaint.query.order_by(AppointmentComplaint.id).all()
+    for complaint in complaints:
+        item = PaymentOrderItem.query.filter_by(appointment_id=complaint.appointment_id).first()
+        if item is None:
+            continue
+        case = RefundCase(
+            complaint_id=complaint.id,
+            payment_item_id=item.id,
+            requested_by_user_id=complaint.complainant_user_id,
+            status="denied" if complaint.status == "resolved" else "requested",
+            decision="no_refund" if complaint.status == "resolved" else None,
+            decision_note="双方已确认服务问题完成整改，不支持退款。" if complaint.status == "resolved" else None,
+            decided_at=complaint.resolved_at if complaint.status == "resolved" else None,
+            created_at=complaint.created_at,
+            updated_at=complaint.updated_at,
+        )
+        db.session.add(case)
+    db.session.flush()
+
+    action_cases = [
+        row for row in complaints
+        if row.status in {"platform_pending", "platform_processing"}
+        and row.refund_case
+        and row.refund_case.payment_item.fund_status == "settled"
+    ]
+    for index, complaint in enumerate(action_cases[:2]):
+        case = complaint.refund_case
+        case.status = "institution_action_required"
+        case.decision = "institution_fault_refund"
+        case.decision_note = "平台核验后认定由机构承担责任。"
+        case.decided_at = now - timedelta(hours=73) if index == 0 else now
+        case.due_at = now - timedelta(hours=1) if index == 0 else now + timedelta(hours=72)
+        case.updated_at = now
+        case.payment_item.fund_status = "refund_required"
+        case.payment_item.refund_required_at = case.decided_at
+        case.payment_item.refund_due_at = case.due_at
+        if index == 0:
+            institution = case.payment_item.institution
+            institution.operations_suspended_at = now
+            institution.operations_suspension_reason = "存在超过三天未完成的订单退款"
 
 
 def rebuild_v7_demo_data(*, commit: bool = True) -> dict:
@@ -2840,6 +2999,7 @@ def rebuild_v7_demo_data(*, commit: bool = True) -> dict:
         # apply that production-only threshold to the compact unit-test reset.
         if not current_app.config.get("TESTING", False):
             enrich_institution1_shared_archives(commit=False)
+        _seed_v13_finance_scenarios(datetime.now(timezone.utc))
         after = account_identity_snapshot()
         for username, snapshot in before.items():
             if after.get(username) != snapshot:
@@ -2870,6 +3030,10 @@ def demo_snapshot_summary() -> dict:
         "report_text_results": ReportTextResult.query.count(),
         "report_assets": ReportAsset.query.count(),
         "comments": Comment.query.count(),
+        "payment_orders": PaymentOrder.query.count(),
+        "payment_order_items": PaymentOrderItem.query.count(),
+        "finance_transactions": FinanceTransaction.query.count(),
+        "refund_cases": RefundCase.query.count(),
     }
     summary["branch_distribution"] = {
         row.name: len(row.branches) for row in Organization.query.order_by(Organization.id).all()

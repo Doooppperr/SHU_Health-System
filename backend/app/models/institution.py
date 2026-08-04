@@ -37,6 +37,8 @@ class Institution(db.Model):
     daily_appointment_limit = db.Column(db.Integer, nullable=True)
     notification_email = db.Column(db.String(120), nullable=True)
     notification_enabled = db.Column(db.Boolean, nullable=False, default=True, server_default=db.true())
+    operations_suspended_at = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
+    operations_suspension_reason = db.Column(db.String(500), nullable=True)
     account_deactivated_at = db.Column(db.DateTime(timezone=True), nullable=True)
     is_active = db.Column(
         db.Boolean,
@@ -104,6 +106,9 @@ class Institution(db.Model):
             "daily_appointment_limit": self.daily_appointment_limit,
             "notification_email": self.notification_email,
             "account_deactivated_at": self.account_deactivated_at.isoformat() if self.account_deactivated_at else None,
+            "operations_suspended_at": self.operations_suspended_at.isoformat() if self.operations_suspended_at else None,
+            "operations_suspension_reason": self.operations_suspension_reason,
+            "operations_suspended": self.operations_suspended_at is not None,
             "package_count": active_package_count,
             "total_package_count": len(self.packages),
         }
@@ -171,7 +176,7 @@ class Appointment(db.Model):
     __tablename__ = "appointments"
     __table_args__ = (
         db.CheckConstraint(
-            "status in ('unfulfilled', 'awaiting_report', 'fulfilled', 'cancelled', 'no_show', 'institution_cancelled')",
+            "status in ('pending_payment', 'payment_expired', 'unfulfilled', 'awaiting_report', 'fulfilled', 'cancelled', 'no_show', 'institution_cancelled')",
             name="ck_appointments_status",
         ),
         db.CheckConstraint(
@@ -250,6 +255,17 @@ class Appointment(db.Model):
             "termination_reason_text": self.termination_reason_text,
             "events": [event.to_dict() for event in self.events],
         }
+        from app.models.finance import PaymentOrderItem
+        payment_item = PaymentOrderItem.query.filter_by(appointment_id=self.id).first()
+        payload["payment"] = (
+            {
+                "order_id": payment_item.order_id,
+                "order_no": payment_item.order.order_no,
+                "order_status": payment_item.order.status,
+                **payment_item.to_dict(),
+            }
+            if payment_item else None
+        )
         if include_user:
             payload["user"] = {
                 "id": self.user_id,
