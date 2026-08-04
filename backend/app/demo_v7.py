@@ -1643,7 +1643,14 @@ def _expand_v10_test1(users, institutions, packages, indicators, domains, today,
     reports = []
     final_sequence = len(TEST1_STORY_PLAN) - 1
     for sequence, (days_ago, branch_index, package_name, report_kind) in enumerate(TEST1_STORY_PLAN):
-        exam_date = today - timedelta(days=days_ago)
+        # Keep the newest sample in the current calendar month so the monthly
+        # abnormal summary remains demonstrable after every safe demo reset.
+        effective_days_ago = (
+            min(days_ago, max(today.day - 1, 0))
+            if sequence == final_sequence
+            else days_ago
+        )
+        exam_date = today - timedelta(days=effective_days_ago)
         institution = institutions[branch_index - 1]
         package = packages[_package_key(branch_index, package_name)]
         staff = users[f"institution{branch_index}_staff1"]
@@ -2047,31 +2054,31 @@ def _seed_v12_governance_workflows(users, now):
     complaint_stories = {
         "test1": {
             "category": "service",
-            "content": "到检后在前台等了近四十分钟才完成登记，期间几次询问都没有得到明确的排队说明，希望机构核对当天接待安排并改进引导。",
+            "content": "我按预约时间提前十分钟到店，取号后在前台等了快四十分钟。中间问了两次还要等多久，工作人员只说让我继续等，也没有说明是系统故障还是排队人数多。希望查一下当天上午的接待记录，以后遇到延迟能及时告知。",
         },
         "test2": {
             "category": "appointment",
-            "content": "预约短信写的是上午九点到检，但现场说系统里登记的是九点半，导致后续项目整体延后。请核实预约时间同步是否有误。",
-            "institution_reply": "我们已核对当天预约日志，确认分院排班调整后未及时同步到提醒短信。已向您致歉，并为后续到检预留优先登记时段，请确认处理结果。",
+            "content": "短信通知我上午九点到检，我八点五十分到了前台，但工作人员说系统里安排的是九点半，只能重新排队。因为这个时间差，后面的抽血和超声都往后延了。请帮忙核对短信和现场系统为什么不一致。",
+            "institution_reply": "您好，我们核对了当天排班和短信发送记录。当天早班调整到九点半后，预约系统已更新，但提醒短信没有同步刷新，确实是分院操作遗漏。我们已电话向您说明，并为您下次到检备注优先登记。",
         },
         "test3": {
             "category": "report",
-            "content": "报告已经发布，但血脂异常项只有数值，没有说明复查建议。我电话咨询两次都没有联系到报告解读人员，希望补充说明。",
-            "institution_reply": "报告解读医生已重新查看结果，并补充了血脂复查建议。客服曾在午休时段漏接来电，我们已安排专人回访。",
-            "escalation_reason": "机构补充了文字说明，但报告页面仍未显示复查建议，回访电话也没有按约定时间打来，请平台协助核实。",
+            "content": "报告里的低密度脂蛋白标了偏高，但页面上只有结果和参考范围，没有看到复查时间或注意事项。我按报告上的电话打了两次，一次无人接听，一次转接后断线。希望机构补充说明，并安排能看懂报告的人员回复。",
+            "institution_reply": "报告医生已重新审核该项结果，并在报告结论中补充了复查建议。经查，您第一次来电处于午间交接时段，第二次转接发生中断。我们已登记回访，将由报告解读医生在工作日下午联系您。",
+            "escalation_reason": "机构说已经补充建议，但我重新登录后报告页面仍是原来的内容，约好的回访时间也没有接到电话。麻烦平台帮我确认修改是否真的提交成功。",
         },
         "test4": {
             "category": "privacy",
-            "content": "候检区工作人员当众念出了我的姓名和检查项目，周围还有其他受检者。我担心个人信息暴露，希望机构说明现场叫号规范。",
-            "institution_reply": "经核查，当班人员未按要求使用编号叫号。分院已暂停其前台排班并重新培训，同时将候检区改为编号与姓氏组合叫号。",
-            "escalation_reason": "我认可机构已经调整叫号方式，但希望平台确认整改是否已落实，并明确后续如何避免再次发生。",
-            "admin_reply": "平台已调取当日服务记录并核验分院整改材料。新的编号叫号流程已启用，我们将继续抽查执行情况，并要求机构完成书面回访。",
+            "content": "我在超声候检区等候时，工作人员直接念了我的全名和具体检查项目，当时旁边坐着不少人。我现场提醒后，对方才改成叫姓氏。希望机构说明目前的叫号规范，也请避免再公开完整姓名和检查内容。",
+            "institution_reply": "我们查看了当日候检区记录，确认工作人员没有按规定使用编号叫号。分院已对当班人员进行停岗培训，并从当天起统一使用“排队编号＋姓氏”叫号，不再播报完整姓名和检查项目。",
+            "escalation_reason": "机构已经回复会改用编号叫号，我认可这个处理方向。不过涉及个人隐私，希望平台再确认新流程已经在现场执行，而不只是口头说明。",
+            "admin_reply": "平台已核对分院提交的叫号流程、培训签到和现场屏幕照片。编号叫号已启用，我们要求机构连续四周留存抽查记录，并在本次投诉关闭前完成电话回访。",
         },
         "test5": {
             "category": "service",
-            "content": "肺功能检查前没有人说明需要先停下来平稳呼吸，我第一次操作失败后才重新讲解，整个过程比较仓促，希望加强检查前指导。",
-            "institution_reply": "分院已由检查组负责人回访并致歉，确认首次操作前的说明不完整。现已增加检查前口头确认步骤，并为相关人员完成复训。",
-            "resolved_note": "机构回访后解释清楚了操作要求，也告知了整改措施，我确认本次问题已经解决。",
+            "content": "做肺功能检查前，工作人员只让我对着设备吹气，没有先完整说明动作。我第一次没做成功后，对方才解释要先深吸气再持续吹，语气也比较着急。第二次讲清楚后就完成了，希望以后检查前先把动作说明白。",
+            "institution_reply": "检查组负责人已电话回访并向您致歉。我们确认当班人员首次指导时漏掉了动作讲解，现已在肺功能检查前增加“讲解、示范、受检者复述”三个确认步骤，并完成当班人员复训。",
+            "resolved_note": "负责人已经电话解释了检查步骤和后续整改，沟通态度也很好，我确认这个问题已经处理完成。",
         },
     }
     admin = users["demo_admin"]
