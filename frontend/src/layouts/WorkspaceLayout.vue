@@ -37,7 +37,7 @@
         <div class="workspace-user">
           <span class="workspace-avatar">{{ userInitial }}</span>
           <span>
-            <strong>{{ authStore.user?.username || authStore.user?.display_name || "用户" }}</strong>
+            <strong>{{ currentAccountName }}</strong>
             <small>{{ roleName }}</small>
           </span>
         </div>
@@ -193,13 +193,13 @@ const menuItems = computed(() => (menus[workspaceType.value] || menus.user).map(
   item.name === "my-comments" ? { ...item, badge: unreadReplies.value } : item
 )));
 const roleName = computed(() => roleLabel(authStore.user?.role));
-const userInitial = computed(() => (authStore.user?.username || authStore.user?.display_name || "U").slice(0, 1).toUpperCase());
 const currentAccountName = computed(() => (
   authStore.user?.real_name
   || authStore.user?.display_name
   || authStore.user?.username
   || "用户"
 ));
+const userInitial = computed(() => currentAccountName.value.slice(0, 1).toUpperCase());
 const switchableRelations = computed(() => {
   return relatedAccounts.value.filter((item) => {
     const canSwitch = item.can_switch ?? item.relationship_status === "active";

@@ -62,7 +62,7 @@ describe("工作台关联账号入口", () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const auth = useAuthStore(pinia);
-    auth.user = { id: 1, username: "test1", real_name: "本人", role: "user" };
+    auth.user = { id: 1, username: "test1", real_name: "林晓晨", role: "user" };
     auth.switchToFriend = vi.fn(async () => {
       auth.user = { id: 2, username: "test2", real_name: "亲友甲", role: "user" };
       auth.delegation = {
@@ -95,6 +95,9 @@ describe("工作台关联账号入口", () => {
 
     expect(mocks.fetchFriends).toHaveBeenCalled();
     const footer = wrapper.get(".workspace-sidebar-footer");
+    expect(footer.get(".workspace-user strong").text()).toBe("林晓晨");
+    expect(footer.get(".workspace-avatar").text()).toBe("林");
+    expect(footer.text()).not.toContain("test1");
     expect(footer.text()).toContain("切换账号");
     expect(footer.text()).toContain("退出登录");
     expect(wrapper.get(".workspace-top-actions").text()).not.toContain("切换账号");
