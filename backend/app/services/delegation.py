@@ -130,6 +130,24 @@ def issue_normal_tokens(user):
     }
 
 
+def _session_payload(audit, subject):
+    relation_chain = audit.relation_chain or []
+    return {
+        "delegated": True,
+        "id": audit.id,
+        "actor": {"id": audit.actor_user_id},
+        "subject": redacted_user(subject),
+        "chain": [int(value) for value in (audit.chain_user_ids or [])],
+        "depth": audit.depth,
+        "relation_id": (
+            relation_chain[-1].get("relation_id")
+            if relation_chain and isinstance(relation_chain[-1], dict)
+            else None
+        ),
+        "expires_at": audit.expires_at.isoformat(),
+    }
+
+
 def start_delegation(current_user, relation, current_claims=None):
     current_claims = current_claims or {}
     current_user = db.session.get(
@@ -310,15 +328,7 @@ def start_delegation(current_user, relation, current_claims=None):
     return {
         **tokens,
         "user": redacted_user(target),
-        "session": {
-            "delegated": True,
-            "id": audit.id,
-            "actor": {"id": actor_id},
-            "subject": redacted_user(target),
-            "chain": chain,
-            "depth": audit.depth,
-            "expires_at": audit.expires_at.isoformat(),
-        },
+        "session": _session_payload(audit, target),
     }, None
 
 
@@ -467,6 +477,122 @@ def revoke_actor_login(actor_user_id, reason="actor logged out"):
     increment_user_security_epochs(actor.id)
     revoke_account_security_artifacts(actor.id)
     return close_actor_delegations(actor.id, reason)
+
+
+def return_from_delegation(payload):
+    """Return exactly one hop while preserving the authenticated login chain."""
+    audit = db.session.get(
+        DelegationSessionAudit,
+        payload.get("delegation_session_id"),
+        populate_existing=True,
+    )
+    if audit is None or audit.status != "active":
+        return None, (
+            {
+                "message": "当前关联账号会话已失效，请重新登录",
+                "code": "DELEGATION_SESSION_REVOKED",
+            },
+            401,
+        )
+
+    parent = None
+    target = None
+    if audit.parent_session_id:
+        parent = db.session.get(
+            DelegationSessionAudit,
+            audit.parent_session_id,
+            populate_existing=True,
+        )
+        parent_claims = {
+            **(_claims_from_audit(parent) if parent is not None else {}),
+            "sub": str(parent.subject_user_id) if parent is not None else "",
+        }
+        if parent is None or not validate_delegation_claims(parent_claims):
+            return None, (
+                {
+                    "message": "上一级关联账号会话已失效，请重新登录",
+                    "code": "DELEGATION_PARENT_REVOKED",
+                },
+                401,
+            )
+        target = db.session.get(User, parent.subject_user_id, populate_existing=True)
+    else:
+        target = db.session.get(User, audit.actor_user_id, populate_existing=True)
+        snapshots = audit.token_version_snapshot or {}
+        if (
+            target is None
+            or not target.is_active
+            or target.role != "user"
+            or snapshots.get(str(target.id)) != target.token_version
+        ):
+            return None, (
+                {
+                    "message": "本人账号登录状态已失效，请重新登录",
+                    "code": "TOKEN_REVOKED",
+                },
+                401,
+            )
+
+    now = datetime.now(timezone.utc)
+    claimed = (
+        db.session.query(DelegationSessionAudit)
+        .filter(
+            DelegationSessionAudit.id == audit.id,
+            DelegationSessionAudit.status == "active",
+        )
+        .update(
+            {
+                DelegationSessionAudit.status: "exited",
+                DelegationSessionAudit.ended_at: now,
+                DelegationSessionAudit.end_reason: "user returned to previous account",
+            },
+            synchronize_session=False,
+        )
+    )
+    if claimed != 1:
+        db.session.rollback()
+        return None, (
+            {
+                "message": "账号已在其他请求中切换，请刷新后重试",
+                "code": "DELEGATION_RETURN_CONFLICT",
+            },
+            409,
+        )
+
+    # A stale browser tab may have created descendants from this session.
+    # Closing the selected branch prevents those older tokens from surviving
+    # after the user has explicitly returned to its parent.
+    closed_ids = {audit.id}
+    active_rows = DelegationSessionAudit.query.filter_by(
+        actor_user_id=audit.actor_user_id,
+        status="active",
+    ).all()
+    changed = True
+    while changed:
+        changed = False
+        for row in active_rows:
+            if row.id in closed_ids or row.parent_session_id not in closed_ids:
+                continue
+            row.status = "exited"
+            row.ended_at = now
+            row.end_reason = "ancestor returned to previous account"
+            closed_ids.add(row.id)
+            changed = True
+
+    if parent is not None:
+        tokens = issue_delegated_tokens(parent)
+        return {
+            **tokens,
+            "user": redacted_user(target),
+            "session": _session_payload(parent, target),
+        }, None
+
+    tokens = issue_normal_tokens(target)
+    return {
+        **tokens,
+        "user": redacted_user(target),
+        "session": None,
+    }, None
 
 
 def exit_delegation(payload):

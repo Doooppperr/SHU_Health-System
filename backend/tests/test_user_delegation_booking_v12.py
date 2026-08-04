@@ -274,6 +274,105 @@ def test_bidirectional_friend_switch_is_audited_and_exit_revokes_chain(
         assert "/api/auth/delegation/exit" in paths
 
 
+def test_delegation_can_return_one_level_without_relogin(app, client):
+    actor_headers, _ = _login(client, "test1")
+    with app.app_context():
+        test1 = User.query.filter_by(username="test1").one()
+        test2 = User.query.filter_by(username="test2").one()
+        test4 = User.query.filter_by(username="test4").one()
+        first_relation = FriendRelation.query.filter(
+            db.or_(
+                db.and_(
+                    FriendRelation.user_id == test1.id,
+                    FriendRelation.friend_user_id == test2.id,
+                ),
+                db.and_(
+                    FriendRelation.user_id == test2.id,
+                    FriendRelation.friend_user_id == test1.id,
+                ),
+            )
+        ).one()
+        second_relation = FriendRelation.query.filter(
+            db.or_(
+                db.and_(
+                    FriendRelation.user_id == test2.id,
+                    FriendRelation.friend_user_id == test4.id,
+                ),
+                db.and_(
+                    FriendRelation.user_id == test4.id,
+                    FriendRelation.friend_user_id == test2.id,
+                ),
+            )
+        ).one()
+        first_relation.activate()
+        second_relation.activate()
+        first_relation_id = first_relation.id
+        second_relation_id = second_relation.id
+        actor_id = test1.id
+        db.session.commit()
+
+    first = client.post(
+        f"/api/friends/{first_relation_id}/switch-session",
+        headers=actor_headers,
+    )
+    assert first.status_code == 200, first.get_json()
+    first_headers = {
+        "Authorization": f"Bearer {first.get_json()['access_token']}"
+    }
+    second = client.post(
+        f"/api/friends/{second_relation_id}/switch-session",
+        headers=first_headers,
+    )
+    assert second.status_code == 200, second.get_json()
+    second_headers = {
+        "Authorization": f"Bearer {second.get_json()['access_token']}"
+    }
+
+    returned_to_test2 = client.post(
+        "/api/auth/delegation/back",
+        headers=second_headers,
+    )
+    assert returned_to_test2.status_code == 200, returned_to_test2.get_json()
+    returned_payload = returned_to_test2.get_json()
+    assert returned_payload["session"]["depth"] == 1
+    assert returned_payload["session"]["relation_id"] == first_relation_id
+    returned_test2_headers = {
+        "Authorization": f"Bearer {returned_payload['access_token']}"
+    }
+    assert client.get(
+        "/api/users/me",
+        headers=returned_test2_headers,
+    ).get_json()["user"]["username"] == "test2"
+    assert client.get("/api/users/me", headers=second_headers).status_code == 401
+
+    returned_to_test1 = client.post(
+        "/api/auth/delegation/back",
+        headers=returned_test2_headers,
+    )
+    assert returned_to_test1.status_code == 200, returned_to_test1.get_json()
+    assert returned_to_test1.get_json()["session"] is None
+    returned_test1_headers = {
+        "Authorization": f"Bearer {returned_to_test1.get_json()['access_token']}"
+    }
+    assert client.get(
+        "/api/users/me",
+        headers=returned_test1_headers,
+    ).get_json()["user"]["username"] == "test1"
+    assert client.get("/api/users/me", headers=first_headers).status_code == 401
+
+    with app.app_context():
+        sessions = DelegationSessionAudit.query.filter_by(
+            actor_user_id=actor_id,
+        ).all()
+        assert len(sessions) == 2
+        assert {row.status for row in sessions} == {"exited"}
+        back_audits = DelegatedActionAudit.query.filter_by(
+            path="/api/auth/delegation/back",
+            status_code=200,
+        ).all()
+        assert len(back_audits) == 2
+
+
 def test_friend_request_accepts_both_directions_and_any_side_revokes(
     app,
     client,

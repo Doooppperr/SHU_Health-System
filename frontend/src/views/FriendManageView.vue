@@ -81,9 +81,10 @@
               <el-button
                 type="primary"
                 :loading="switchingId === row.id"
+                :disabled="isVisitedAccount(row) && !isPreviousAccount(row)"
                 @click="switchAccount(row)"
               >
-                进入亲友账号
+                {{ accountSwitchLabel(row) }}
               </el-button>
               <el-button plain @click="helpBook(row)">帮 TA 预约</el-button>
               <el-dropdown trigger="click">
@@ -166,6 +167,24 @@ function relationshipMeta(row) {
   return { label: "等待对方接受", type: "info" };
 }
 
+function isVisitedAccount(row) {
+  const accountId = Number(counterpart(row).id);
+  return (authStore.delegation?.session?.chain || [])
+    .map((value) => Number(value))
+    .includes(accountId);
+}
+
+function isPreviousAccount(row) {
+  const chain = (authStore.delegation?.session?.chain || []).map((value) => Number(value));
+  return chain.length > 1 && Number(counterpart(row).id) === chain.at(-2);
+}
+
+function accountSwitchLabel(row) {
+  if (isPreviousAccount(row)) return `返回 ${displayName(row)}`;
+  if (isVisitedAccount(row)) return "已在切换链路中";
+  return "进入亲友账号";
+}
+
 async function loadFriends() {
   loading.value = true;
   errorMessage.value = "";
@@ -201,8 +220,13 @@ async function submitAddFriend() {
 async function switchAccount(row) {
   switchingId.value = row.id;
   try {
-    await authStore.switchToFriend(row);
-    ElMessage.success(`已进入 ${displayName(row)} 的授权账号`);
+    if (isPreviousAccount(row)) {
+      await authStore.returnToPreviousAccount();
+      ElMessage.success(`已返回 ${displayName(row)}`);
+    } else {
+      await authStore.switchToFriend(row);
+      ElMessage.success(`已进入 ${displayName(row)} 的授权账号`);
+    }
     await router.push({ name: "timeline" });
   } catch (error) {
     ElMessage.error(error?.response?.data?.message || error?.message || "暂时无法切换账号");

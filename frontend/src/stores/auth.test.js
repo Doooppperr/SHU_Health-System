@@ -7,6 +7,7 @@ const api = vi.hoisted(() => ({
   refresh: vi.fn(),
 }));
 const friendsApi = vi.hoisted(() => ({
+  returnFriendSession: vi.fn(),
   switchFriendSession: vi.fn(),
 }));
 
@@ -32,6 +33,7 @@ beforeEach(() => {
   api.login.mockReset();
   api.logout.mockReset();
   api.refresh.mockReset();
+  friendsApi.returnFriendSession.mockReset();
   friendsApi.switchFriendSession.mockReset();
 });
 
@@ -112,7 +114,47 @@ describe("auth tab isolation", () => {
     expect(store.user).toBeNull();
   });
 
-  it("uses delegated tokens and clears the complete login chain on exit", async () => {
+  it("returns from a delegated account without requiring another login", async () => {
+    friendsApi.switchFriendSession.mockResolvedValue({
+      data: {
+        access_token: "delegated-access",
+        refresh_token: "delegated-refresh",
+        user: { id: 12, username: "relative", role: "user" },
+        session: { actor: { id: 1 }, subject: { id: 12 }, depth: 1 },
+      },
+    });
+    friendsApi.returnFriendSession.mockResolvedValue({
+      data: {
+        access_token: "returned-access",
+        refresh_token: "returned-refresh",
+        user: { id: 1, username: "actor", role: "user" },
+        session: null,
+      },
+    });
+    const store = useAuthStore();
+    store.accessToken = "actor-access";
+    store.refreshToken = "actor-refresh";
+    store.user = { id: 1, username: "actor", role: "user" };
+
+    await store.switchToFriend({ id: 7, counterparty: { username: "relative" } });
+    expect(store.accessToken).toBe("delegated-access");
+    expect(store.delegation).toEqual(expect.objectContaining({
+      relationId: 7,
+      previousAccountName: "actor",
+    }));
+
+    await store.returnToPreviousAccount();
+    expect(friendsApi.returnFriendSession).toHaveBeenCalledOnce();
+    expect(store.accessToken).toBe("returned-access");
+    expect(store.refreshToken).toBe("returned-refresh");
+    expect(store.user.username).toBe("actor");
+    expect(store.delegation).toBeNull();
+    expect(JSON.parse(sessionStorage.getItem("health-system-auth"))).toEqual(
+      expect.objectContaining({ accessToken: "returned-access" })
+    );
+  });
+
+  it("uses delegated tokens and clears the complete login chain on logout", async () => {
     friendsApi.switchFriendSession.mockResolvedValue({
       data: {
         access_token: "delegated-access",
@@ -133,7 +175,7 @@ describe("auth tab isolation", () => {
     expect(store.accessToken).toBe("delegated-access");
     expect(store.delegation).toEqual(expect.objectContaining({ relationId: 7 }));
 
-    await store.returnToOwnAccount();
+    await store.secureLogout();
     expect(api.logout).toHaveBeenCalledOnce();
     expect(store.accessToken).toBe("");
     expect(store.user).toBeNull();

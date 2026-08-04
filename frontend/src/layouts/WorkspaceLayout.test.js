@@ -65,7 +65,16 @@ describe("工作台关联账号入口", () => {
     auth.user = { id: 1, username: "test1", real_name: "本人", role: "user" };
     auth.switchToFriend = vi.fn(async () => {
       auth.user = { id: 2, username: "test2", real_name: "亲友甲", role: "user" };
-      auth.delegation = { relationId: 17, ownerUsername: "亲友甲" };
+      auth.delegation = {
+        relationId: 17,
+        ownerUsername: "亲友甲",
+        previousAccountName: "本人",
+        session: { chain: [1, 2], depth: 1 },
+      };
+    });
+    auth.returnToPreviousAccount = vi.fn(async () => {
+      auth.user = { id: 1, username: "test1", real_name: "本人", role: "user" };
+      auth.delegation = null;
     });
     auth.secureLogout = vi.fn(async () => {
       auth.logout();
@@ -97,6 +106,13 @@ describe("工作台关联账号入口", () => {
     expect(auth.switchToFriend).toHaveBeenCalledWith(expect.objectContaining({ id: 17 }));
     expect(mocks.router.replace).toHaveBeenCalledWith({ name: "timeline" });
     expect(wrapper.findComponent({ name: "BasicProfileGate" }).exists()).toBe(true);
+    expect(wrapper.text()).toContain("返回 本人");
+
+    await wrapper.vm.returnToPreviousAccount();
+    await flushPromises();
+    expect(auth.returnToPreviousAccount).toHaveBeenCalledOnce();
+    expect(auth.user.username).toBe("test1");
+    expect(mocks.router.replace).toHaveBeenLastCalledWith({ name: "timeline" });
 
     await wrapper.vm.logout();
     expect(auth.secureLogout).toHaveBeenCalled();

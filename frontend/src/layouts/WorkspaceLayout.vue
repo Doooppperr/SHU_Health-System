@@ -80,13 +80,21 @@
               <span class="workspace-account-switch__avatar">{{ userInitial }}</span>
               <span class="workspace-account-switch__identity">
                 <strong>{{ currentAccountName }}</strong>
-                <small>{{ authStore.delegation ? "授权账号 · 可继续切换" : "本人账号 · 切换亲友" }}</small>
+                <small>{{ authStore.delegation ? "授权账号 · 可返回或继续切换" : "本人账号 · 切换亲友" }}</small>
               </span>
               <span aria-hidden="true">⌄</span>
             </button>
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item disabled>当前：{{ currentAccountName }}</el-dropdown-item>
+                <el-dropdown-item
+                  v-if="authStore.delegation"
+                  command="__delegation_back__"
+                  divided
+                  :disabled="returning"
+                >
+                  返回 {{ authStore.delegation.previousAccountName || "上一级账号" }}
+                </el-dropdown-item>
                 <el-dropdown-item
                   v-for="relation in switchableRelations"
                   :key="relation.id"
@@ -97,7 +105,7 @@
                   切换至 {{ relationDisplayName(relation) }}
                 </el-dropdown-item>
                 <el-dropdown-item v-if="!switchableRelations.length" disabled divided>
-                  暂无可切换的关联账号
+                  暂无其他可切换的关联账号
                 </el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -112,8 +120,8 @@
             已进入 <strong>{{ authStore.delegation.ownerUsername }}</strong> 的关联账号，
             可按当前账号权限操作，真实操作者会留痕。
           </span>
-          <el-button size="small" type="primary" :loading="returning" @click="returnToOwnAccount">
-            退出并重新登录本人账号
+          <el-button size="small" type="primary" :loading="returning" @click="returnToPreviousAccount">
+            返回 {{ authStore.delegation.previousAccountName || "上一级账号" }}
           </el-button>
         </div>
         <div
@@ -212,18 +220,29 @@ const currentAccountName = computed(() => (
   || authStore.user?.username
   || "用户"
 ));
-const switchableRelations = computed(() => relatedAccounts.value.filter(
-  (item) => item.can_switch ?? item.relationship_status === "active"
-));
+const switchableRelations = computed(() => {
+  const visitedIds = new Set(
+    (authStore.delegation?.session?.chain || []).map((value) => Number(value))
+  );
+  return relatedAccounts.value.filter((item) => {
+    const canSwitch = item.can_switch ?? item.relationship_status === "active";
+    const person = item.counterparty || item.friend_user || item.user || {};
+    return canSwitch && !visitedIds.has(Number(person.id));
+  });
+});
 const homeRoute = computed(() => dashboardRouteForRole(authStore.user?.role));
 const pageTitle = computed(() => route.meta.title || workspaceName.value);
 const pageEyebrow = computed(() => route.meta.eyebrow || workspaceName.value);
 
-async function returnToOwnAccount() {
+async function returnToPreviousAccount() {
   returning.value = true;
   try {
-    await authStore.secureLogout();
-    await router.replace({ name: "login" });
+    await authStore.returnToPreviousAccount();
+    ElMessage.success(`已返回 ${currentAccountName.value}`);
+    await router.replace({ name: "timeline" });
+    await loadRelatedAccounts();
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.message || error?.message || "返回账号失败");
   } finally {
     returning.value = false;
   }
@@ -249,6 +268,10 @@ async function loadRelatedAccounts() {
 }
 
 async function switchRelatedAccount(relationId) {
+  if (relationId === "__delegation_back__") {
+    await returnToPreviousAccount();
+    return;
+  }
   const relation = relatedAccounts.value.find((item) => item.id === Number(relationId));
   if (!relation || accountSwitchingId.value) return;
   accountSwitchingId.value = relation.id;

@@ -1,12 +1,16 @@
 import { defineStore } from "pinia";
 
 import { getMe, login, logout as requestLogout, refresh, register } from "../api/auth";
-import { switchFriendSession } from "../api/friends";
+import { returnFriendSession, switchFriendSession } from "../api/friends";
 import { clearAllAiSessionStorage } from "../utils/aiSession";
 
 const STORAGE_KEY = "health-system-auth";
 let refreshInFlight = null;
 let refreshTokenInFlight = "";
+
+function accountName(user) {
+  return user?.real_name || user?.display_name || user?.username || "上一级账号";
+}
 
 export const useAuthStore = defineStore("auth", {
   state: () => ({
@@ -139,6 +143,10 @@ export const useAuthStore = defineStore("auth", {
     async switchToFriend(relation) {
       const relationId = relation?.id || relation?.relation_id;
       if (!relationId) throw new Error("缺少亲友授权关系");
+      const accountTrail = [
+        ...(this.delegation?.accountTrail || []),
+        { id: this.user?.id || null, name: accountName(this.user) },
+      ];
       const { data } = await switchFriendSession(relationId);
       const delegatedUser = data.user || data.item?.user || data.delegation?.user;
       const delegatedToken = data.access_token || data.token || data.delegation?.access_token;
@@ -158,17 +166,50 @@ export const useAuthStore = defineStore("auth", {
           || delegatedUser.display_name
           || delegatedUser.username
           || "亲友",
-        expiresAt: data.expires_at || data.delegation?.expires_at || null,
+        expiresAt:
+          data.expires_at
+          || data.session?.expires_at
+          || data.delegation?.expires_at
+          || data.delegation?.session?.expires_at
+          || null,
         session: data.session || data.delegation?.session || null,
+        previousAccountName: accountTrail.at(-1)?.name || "上一级账号",
+        accountTrail,
       };
       this.persist();
       return data;
     },
 
-    async returnToOwnAccount() {
+    async returnToPreviousAccount() {
       if (!this.delegation) return false;
-      await this.secureLogout();
-      return true;
+      const currentTrail = this.delegation.accountTrail || [];
+      const { data } = await returnFriendSession();
+      const returnedUser = data.user || data.item?.user || data.delegation?.user;
+      const returnedToken = data.access_token || data.token || data.delegation?.access_token;
+      if (!returnedUser || !returnedToken) {
+        throw new Error("返回账号响应不完整");
+      }
+
+      clearAllAiSessionStorage();
+      this.accessToken = returnedToken;
+      this.refreshToken = data.refresh_token || data.delegation?.refresh_token || "";
+      this.user = returnedUser;
+      const session = data.session || data.delegation?.session || null;
+      if (session?.delegated) {
+        const accountTrail = currentTrail.slice(0, -1);
+        this.delegation = {
+          relationId: session.relation_id || null,
+          ownerUsername: accountName(returnedUser),
+          expiresAt: session.expires_at || null,
+          session,
+          previousAccountName: accountTrail.at(-1)?.name || "上一级账号",
+          accountTrail,
+        };
+      } else {
+        this.delegation = null;
+      }
+      this.persist();
+      return data;
     },
 
     async secureLogout() {
