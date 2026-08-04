@@ -290,7 +290,7 @@ def escalate_complaint(complaint_id):
     escalated_at = datetime.now(timezone.utc)
     if not _transition_owned_complaint_cas(
         item,
-        expected_statuses={"institution_pending", "user_confirmation"},
+        expected_statuses={item.status},
         next_status="platform_pending",
         changed_at=escalated_at,
         values={
