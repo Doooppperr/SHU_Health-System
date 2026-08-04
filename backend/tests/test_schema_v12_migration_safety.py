@@ -205,6 +205,43 @@ def test_stamped_v12_additive_security_upgrade_invalidates_legacy_secrets(
         engine.dispose()
 
 
+def test_demo_doctor_name_normalization_is_exact_and_idempotent(tmp_path):
+    database_path = tmp_path / "demo-doctor-names.db"
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(
+                "CREATE TABLE institution_reports ("
+                "id INTEGER PRIMARY KEY, upload_doctor_name VARCHAR(80), "
+                "review_doctor_name VARCHAR(80))"
+            ))
+            connection.execute(text(
+                "INSERT INTO institution_reports "
+                "(id, upload_doctor_name, review_doctor_name) VALUES "
+                "(1, '演示医生甲（虚构）', '演示医生乙（虚构）'), "
+                "(2, '用户填写的医生', '另一位医生'), "
+                "(3, NULL, NULL)"
+            ))
+
+            migration._normalize_demo_doctor_names(connection)
+            migration._normalize_demo_doctor_names(connection)
+
+            assert connection.execute(text(
+                "SELECT upload_doctor_name, review_doctor_name "
+                "FROM institution_reports WHERE id=1"
+            )).one() == ("周明远", "许文静")
+            assert connection.execute(text(
+                "SELECT upload_doctor_name, review_doctor_name "
+                "FROM institution_reports WHERE id=2"
+            )).one() == ("用户填写的医生", "另一位医生")
+            assert connection.execute(text(
+                "SELECT upload_doctor_name, review_doctor_name "
+                "FROM institution_reports WHERE id=3"
+            )).one() == (None, None)
+    finally:
+        engine.dispose()
+
+
 def test_revision_rows_fail_closed_for_empty_multiple_and_unknown(tmp_path):
     database_path = tmp_path / "revision-contract.db"
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")

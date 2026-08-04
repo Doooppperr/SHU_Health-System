@@ -76,8 +76,8 @@ from app.models import (
 
 DEMO_PASSWORD = "Shuhealthdoc！"
 DEMO_DATASET_VERSION = 12
-DEMO_UPLOAD_DOCTOR_NAME = "演示医生甲（虚构）"
-DEMO_REVIEW_DOCTOR_NAME = "演示医生乙（虚构）"
+DEMO_UPLOAD_DOCTOR_NAME = "周明远"
+DEMO_REVIEW_DOCTOR_NAME = "许文静"
 DEMO_USERNAMES = tuple(f"test{index}" for index in range(1, 7))
 DEMO_PROFILE_USERNAMES = tuple(f"test{index}" for index in range(1, 6))
 DEMO_STAFF_USERNAMES = tuple(

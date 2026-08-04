@@ -25,6 +25,14 @@ from scripts.migrate_schema_v11 import (  # noqa: E402
 
 REVISION = "20260730_schema_v12"
 V11_REVISION = "20260729_schema_v11"
+DEMO_DOCTOR_NAME_REPLACEMENTS = {
+    "upload_doctor_name": {
+        "演示医生甲（虚构）": "周明远",
+    },
+    "review_doctor_name": {
+        "演示医生乙（虚构）": "许文静",
+    },
+}
 SUPPORTED_REVISIONS = {
     V11_REVISION,
     REVISION,
@@ -129,6 +137,35 @@ V12_ADDED_COLUMNS = {
     "comments": {"hidden_reason", "moderated_by_user_id", "moderated_at"},
 }
 V11_REQUIRED_TABLES = set(db.metadata.tables) - REQUIRED_V12_TABLES
+
+
+def _normalize_demo_doctor_names(connection) -> None:
+    """Replace only the two retired acceptance-data placeholders.
+
+    User-entered doctor names and missing historical values are deliberately
+    left untouched. The release migration runs this safely on every stamped
+    schema-v12 database, so existing demo reports converge without requiring
+    a destructive database replacement.
+    """
+
+    inspector = inspect(connection)
+    if "institution_reports" not in inspector.get_table_names():
+        return
+    columns = {
+        column["name"]
+        for column in inspector.get_columns("institution_reports")
+    }
+    for column_name, replacements in DEMO_DOCTOR_NAME_REPLACEMENTS.items():
+        if column_name not in columns:
+            continue
+        for old_name, new_name in replacements.items():
+            connection.execute(
+                text(
+                    f"UPDATE institution_reports SET {column_name}=:new_name "
+                    f"WHERE {column_name}=:old_name"
+                ),
+                {"old_name": old_name, "new_name": new_name},
+            )
 
 
 def _upgrade_stamped_v12_password_challenges(connection) -> None:
@@ -495,6 +532,7 @@ def migrate(database_url: str) -> None:
             if rows == [REVISION]:
                 _normalize_development_identity_column(connection)
                 _upgrade_stamped_v12_password_challenges(connection)
+                _normalize_demo_doctor_names(connection)
                 if not _has_current_v12_schema(connection):
                     raise RuntimeError(
                         "schema is stamped v12 but fails the complete contract"

@@ -4,6 +4,8 @@ import pytest
 
 from app.demo_v7 import (
     ACCOUNT_IDENTITY_FIELDS,
+    DEMO_REVIEW_DOCTOR_NAME,
+    DEMO_UPLOAD_DOCTOR_NAME,
     DemoResetSafetyError,
     TEST1_STORY_PLAN,
     _expand_v10_test1,
@@ -243,6 +245,28 @@ def test_demo_complaints_use_realistic_user_facing_copy(app):
         assert "演示" not in visible_copy
         assert "test1" not in visible_copy
         assert all(len(row.content) >= 35 for row in rows)
+
+
+def test_demo_reports_use_plausible_doctor_display_names(app):
+    with app.app_context():
+        reports = InstitutionReport.query.all()
+        submitted = [
+            row for row in reports
+            if row.status in {"pending_review", "published"}
+        ]
+        published = [row for row in reports if row.status == "published"]
+
+        assert submitted and published
+        assert {row.upload_doctor_name for row in submitted} == {
+            DEMO_UPLOAD_DOCTOR_NAME
+        }
+        assert {row.review_doctor_name for row in published} == {
+            DEMO_REVIEW_DOCTOR_NAME
+        }
+        assert not any(
+            marker in f"{DEMO_UPLOAD_DOCTOR_NAME}{DEMO_REVIEW_DOCTOR_NAME}"
+            for marker in ("演示", "虚构", "测试")
+        )
 
 
 def test_v7_demo_reset_refuses_unknown_personal_accounts(app):

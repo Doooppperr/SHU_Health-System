@@ -28,6 +28,10 @@ from validate_v10_demo import (  # noqa: E402
 )
 
 from app.config import config_by_name  # noqa: E402
+from app.demo_v7 import (  # noqa: E402
+    DEMO_REVIEW_DOCTOR_NAME,
+    DEMO_UPLOAD_DOCTOR_NAME,
+)
 from app.extensions import db  # noqa: E402
 from app.models import (  # noqa: E402
     Appointment,
@@ -442,28 +446,30 @@ def _validate_report_review_data() -> dict:
             f"report states must be exactly {sorted(REQUIRED_REPORT_STATUSES)}, "
             f"found {sorted(statuses)}"
         )
-    unmarked_uploaders = [
+    unexpected_uploaders = [
         row.id
         for row in reports
         if row.status in {"pending_review", "published"}
-        and "虚构" not in str(row.upload_doctor_name or "")
+        and row.upload_doctor_name != DEMO_UPLOAD_DOCTOR_NAME
     ]
-    unmarked_reviewers = [
+    unexpected_reviewers = [
         row.id
         for row in reports
         if row.status == "published"
-        and "虚构" not in str(row.review_doctor_name or "")
+        and row.review_doctor_name != DEMO_REVIEW_DOCTOR_NAME
     ]
-    if unmarked_uploaders or unmarked_reviewers:
+    if unexpected_uploaders or unexpected_reviewers:
         raise RuntimeError(
-            "all demo doctors must carry an explicit fictional marker: "
-            f"upload={unmarked_uploaders}, review={unmarked_reviewers}"
+            "demo report doctor names must match the approved display fixtures: "
+            f"upload={unexpected_uploaders}, review={unexpected_reviewers}"
         )
     return {
         "report_statuses": sorted(statuses),
-        "fictionally_marked_doctor_reports": sum(
-            row.status != "draft" for row in reports
-        ),
+        "doctor_names": {
+            "upload": DEMO_UPLOAD_DOCTOR_NAME,
+            "review": DEMO_REVIEW_DOCTOR_NAME,
+        },
+        "doctor_named_reports": sum(row.status != "draft" for row in reports),
     }
 
 
