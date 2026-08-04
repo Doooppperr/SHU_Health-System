@@ -37,15 +37,15 @@ test("访客可浏览机构套餐，预约登录跳转保留上下文", async ({
   expect(redirect).toContain("appointment_date=2030-01-01");
 });
 
-test("关联账号支持三层直接切换并展示真实操作者提示", async ({ page }) => {
+test("关联账号支持三层直接切换并在左下角显示真实姓名", async ({ page }) => {
   await login(page, "test1");
   await expect(page.getByText("请先完成实名认证")).toHaveCount(0);
 
   for (const expectedName of ["陈雨桐", "周婧", "顾远"]) {
     await page.getByRole("button", { name: "切换关联账号" }).click();
     await page.getByText(`切换至 ${expectedName}`, { exact: true }).click();
-    await expect(page.getByText(new RegExp(`已进入\\s*${expectedName}\\s*的关联账号`))).toBeVisible();
-    await expect(page.getByText("真实操作者会留痕")).toBeVisible();
+    await expect(page.locator(".workspace-user strong")).toHaveText(expectedName);
+    await expect(page.locator(".workspace-avatar")).toHaveText(expectedName.slice(0, 1));
   }
 });
 
