@@ -290,6 +290,23 @@ describe("预约记录抽屉", () => {
     expect(wrapper.text()).not.toContain("bpt-secret");
   });
 
+  it("submits the displayed self intake after switching from recent records to manual values", async () => {
+    const wrapper = mountView(AppointmentBookingView);
+    await flushPromises();
+
+    wrapper.vm.setManualIntake("self:1", "height", true);
+    wrapper.vm.setManualIntake("self:1", "weight", true);
+    await wrapper.vm.book();
+
+    expect(mocks.createBookingGroup).toHaveBeenCalledWith(expect.objectContaining({
+      participants: [expect.objectContaining({
+        type: "self",
+        height_cm: 175,
+        weight_kg: 72,
+      })],
+    }));
+  });
+
   it("loads complaint history beyond the former first 50 and focuses a deep link", async () => {
     mocks.route.query = { complaint_id: "999" };
     const firstPage = Array.from({ length: 100 }, (_, index) => ({

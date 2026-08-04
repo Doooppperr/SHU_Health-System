@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 
 from PIL import Image
@@ -107,6 +107,47 @@ def test_booking_intake_defaults_do_not_block_appointment_initialization(app, cl
     response = client.get("/api/booking-intake-defaults", headers=headers)
     assert response.status_code == 200, response.get_json()
     assert set(response.get_json()["item"]).issubset({"height_cm", "weight_kg"})
+
+
+def test_booking_intake_dates_are_normalized_across_database_drivers():
+    from app.services.booking_participants import _record_date
+
+    assert _record_date(datetime(2026, 8, 5, 12, 30, tzinfo=timezone.utc)) == date(2026, 8, 5)
+    assert _record_date(date(2026, 8, 5)) == date(2026, 8, 5)
+
+
+def test_explicit_booking_intake_does_not_depend_on_history(app, client, monkeypatch):
+    from app.services import booking_participants
+
+    headers = login(client, "test1")
+    institution_id, package_id = first_booking_target(app)
+
+    def fail_if_history_is_read(*_args, **_kwargs):
+        raise TypeError("database driver returned incompatible historical dates")
+
+    monkeypatch.setattr(
+        booking_participants,
+        "_latest_indicator_value",
+        fail_if_history_is_read,
+    )
+    response = client.post("/api/booking-groups", headers=headers, json={
+        "institution_id": institution_id,
+        "package_id": package_id,
+        "appointment_date": (date.today() + timedelta(days=29)).isoformat(),
+        "participants": [{
+            "type": "self",
+            "height_cm": 175,
+            "weight_kg": 72,
+        }],
+        "notice_confirmed": True,
+    })
+
+    assert response.status_code == 201, response.get_json()
+    appointment_id = response.get_json()["item"]["appointments"][0]["id"]
+    with app.app_context():
+        appointment = db.session.get(Appointment, appointment_id)
+        assert float(appointment.height_cm_snapshot) == 175
+        assert float(appointment.weight_kg_snapshot) == 72
 
 
 def test_descriptive_body_measurements_are_not_labelled_normal_or_abnormal(app):

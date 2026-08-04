@@ -486,9 +486,9 @@ def _latest_indicator_value(user_id, code):
     )
     selected = None
     if self_row is not None:
-        selected = (self_row.measured_at.date(), self_row.value)
+        selected = (_record_date(self_row.measured_at), self_row.value)
     if report_row is not None and report_row.report is not None:
-        candidate = (report_row.report.exam_date, report_row.value)
+        candidate = (_record_date(report_row.report.exam_date), report_row.value)
         if selected is None or candidate[0] > selected[0]:
             selected = candidate
     if selected is None:
@@ -497,6 +497,11 @@ def _latest_indicator_value(user_id, code):
         return Decimal(str(selected[1]))
     except (InvalidOperation, TypeError, ValueError):
         return None
+
+
+def _record_date(value):
+    """Normalize database date values across SQLite and openGauss drivers."""
+    return value.date() if isinstance(value, datetime) else value
 
 
 def recent_intake_availability(user_id):
@@ -512,8 +517,6 @@ def participant_intakes(resolved):
         user = item["user"]
         manual_intake = item.get("manual_intake") or {}
         try:
-            latest_height = _latest_indicator_value(user.id, "HEIGHT")
-            latest_weight = _latest_indicator_value(user.id, "WEIGHT")
             manual_height = (
                 Decimal(str(manual_intake.get("height_cm")))
                 if manual_intake.get("height_cm") is not None
@@ -524,13 +527,21 @@ def participant_intakes(resolved):
                 if manual_intake.get("weight_kg") is not None
                 else None
             )
-            # A booking intake is an explicit point-in-time snapshot. A value
-            # supplied for this booking takes precedence for every participant
-            # type but is never written back as a daily measurement.
-            height = manual_height if manual_height is not None else latest_height
-            weight = manual_weight if manual_weight is not None else latest_weight
         except (InvalidOperation, TypeError, ValueError):
-            height = weight = None
+            return None, ({"message": "本次填写的身高或体重格式不正确"}, 400)
+        # A booking intake is an explicit point-in-time snapshot. An explicit
+        # value must not depend on (or be invalidated by) unrelated historical
+        # records. Only query history for a dimension the caller omitted.
+        height = (
+            manual_height
+            if manual_height is not None
+            else _latest_indicator_value(user.id, "HEIGHT")
+        )
+        weight = (
+            manual_weight
+            if manual_weight is not None
+            else _latest_indicator_value(user.id, "WEIGHT")
+        )
         if height is None or weight is None:
             missing_fields = []
             if height is None:
