@@ -891,7 +891,9 @@ def test_health_id_token_dto_and_missing_proxy_intake_fill(app, client):
     assert item["masked_health_id"] != target["health_id"]
     assert item["has_recent_height"] is True
     assert item["has_recent_weight"] is False
-    for forbidden in ("user_id", "height_cm", "weight_kg", "phone", "email"):
+    assert item["height_cm"] == 170.0
+    assert item["weight_kg"] is None
+    for forbidden in ("user_id", "phone", "email"):
         assert forbidden not in item
 
     day = date.today() + timedelta(days=29)

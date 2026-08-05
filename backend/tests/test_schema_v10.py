@@ -14,6 +14,7 @@ from app.models import (
     NotificationOutbox,
     ReportIndicator,
     ReportAssetType,
+    SelfMeasurement,
     User,
     UserNotification,
 )
@@ -102,11 +103,49 @@ def test_booking_intakes_create_private_institution_snapshot(app, client):
         assert float(proxy.height_cm_snapshot) == 163
 
 
-def test_booking_intake_defaults_do_not_block_appointment_initialization(app, client):
+def test_booking_intake_defaults_match_values_used_by_booking(app, client, monkeypatch):
+    from app.booking_v7 import routes as booking_routes
+
     headers = login(client, "test1")
+    monkeypatch.setattr(
+        booking_routes,
+        "latest_intake_defaults",
+        lambda _user_id: {"height_cm": 175, "weight_kg": 71.9},
+    )
     response = client.get("/api/booking-intake-defaults", headers=headers)
     assert response.status_code == 200, response.get_json()
-    assert set(response.get_json()["item"]).issubset({"height_cm", "weight_kg"})
+    assert response.get_json()["item"] == {"height_cm": 175.0, "weight_kg": 71.9}
+
+
+def test_authorized_friend_list_includes_recent_booking_intake(app, client):
+    headers = login(client, "test1")
+    with app.app_context():
+        booker = User.query.filter_by(username="test1").one()
+        friend = User.query.filter_by(username="test2").one()
+        relation = FriendRelation.query.filter_by(
+            user_id=booker.id,
+            friend_user_id=friend.id,
+        ).one()
+        assert relation.is_active
+        for code, value in (("HEIGHT", 181), ("WEIGHT", 77)):
+            definition = IndicatorDict.query.filter_by(code=code).one()
+            db.session.add(SelfMeasurement(
+                user_id=friend.id,
+                indicator_dict_id=definition.id,
+                value=value,
+                measured_at=datetime.now(timezone.utc),
+            ))
+        relation_id = relation.id
+        db.session.commit()
+
+    response = client.get("/api/friends", headers=headers)
+    assert response.status_code == 200, response.get_json()
+    item = next(
+        row for row in response.get_json()["items"]
+        if row["id"] == relation_id
+    )
+    assert item["booking_granted_to_me"] is True
+    assert item["recent_intake"] == {"height_cm": 181.0, "weight_kg": 77.0}
 
 
 def test_booking_intake_dates_are_normalized_across_database_drivers():

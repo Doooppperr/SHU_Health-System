@@ -130,6 +130,8 @@ beforeEach(() => {
         masked_health_id: "HE******01",
         has_recent_height: true,
         has_recent_weight: false,
+        height_cm: 168,
+        weight_kg: null,
       },
     },
   });
@@ -145,6 +147,18 @@ afterEach(() => {
 });
 
 describe("预约记录抽屉", () => {
+  it("shows the signed-in user's latest height and weight in the booking form", async () => {
+    const wrapper = mountView(AppointmentBookingView);
+    await flushPromises();
+
+    wrapper.vm.step = 3;
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.text()).toContain("使用最近记录：175.0 cm");
+    expect(wrapper.text()).toContain("使用最近记录：72.0 kg");
+    expect(wrapper.text()).not.toContain("本次不展示数值");
+  });
+
   it("从页面按钮打开统一记录并保留筛选与分页", async () => {
     const wrapper = mountView(AppointmentBookingView);
     await flushPromises();
@@ -224,6 +238,7 @@ describe("预约记录抽屉", () => {
     expect(wrapper.text()).toContain("女性");
     expect(wrapper.text()).toContain("1992");
     expect(wrapper.text()).toContain("HE******01");
+    expect(wrapper.text()).toContain("使用最近记录：168.0 cm");
     expect(wrapper.text()).not.toContain("HEALTH-ID-RAW");
     expect(wrapper.text()).not.toContain("bpt-secret");
   });
@@ -236,6 +251,7 @@ describe("预约记录抽屉", () => {
           status: "active",
           booking_granted_to_me: true,
           counterparty: { id: 2, display_name: "虚构亲友" },
+          recent_intake: { height_cm: 166, weight_kg: 58.5 },
         }],
       },
     });
@@ -255,8 +271,18 @@ describe("预约记录抽屉", () => {
     wrapper.vm.healthIdInput = "HEALTH-SELF";
     await wrapper.vm.resolveHealthIdParticipant();
     await flushPromises();
+    wrapper.vm.step = 3;
+    await wrapper.vm.$nextTick();
 
     expect(wrapper.vm.form.participant_keys).toEqual(["self:1", "relation:42"]);
+    expect(wrapper.vm.participantIntakes["relation:42"]).toEqual(expect.objectContaining({
+      height_cm: 166,
+      weight_kg: 58.5,
+      manual_height: false,
+      manual_weight: false,
+    }));
+    expect(wrapper.text()).toContain("使用最近记录：166.0 cm");
+    expect(wrapper.text()).toContain("使用最近记录：58.5 kg");
     expect(wrapper.vm.tokenParticipants).toEqual([]);
     expect(wrapper.text()).not.toContain("HEALTH-LINKED");
     expect(wrapper.text()).not.toContain("HEALTH-SELF");

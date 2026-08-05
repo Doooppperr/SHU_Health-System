@@ -17,6 +17,7 @@ from app.services.delegation import (
     start_delegation,
 )
 from app.services.permissions import ROLE_USER, get_current_user, role_error
+from app.services.booking_participants import latest_intake_defaults
 from app.services.user_access import profile_completion_error
 
 
@@ -33,6 +34,20 @@ def _require_regular_user_for_friends():
 
 def _current_user_id() -> int:
     return int(get_jwt_identity())
+
+
+def _friend_payload(relation, viewer_id):
+    payload = relation.to_dict(viewer_id=viewer_id)
+    if not payload.get("booking_granted_to_me"):
+        return payload
+    counterparty = relation.counterparty_for(viewer_id)
+    values = latest_intake_defaults(counterparty.id)
+    payload["recent_intake"] = {
+        key: float(value)
+        for key, value in values.items()
+        if value is not None
+    }
+    return payload
 
 
 def _parse_bool(raw_value):
@@ -253,18 +268,19 @@ def list_friends():
         .order_by(FriendRelation.created_at.desc(), FriendRelation.id.desc())
         .all()
     )
+    serialized = [(item, _friend_payload(item, user_id)) for item in rows]
     return {
-        "items": [item.to_dict(viewer_id=user_id) for item in rows],
+        "items": [payload for _item, payload in serialized],
         # Compatibility keys for clients released before the bidirectional
         # relationship representation.
         "outgoing": [
-            item.to_dict(viewer_id=user_id)
-            for item in rows
+            payload
+            for item, payload in serialized
             if item.user_id == user_id
         ],
         "incoming": [
-            item.to_dict(viewer_id=user_id)
-            for item in rows
+            payload
+            for item, payload in serialized
             if item.friend_user_id == user_id
         ],
     }, 200

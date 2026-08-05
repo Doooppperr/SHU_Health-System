@@ -12,7 +12,7 @@ from app.models import (
     Appointment, AppointmentCapacitySlot, AppointmentEvent, BookingGroup,
     BookingParticipantAuthorization, FriendRelation, Institution,
     NotificationOutbox, Organization, Package, PackageVersion,
-    PackageVersionDomain, User, WaitlistSubscription, SelfMeasurement, IndicatorDict,
+    PackageVersionDomain, User, WaitlistSubscription,
     WaitlistSubscriptionParticipant, AvailabilityNotificationEvent, PaymentOrder,
 )
 from app.services.domain_rules import current_package_version
@@ -22,6 +22,7 @@ from app.services.notifications import enqueue_user_notification
 from app.services.booking_participants import (
     consume_participant_tokens,
     issue_participant_token,
+    latest_intake_defaults,
     masked_name,
     participant_intakes,
     resolve_booking_participants,
@@ -67,17 +68,11 @@ RECEIPT_EVENT_TYPES = {
 @roles_required(ROLE_USER)
 def booking_intake_defaults():
     """Only return the signed-in user's own latest height and weight."""
-    values = {}
-    for code, key in (("HEIGHT", "height_cm"), ("WEIGHT", "weight_kg")):
-        definition = IndicatorDict.query.filter_by(code=code).first()
-        if not definition:
-            continue
-        measurement = SelfMeasurement.query.filter_by(
-            user_id=g.current_user.id,
-            indicator_dict_id=definition.id,
-        ).order_by(SelfMeasurement.measured_at.desc(), SelfMeasurement.id.desc()).first()
-        if measurement is not None:
-            values[key] = float(measurement.value)
+    values = {
+        key: float(value)
+        for key, value in latest_intake_defaults(g.current_user.id).items()
+        if value is not None
+    }
     return {"item": values}
 
 

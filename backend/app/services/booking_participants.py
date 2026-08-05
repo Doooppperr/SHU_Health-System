@@ -73,7 +73,11 @@ def issue_participant_token(booker, health_id):
             404,
         )
 
-    availability = recent_intake_availability(target.id)
+    intake_defaults = latest_intake_defaults(target.id)
+    availability = {
+        "has_recent_height": intake_defaults["height_cm"] is not None,
+        "has_recent_weight": intake_defaults["weight_kg"] is not None,
+    }
     identity_summary = {
         "real_name": target.real_name,
         "gender": target.gender,
@@ -81,6 +85,16 @@ def issue_participant_token(booker, health_id):
         "masked_health_id": masked_health_id(target.health_id),
         "has_recent_height": availability["has_recent_height"],
         "has_recent_weight": availability["has_recent_weight"],
+        "height_cm": (
+            float(intake_defaults["height_cm"])
+            if intake_defaults["height_cm"] is not None
+            else None
+        ),
+        "weight_kg": (
+            float(intake_defaults["weight_kg"])
+            if intake_defaults["weight_kg"] is not None
+            else None
+        ),
         "uses_recent_measurements": (
             availability["has_recent_height"]
             and availability["has_recent_weight"]
@@ -504,10 +518,19 @@ def _record_date(value):
     return value.date() if isinstance(value, datetime) else value
 
 
-def recent_intake_availability(user_id):
+def latest_intake_defaults(user_id):
+    """Return the exact latest values used when a booking omits manual intake."""
     return {
-        "has_recent_height": _latest_indicator_value(user_id, "HEIGHT") is not None,
-        "has_recent_weight": _latest_indicator_value(user_id, "WEIGHT") is not None,
+        "height_cm": _latest_indicator_value(user_id, "HEIGHT"),
+        "weight_kg": _latest_indicator_value(user_id, "WEIGHT"),
+    }
+
+
+def recent_intake_availability(user_id):
+    values = latest_intake_defaults(user_id)
+    return {
+        "has_recent_height": values["height_cm"] is not None,
+        "has_recent_weight": values["weight_kg"] is not None,
     }
 
 

@@ -101,7 +101,7 @@
           <div class="health-code-participant">
             <div>
               <strong>使用健康身份码添加受检者</strong>
-              <small>适用于对方主动提供身份码的场景。验证后仅展示姓名、性别、出生年份和脱敏身份码，不会建立亲友关系或开放健康数据。</small>
+              <small>适用于对方主动提供身份码的场景。验证后展示身份摘要与最近身高体重，不会建立亲友关系或开放其他健康数据。</small>
             </div>
             <div>
               <el-input v-model.trim="healthIdInput" maxlength="32" placeholder="输入健康身份码" />
@@ -109,7 +109,7 @@
             </div>
           </div>
           <el-alert
-            title="隐私提示：可复用最近记录时，平台只提示“记录可用”而不向预约人展示数值；你也可以改为填写本次手工快照，且该值不会写入日常测量。"
+            title="记录提示：本人、已授权亲友和通过健康身份码验证的受检者都会展示最近身高体重。你也可以改为填写本次手工快照，且该值不会写入日常测量。"
             type="info"
             show-icon
             :closable="false"
@@ -128,7 +128,7 @@
                 <el-col :xs="24" :sm="12">
                   <div v-if="person.has_recent_height && !participantIntakes[person.key].manual_height" class="private-intake-ready">
                     <span>身高</span>
-                    <el-tag type="success">使用最近记录（本次不展示数值）</el-tag>
+                    <el-tag type="success">{{ recentIntakeLabel(person, "height") }}</el-tag>
                     <el-button link type="primary" @click="setManualIntake(person.key, 'height', true)">改为本次手工填写</el-button>
                   </div>
                   <el-form-item v-else label="身高（cm）" required>
@@ -141,7 +141,7 @@
                 <el-col :xs="24" :sm="12">
                   <div v-if="person.has_recent_weight && !participantIntakes[person.key].manual_weight" class="private-intake-ready">
                     <span>体重</span>
-                    <el-tag type="success">使用最近记录（本次不展示数值）</el-tag>
+                    <el-tag type="success">{{ recentIntakeLabel(person, "weight") }}</el-tag>
                     <el-button link type="primary" @click="setManualIntake(person.key, 'weight', true)">改为本次手工填写</el-button>
                   </div>
                   <el-form-item v-else label="体重（kg）" required>
@@ -152,7 +152,7 @@
                   </el-form-item>
                 </el-col>
               </el-row>
-              <small v-if="person.kind === 'health_code_token'">平台只会在服务端采用可用的最近记录，不会向预约人展示历史数值；手工值仅用于本次预约。</small>
+              <small v-if="person.kind === 'health_code_token'">最近身高体重在本次身份码授权范围内展示；手工值仅用于本次预约。</small>
               <small v-else-if="person.kind === 'linked_account'">手工填写的身高体重只保存为本次预约快照，不会写入对方的日常测量。</small>
             </el-card>
           </div>
@@ -570,11 +570,16 @@ const participantOptions = computed(() => [
     .filter(relationCanBook)
     .map((item) => {
       const person = item.counterparty || item.friend_user || {};
+      const recentIntake = item.recent_intake || {};
       return {
         key: `relation:${item.id}`,
         kind: "linked_account",
         relation_id: item.id,
         user_id: person.id,
+        height_cm: recentIntake.height_cm,
+        weight_kg: recentIntake.weight_kg,
+        has_recent_height: recentIntake.height_cm != null,
+        has_recent_weight: recentIntake.weight_kg != null,
         label: `${person.display_name || person.real_name || person.username || "亲友"}（已授权代预约）`,
       };
     }),
@@ -709,8 +714,8 @@ function participantChanged(keys) {
     if (!participantIntakes[key]) {
       const person = participantOptions.value.find((item) => item.key === key) || {};
       participantIntakes[key] = {
-        height_cm: null,
-        weight_kg: null,
+        height_cm: person.height_cm ?? null,
+        weight_kg: person.weight_kg ?? null,
         manual_height: !person.has_recent_height,
         manual_weight: !person.has_recent_weight,
       };
@@ -722,6 +727,16 @@ function setManualIntake(key, dimension, enabled) {
   const intake = participantIntakes[key];
   if (!intake) return;
   intake[`manual_${dimension}`] = enabled;
+}
+
+function recentIntakeLabel(person, dimension) {
+  const intake = participantIntakes[person.key] || {};
+  const field = dimension === "height" ? "height_cm" : "weight_kg";
+  const unit = dimension === "height" ? "cm" : "kg";
+  const rawValue = intake[field];
+  const value = Number(rawValue);
+  if (rawValue == null || !Number.isFinite(value)) return "使用最近记录";
+  return `使用最近记录：${value.toFixed(1)} ${unit}`;
 }
 
 function openProfileGate() {
@@ -792,12 +807,14 @@ async function resolveHealthIdParticipant() {
       masked_health_id: item.masked_health_id,
       has_recent_height: Boolean(item.has_recent_height),
       has_recent_weight: Boolean(item.has_recent_weight),
+      height_cm: item.height_cm,
+      weight_kg: item.weight_kg,
       label: `${item.real_name || item.display_name || item.masked_name || "身份码受检者"}（身份码验证）`,
     });
     form.participant_keys.push(key);
     participantChanged(form.participant_keys);
     healthIdInput.value = "";
-    ElMessage.success("受检者已添加，平台未向你展示其健康数据");
+    ElMessage.success("受检者已添加，可用的最近身高体重已展示");
   } catch (error) {
     ElMessage.error(error?.response?.data?.message || error?.message || "健康身份码验证失败");
   } finally {
