@@ -56,23 +56,9 @@ function enterWorkspace(){router.push(dashboardRouteForRole(auth.user?.role));}
   white-space: nowrap;
 }
 
-/* The full story navigation needs a genuinely wide header once appearance and
-   authentication controls are present. Medium desktops keep the primary links. */
+/* Keep every destination available. Once the three desktop columns no longer
+   fit comfortably, move the complete navigation to its own centered row. */
 @media (max-width: 1919px) {
-  .public-site-header .secondary-nav {
-    display: none;
-  }
-
-  .public-site-header > .portal-nav {
-    gap: 24px;
-  }
-}
-
-:global(:root[data-care="on"] .public-site-header .secondary-nav) {
-  display: none;
-}
-
-@media (max-width: 1180px) {
   .public-site-header {
     grid-template-columns: minmax(0, 1fr) auto;
     height: auto;
@@ -113,6 +99,17 @@ function enterWorkspace(){router.push(dashboardRouteForRole(auth.user?.role));}
 
   .public-site-header > .portal-actions :deep(.el-button) {
     padding-inline: 9px;
+  }
+
+  .public-site-header > .portal-nav {
+    display: grid !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 2px 8px;
+  }
+
+  .public-site-header > .portal-nav a {
+    min-width: 0;
+    text-align: center;
   }
 }
 </style>

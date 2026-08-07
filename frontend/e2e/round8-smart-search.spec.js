@@ -31,18 +31,31 @@ test("访客导航在桌面真正居中并在小屏无横向溢出", async ({ pa
     const layout = await page.evaluate(() => {
       const bounds = (selector) => document.querySelector(selector).getBoundingClientRect();
       const brand = bounds(".public-site-header .portal-brand");
-      const nav = bounds(".public-site-header .portal-nav");
+      const navElement = document.querySelector(".public-site-header .portal-nav");
+      const nav = navElement.getBoundingClientRect();
       const actions = bounds(".public-site-header .portal-actions");
       const overlaps = (left, right) => left.right > right.left && left.bottom > right.top && left.top < right.bottom;
       return {
         overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
         brandNavOverlap: overlaps(brand, nav),
         navActionsOverlap: overlaps(nav, actions),
+        visibleNavItems: [...navElement.querySelectorAll("a")].filter((link) => {
+          const rect = link.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0 && getComputedStyle(link).display !== "none";
+        }).map((link) => link.textContent.trim()),
       };
     });
     expect(layout.overflow).toBeLessThanOrEqual(0);
     expect(layout.brandNavOverlap).toBe(false);
     expect(layout.navActionsOverlap).toBe(false);
+    expect(layout.visibleNavItems).toEqual([
+      "机构与套餐",
+      "核心能力",
+      "使用流程",
+      "隐私保护",
+      "关于我们",
+      "加入我们",
+    ]);
   }
 
   await page.getByRole("button", { name: /主题模式/ }).click();
