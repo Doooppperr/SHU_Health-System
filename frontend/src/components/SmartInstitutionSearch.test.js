@@ -54,7 +54,9 @@ describe("SmartInstitutionSearch", () => {
     expect(wrapper.text()).not.toContain("AI + 内容匹配");
     expect(wrapper.text()).not.toContain("女性年度体检");
     expect(wrapper.text()).not.toContain("已理解");
-    expect(wrapper.text()).toContain("匹配套餐：女性年度基础关怀");
+    expect(wrapper.text()).not.toContain("匹配套餐：女性年度基础关怀");
+    expect(wrapper.text()).not.toContain("适用人群");
+    expect(wrapper.find(".suggestion-copy em").exists()).toBe(false);
 
     await wrapper.findAll('[role="option"]')[1].trigger("click");
     expect(wrapper.emitted("select")[0][0]).toEqual(search.suggestions[1]);
@@ -80,6 +82,6 @@ describe("SmartInstitutionSearch", () => {
     await wrapper.get(".smart-institution-search").trigger("focusin");
     expect(wrapper.text()).not.toContain("已使用内容匹配");
     expect(wrapper.text()).not.toContain("复杂需求");
-    expect(wrapper.text()).toContain("暂无匹配推荐");
+    expect(wrapper.text()).toContain("暂无匹配结果");
   });
 });

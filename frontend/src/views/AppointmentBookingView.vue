@@ -56,7 +56,6 @@
               <span class="booking-choice-card__check">{{ form.institution_id === option.institution.id ? "✓" : "院" }}</span>
               <strong>{{ option.institution.name }}</strong>
               <small>{{ option.institution.branch_name }}</small>
-              <span v-if="option.matched_packages?.length" class="booking-match-reason">推荐：{{ option.matched_packages.slice(0,2).map(item => item.name).join("、") }}</span>
               <p>{{ option.remaining == null ? "当天名额充足" : option.remaining ? `当天剩余 ${option.remaining} 个名额` : "当天已约满" }}</p>
             </button>
             <el-empty v-if="!availabilityLoading && !displayAvailability.length" description="当天暂时没有匹配的可预约机构" />

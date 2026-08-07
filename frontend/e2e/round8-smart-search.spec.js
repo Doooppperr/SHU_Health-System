@@ -8,10 +8,13 @@ test("公开目录可按女性套餐智能推荐并原地筛选", async ({ page 
   await input.fill("我是女生");
   await expect(page.getByRole("option", { name: /安沐女性与家庭健康中心/ }).first()).toBeVisible();
   await expect(page.getByText(/已理解|AI \+ 内容匹配|内容智能匹配|已使用内容匹配/)).toHaveCount(0);
+  await expect(page.locator(".suggestion-copy em")).toHaveCount(0);
   await page.getByRole("option", { name: /安沐女性与家庭健康中心/ }).first().click();
   await expect(page.getByRole("heading", { name: "安沐女性与家庭健康中心" })).toBeVisible();
-  await expect(page.getByText(/女性年度基础关怀/).first()).toBeVisible();
   await expect(page.locator(".organization-card")).toHaveCount(1);
+  await expect(page.locator(".match-reason-row, .matched-package-list")).toHaveCount(0);
+  await expect(page.getByText("推荐原因")).toHaveCount(0);
+  await expect(page.getByText(/匹配套餐|套餐名称、关注方向|适用人群/)).toHaveCount(0);
 });
 
 
