@@ -3377,6 +3377,13 @@ body {
 :root[data-care="on"] h1 { font-size: clamp(32px, 4vw, 48px); }
 :root[data-care="on"] h2 { font-size: clamp(27px, 3vw, 38px); }
 :root[data-care="on"] h3 { font-size: 22px; }
+
+/* The public hero is a display heading, not a workspace page title. Keep its
+   responsive display scale in care mode so accessibility never makes it
+   smaller than the default presentation. */
+:root[data-care="on"] .portal-hero h1 {
+  font-size: var(--text-display);
+}
 :root[data-care="on"] .workspace-brand strong,
 :root[data-care="on"] .workspace-user strong,
 :root[data-care="on"] .record-preview-main strong,

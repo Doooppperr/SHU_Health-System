@@ -76,3 +76,27 @@ test("访客导航在桌面真正居中并在小屏无横向溢出", async ({ pa
   expect(dropdownBounds.x).toBeGreaterThanOrEqual(0);
   expect(dropdownBounds.x + dropdownBounds.width).toBeLessThanOrEqual(390);
 });
+
+
+test("关怀模式不会缩小首页关键文字", async ({ page }) => {
+  await page.setViewportSize({ width: 2048, height: 1000 });
+  await page.goto("/");
+
+  const hero = page.locator(".portal-hero h1");
+  const lead = page.locator(".portal-lead");
+  await expect(hero).toBeVisible();
+  const normalSizes = await Promise.all([
+    hero.evaluate((element) => Number.parseFloat(getComputedStyle(element).fontSize)),
+    lead.evaluate((element) => Number.parseFloat(getComputedStyle(element).fontSize)),
+  ]);
+
+  await page.getByRole("button", { name: "开启关怀模式" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-care", "on");
+  const careSizes = await Promise.all([
+    hero.evaluate((element) => Number.parseFloat(getComputedStyle(element).fontSize)),
+    lead.evaluate((element) => Number.parseFloat(getComputedStyle(element).fontSize)),
+  ]);
+
+  expect(careSizes[0]).toBeGreaterThanOrEqual(normalSizes[0]);
+  expect(careSizes[1]).toBeGreaterThanOrEqual(normalSizes[1]);
+});
