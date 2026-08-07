@@ -17,6 +17,7 @@ test("公开目录可按女性套餐智能推荐并原地筛选", async ({ page 
 test("访客导航在桌面真正居中并在小屏无横向溢出", async ({ page }) => {
   await page.setViewportSize({ width: 2048, height: 1000 });
   await page.goto("/explore/institutions");
+  await expect(page.getByRole("navigation", { name: "公开页面导航" })).toBeVisible();
   const alignment = await page.evaluate(() => {
     const nav = document.querySelector(".public-site-header .portal-nav").getBoundingClientRect();
     return Math.abs((nav.left + nav.right) / 2 - window.innerWidth / 2);
