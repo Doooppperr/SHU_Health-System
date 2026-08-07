@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import json
 import re
-import threading
 import time
 import uuid
-from collections import defaultdict, deque
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -42,12 +40,11 @@ from app.ai.rag import (
 from app.extensions import db
 from app.models import Appointment, HealthDomain, HealthIndicator, HealthRecord, IndicatorDict, IndicatorDomainLink, Institution, ReportAsset, User
 from app.services.indicator_values import result_status_is_displayable
+from app.services.ai_rate_limit import ai_rate_limited
 from app.services.platform_contact import PLATFORM_CONTACT
 from app.services.sensitive_data import redact_health_identity_codes
 
 
-_rate_buckets = defaultdict(deque)
-_rate_lock = threading.Lock()
 BUSINESS_TZ = ZoneInfo("Asia/Shanghai")
 _RECORD_QUERY_BATCH_SIZE = 400
 _MAX_HISTORY_CONTENT_CHARS = 4000
@@ -106,27 +103,8 @@ def _current_user_optional():
     return user if user is not None and user.is_active else None
 
 
-def _rate_limit_key(user):
-    if user:
-        return f"user:{user.id}"
-    return f"guest:{request.remote_addr or 'unknown'}"
-
-
 def _is_rate_limited(user):
-    limit_key = (
-        "AI_AUTH_RATE_LIMIT_PER_MINUTE" if user else "AI_GUEST_RATE_LIMIT_PER_MINUTE"
-    )
-    limit = int(current_app.config.get(limit_key, 30 if user else 10))
-    now = time.monotonic()
-    bucket_key = _rate_limit_key(user)
-    with _rate_lock:
-        bucket = _rate_buckets[bucket_key]
-        while bucket and bucket[0] <= now - 60:
-            bucket.popleft()
-        if len(bucket) >= limit:
-            return True
-        bucket.append(now)
-    return False
+    return ai_rate_limited(user)
 
 
 def _json_error(message, code, status, *, retryable=False):

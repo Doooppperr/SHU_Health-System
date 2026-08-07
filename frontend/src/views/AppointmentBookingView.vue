@@ -35,11 +35,13 @@
             <el-date-picker v-model="form.appointment_date" type="date" value-format="YYYY-MM-DD" :disabled-date="disabledDate" style="width: 100%" @change="dateChanged" />
           </el-form-item>
           <el-form-item label="搜索体检机构">
-            <el-input
+            <SmartInstitutionSearch
               v-model="institutionQuery"
-              clearable
-              placeholder="输入机构、分院、地区、地址或交通信息"
-              @input="searchInstitutions"
+              :search="availabilitySearch"
+              :loading="availabilityLoading || availabilityInterpreting"
+              aria-label="搜索体检机构"
+              @search="searchInstitutions"
+              @select="selectInstitutionSuggestion"
             />
           </el-form-item>
           <div v-loading="availabilityLoading" class="booking-institution-grid">
@@ -54,16 +56,17 @@
               <span class="booking-choice-card__check">{{ form.institution_id === option.institution.id ? "✓" : "院" }}</span>
               <strong>{{ option.institution.name }}</strong>
               <small>{{ option.institution.branch_name }}</small>
+              <span v-if="option.matched_packages?.length" class="booking-match-reason">推荐：{{ option.matched_packages.slice(0,2).map(item => item.name).join("、") }}</span>
               <p>{{ option.remaining == null ? "当天名额充足" : option.remaining ? `当天剩余 ${option.remaining} 个名额` : "当天已约满" }}</p>
             </button>
-            <el-empty v-if="!availabilityLoading && !availability.length" description="当天暂时没有可预约机构" />
+            <el-empty v-if="!availabilityLoading && !displayAvailability.length" description="当天暂时没有匹配的可预约机构" />
           </div>
           <el-pagination
-            v-if="availability.length > availabilityPageSize"
+            v-if="displayAvailability.length > availabilityPageSize"
             v-model:current-page="availabilityPage"
             class="institution-result-pagination"
             :page-size="availabilityPageSize"
-            :total="availability.length"
+            :total="displayAvailability.length"
             :pager-count="5"
             layout="prev, pager, next"
           />
@@ -460,6 +463,7 @@ import {
 } from "../api/complaints";
 import { useAuthStore } from "../stores/auth";
 import AppointmentProgress from "../components/AppointmentProgress.vue";
+import SmartInstitutionSearch from "../components/SmartInstitutionSearch.vue";
 import {
   bookingDateBounds,
   businessDateString,
@@ -494,8 +498,11 @@ const submitting = ref(false);
 const resolvingParticipant = ref(false);
 const complaintSubmitting = ref(false);
 const availabilityLoading = ref(false);
+const availabilityInterpreting = ref(false);
 const errorMessage = ref("");
 const institutionQuery = ref("");
+const availabilitySearch = ref({ mode: "content", query: "", intent_summary: "", needs_ai: false, suggestions: [] });
+const selectedInstitutionSuggestion = ref(null);
 const healthIdInput = ref("");
 const participantIntakes = reactive({});
 const selfRecent = reactive({ height: false, weight: false });
@@ -522,6 +529,7 @@ const waitlistPagination = reactive({ page: 1, page_size: 15, total: 0, pages: 0
 const complaintPagination = reactive({ page: 1, page_size: 10, total: 0, pages: 0 });
 const waitlistActiveCount = ref(0);
 let searchTimer;
+let availabilityRevision = 0;
 const dateBounds = bookingDateBounds();
 const requestedAppointmentDate = String(
   route.query.appointment_date || route.query.date || "",
@@ -543,9 +551,18 @@ const form = reactive({
   notice_confirmed: false,
 });
 const selectedInstitution = computed(() => availability.value.find((item) => item.institution.id === form.institution_id));
+const displayAvailability = computed(() => {
+  const target = selectedInstitutionSuggestion.value;
+  if (!target) return availability.value;
+  return availability.value.filter((item) => (
+    target.institution_id
+      ? item.institution.id === target.institution_id
+      : item.institution.organization_id === target.organization_id
+  ));
+});
 const pagedAvailability = computed(() => {
   const start = (availabilityPage.value - 1) * availabilityPageSize;
-  return availability.value.slice(start, start + availabilityPageSize);
+  return displayAvailability.value.slice(start, start + availabilityPageSize);
 });
 const selectedPackage = computed(() => selectedInstitution.value?.packages.find((item) => item.id === form.package_id));
 const profileReady = computed(() => isBasicProfileComplete(auth.user || {}));
@@ -685,28 +702,45 @@ async function dateChanged() {
   availabilityPage.value = 1;
   form.institution_id = null;
   form.package_id = null;
-  await loadAvailability();
+  await loadAvailability("content");
 }
 
-async function loadAvailability() {
-  availabilityLoading.value = true;
+async function loadAvailability(mode = "content", revision = ++availabilityRevision) {
+  if (mode === "content") availabilityLoading.value = true;
+  else availabilityInterpreting.value = true;
   try {
-    availability.value = (await fetchAppointmentAvailability(form.appointment_date, institutionQuery.value.trim())).data.items || [];
-    const pages = Math.max(Math.ceil(availability.value.length / availabilityPageSize), 1);
+    const response = await fetchAppointmentAvailability(form.appointment_date, institutionQuery.value.trim(), mode);
+    if (revision !== availabilityRevision) return;
+    availability.value = response.data.items || [];
+    availabilitySearch.value = response.data.search || availabilitySearch.value;
+    const pages = Math.max(Math.ceil(displayAvailability.value.length / availabilityPageSize), 1);
     if (availabilityPage.value > pages) availabilityPage.value = pages;
     if (form.institution_id && !selectedInstitution.value) {
       form.institution_id = null;
       form.package_id = null;
     }
+    if (mode === "content" && availabilitySearch.value.needs_ai && institutionQuery.value.trim()) {
+      await loadAvailability("hybrid", revision);
+    }
   } finally {
-    availabilityLoading.value = false;
+    if (revision === availabilityRevision) {
+      if (mode === "content") availabilityLoading.value = false;
+      else availabilityInterpreting.value = false;
+    }
   }
 }
 
 function searchInstitutions() {
+  selectedInstitutionSuggestion.value = null;
   availabilityPage.value = 1;
+  availabilityRevision += 1;
   window.clearTimeout(searchTimer);
-  searchTimer = window.setTimeout(loadAvailability, 300);
+  searchTimer = window.setTimeout(() => loadAvailability("content"), 300);
+}
+
+function selectInstitutionSuggestion(item) {
+  selectedInstitutionSuggestion.value = item;
+  availabilityPage.value = 1;
 }
 
 function participantChanged(keys) {

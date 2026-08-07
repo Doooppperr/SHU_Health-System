@@ -399,6 +399,21 @@ class MockAiClient:
             item.get("content", "") for item in messages if item.get("role") == "system"
         )
         if json_output:
+            if "目录搜索意图解析器" in system_text:
+                return AiCompletion(
+                    content=json.dumps(
+                        {
+                            "intent_summary": "综合体检需求",
+                            "audience_terms": [],
+                            "health_topics": [],
+                            "location_terms": [],
+                            "package_terms": [],
+                            "budget_max": None,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    usage={"total_tokens": 1},
+                )
             answer = "已根据当前问题整理健康信息和相关建议。"
             if "档案智能分析" in system_text:
                 answer = (

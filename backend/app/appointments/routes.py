@@ -13,6 +13,7 @@ from app.models import Appointment, AppointmentEvent, Institution, Organization,
 from app.public_api.routes import public_package_payload
 from app.services.permissions import ROLE_USER, roles_required
 from app.services.user_access import complete_profile_required
+from app.services.catalog_search import normalize_search_mode, run_catalog_search
 
 
 ACTIVE_CAPACITY_STATUSES = ("pending_payment", "unfulfilled", "awaiting_report", "fulfilled")
@@ -124,12 +125,34 @@ def availability():
     appointment_date, error = _parse_bookable_date(request.args.get("appointment_date"))
     if error:
         return error
+    keyword = (request.args.get("q") or "").strip()[:80]
+    search_mode = normalize_search_mode(request.args.get("search_mode"))
+    if search_mode:
+        outcome = run_catalog_search(
+            keyword,
+            mode=search_mode,
+            user=getattr(g, "current_user", None),
+        )
+        items = []
+        for organization_match in outcome["matches"]:
+            for branch_match in organization_match["branches"]:
+                payload = _availability_payload(branch_match["branch"], appointment_date)
+                payload["match_reasons"] = list(branch_match["reasons"])
+                payload["matched_packages"] = [
+                    dict(package_match["public"])
+                    for package_match in branch_match["matched_packages"]
+                ]
+                items.append(payload)
+        return {
+            "appointment_date": appointment_date.isoformat(),
+            "items": items[:50],
+            "search": outcome["search"],
+        }, 200
     query = Institution.query.join(Institution.organization).filter(
         Institution.is_active.is_(True),
         Institution.operations_suspended_at.is_(None),
         Organization.is_active.is_(True),
     )
-    keyword = (request.args.get("q") or "").strip()
     if keyword:
         pattern = f"%{keyword}%"
         query = query.filter(db.or_(

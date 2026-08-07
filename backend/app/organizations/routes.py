@@ -1,11 +1,12 @@
-from flask import request
+from flask import g, request
 from flask_jwt_extended import jwt_required
 from sqlalchemy import and_, or_
 
 from app.extensions import db
 from app.models import Institution, Organization
 from app.organizations import organizations_bp
-from app.public_api.routes import public_branch_payload
+from app.public_api.routes import public_branch_payload, public_organization_search_items
+from app.services.catalog_search import normalize_search_mode, run_catalog_search
 
 
 def _escaped_like_pattern(value: str) -> str:
@@ -28,6 +29,17 @@ def _branch_matches(branch, term: str) -> bool:
 @jwt_required()
 def list_organizations():
     term = (request.args.get("q") or "").strip()[:80]
+    search_mode = normalize_search_mode(request.args.get("search_mode"))
+    if search_mode:
+        outcome = run_catalog_search(
+            term,
+            mode=search_mode,
+            user=getattr(g, "current_user", None),
+        )
+        return {
+            "items": public_organization_search_items(outcome),
+            "search": outcome["search"],
+        }, 200
     query = Organization.query.filter_by(is_active=True)
     if term:
         pattern = _escaped_like_pattern(term)

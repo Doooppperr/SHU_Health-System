@@ -1256,6 +1256,18 @@
   margin-bottom: 14px;
 }
 
+.booking-choice-card .booking-match-reason {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  color: var(--user-accent);
+  background: var(--user-soft);
+  font-size: var(--text-xs, 12px);
+  line-height: 1.45;
+}
+
 .booking-pagination {
   display: flex;
   align-items: center;

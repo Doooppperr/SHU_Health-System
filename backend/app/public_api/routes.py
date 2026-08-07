@@ -5,6 +5,7 @@ from app.extensions import db
 from app.models import Comment, Institution, Organization, Package
 from app.public_api import public_bp
 from app.services.platform_contact import platform_contact_payload
+from app.services.catalog_search import normalize_search_mode, run_catalog_search
 
 
 def _image_payload(image):
@@ -100,6 +101,40 @@ def _like(term):
     return f"%{escaped}%"
 
 
+def public_organization_search_items(outcome):
+    items = []
+    for organization_match in outcome["matches"]:
+        row = organization_match["organization"]
+        branches = []
+        matched_packages = []
+        seen_package_ids = set()
+        for branch_match in organization_match["branches"]:
+            branch = public_branch_payload(branch_match["branch"])
+            branch["match_reasons"] = list(branch_match["reasons"])
+            branch["matched_packages"] = [
+                dict(package_match["public"])
+                for package_match in branch_match["matched_packages"]
+            ]
+            for package in branch["matched_packages"]:
+                if package["id"] not in seen_package_ids:
+                    seen_package_ids.add(package["id"])
+                    matched_packages.append(package)
+            branches.append(branch)
+        if branches:
+            items.append({
+                "id": row.id,
+                "name": row.name,
+                "description": row.description,
+                "service_features": list(row.service_features or []),
+                "branch_count": len(branches),
+                "active_branch_count": len(branches),
+                "match_reasons": list(organization_match["reasons"]),
+                "matched_packages": matched_packages,
+                "branches": branches,
+            })
+    return items
+
+
 @public_bp.get("/contact")
 def contact():
     return {"item": platform_contact_payload()}, 200
@@ -108,6 +143,14 @@ def contact():
 @public_bp.get("/organizations")
 def organizations():
     term = str(request.args.get("q") or "").strip()[:80]
+    search_mode = normalize_search_mode(request.args.get("search_mode"))
+    if search_mode:
+        outcome = run_catalog_search(term, mode=search_mode)
+        return {
+            "items": public_organization_search_items(outcome),
+            "search": outcome["search"],
+            "platform_contact": platform_contact_payload(),
+        }, 200
     query = Organization.query.filter_by(is_active=True)
     if term:
         pattern = _like(term)

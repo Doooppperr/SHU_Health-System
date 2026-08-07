@@ -1,29 +1,6 @@
 <template>
   <div class="portal-page">
-    <header class="portal-header">
-      <router-link class="portal-brand" to="/">
-        <span>H</span>
-        <strong>康康健健 HealthDoc</strong>
-      </router-link>
-      <nav class="portal-nav" aria-label="公开页面导航">
-        <router-link :to="{name:'public-institutions'}">机构与套餐</router-link>
-        <a href="#features">核心能力</a>
-        <a href="#process">使用流程</a>
-        <a href="#privacy">隐私保护</a>
-        <a href="#about">关于我们</a>
-        <a href="#join-us">加入我们</a>
-      </nav>
-      <div class="portal-actions">
-        <AppearanceQuickControls />
-        <template v-if="authStore.accessToken && authStore.user">
-          <el-button type="primary" round @click="enterWorkspace"><span class="portal-action-full">进入工作台</span><span class="portal-action-short">工作台</span></el-button>
-        </template>
-        <template v-else>
-          <el-button round @click="router.push({ name: 'login' })">登录</el-button>
-          <el-button type="primary" round @click="router.push({ name: 'register' })"><span class="portal-action-full">免费注册</span><span class="portal-action-short">注册</span></el-button>
-        </template>
-      </div>
-    </header>
+    <PublicHeader />
 
     <main id="main-content" tabindex="-1">
       <section class="portal-hero">
@@ -155,7 +132,7 @@ import { onMounted, reactive } from "vue";
 import { useRouter } from "vue-router";
 
 import { fetchPublicContact } from "../api/public";
-import AppearanceQuickControls from "../components/AppearanceQuickControls.vue";
+import PublicHeader from "../components/PublicHeader.vue";
 import { useAuthStore } from "../stores/auth";
 import { dashboardRouteForRole } from "../utils/roles";
 import { buildLabel } from "../utils/buildInfo";

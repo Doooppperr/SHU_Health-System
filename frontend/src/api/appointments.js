@@ -1,6 +1,6 @@
 import http from "./http";
 
-export const fetchAppointmentAvailability = (appointmentDate, q = "") => http.get("/appointments/availability", { params: { appointment_date: appointmentDate, q } });
+export const fetchAppointmentAvailability = (appointmentDate, q = "", searchMode = "") => http.get("/appointments/availability", { params: { appointment_date: appointmentDate, q, ...(searchMode ? { search_mode: searchMode } : {}) } });
 export const fetchMyAppointments = (params = {}) => http.get("/appointments", { params });
 export const createAppointment = (payload) => http.post("/appointments", payload);
 export const cancelAppointment = (id) => http.post(`/appointments/${id}/cancel`);

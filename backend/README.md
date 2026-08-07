@@ -1,6 +1,12 @@
 # 康康健健 HealthDoc 后端
 
-Flask 后端负责三角色授权、实名认证、付款托管、结算退款、受控关联账号会话、健康身份码多人预约、报告复核、投诉与退款、评论治理、站内/邮件通知及 HealthDoc Agent。本地使用 SQLite schema v13；服务器通过 `DATABASE_URL` 连接 GaussDB/openGauss，并使用 v13 保留式增量迁移。
+Flask 后端负责三角色授权、实名认证、付款托管、结算退款、受控关联账号会话、健康身份码多人预约、报告复核、投诉与退款、评论治理、站内/邮件通知及 HealthDoc Agent。本地使用 SQLite schema v13；服务器通过 `DATABASE_URL` 连接 GaussDB/openGauss，并使用 v13 保留式增量迁移。第八轮新增共享目录搜索服务，没有新增表或迁移。
+
+## 第八轮混合目录搜索
+
+`GET /api/public/organizations`、`GET /api/organizations` 和 `GET /api/appointments/availability` 保留原有 `q` 与响应字段；传入 `search_mode=content|hybrid` 时附加统一 `search` 元数据以及结果级 `matched_packages`、`match_reasons`。`content` 对机构、分院、位置、交通、特点、套餐名称、适用人群、健康方向与描述执行同义词归一化和确定性加权；`hybrid` 只在 `needs_ai=true` 后调用 DeepSeek 解析受控的性别/人群、健康方向、位置、套餐和预算意图，再对数据库候选重排。
+
+模型只接收截断至 80 字的当前查询，不接收账号、健康档案、搜索历史或联系方式。响应必须通过固定 JSON 结构校验，且不能创造数据库中不存在的对象；未配置、超时、限流或非法响应均以 HTTP 200 返回内容结果并标记 `content_fallback`。独立限流与有界 TTL 缓存由 `CATALOG_AI_*` 环境变量控制。
 
 ## 1.0—3.0 后端演进
 

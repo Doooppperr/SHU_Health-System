@@ -219,7 +219,7 @@ describe("预约记录抽屉", () => {
     const wrapper = mountView(AppointmentBookingView);
     await flushPromises();
 
-    expect(mocks.fetchAppointmentAvailability).toHaveBeenCalledWith(appointmentDate, "");
+    expect(mocks.fetchAppointmentAvailability).toHaveBeenCalledWith(appointmentDate, "", "content");
     expect(wrapper.vm.form.appointment_date).toBe(appointmentDate);
     expect(wrapper.vm.form.institution_id).toBe(8);
     expect(wrapper.vm.form.package_id).toBe(9);
@@ -442,7 +442,7 @@ describe("体检机构目录搜索", () => {
     await vi.advanceTimersByTimeAsync(300);
     await flushPromises();
 
-    expect(mocks.fetchOrganizations).toHaveBeenLastCalledWith({ q: "陆家嘴" });
+    expect(mocks.fetchOrganizations).toHaveBeenLastCalledWith({ q: "陆家嘴", search_mode: "content" });
     expect(wrapper.text()).toContain("浦东陆家嘴院区");
     expect(wrapper.text()).not.toContain("徐汇综合院区");
     expect(wrapper.text()).toContain("找到 1 家机构主体、1 家分院");
@@ -451,7 +451,7 @@ describe("体检机构目录搜索", () => {
     await vi.advanceTimersByTimeAsync(300);
     await flushPromises();
 
-    expect(mocks.fetchOrganizations).toHaveBeenLastCalledWith({ q: "" });
+    expect(mocks.fetchOrganizations).toHaveBeenLastCalledWith({ q: "", search_mode: "content" });
     expect(wrapper.text()).toContain("徐汇综合院区");
   });
 });
