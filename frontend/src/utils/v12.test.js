@@ -19,7 +19,8 @@ describe("v12 user workflow helpers", () => {
   });
 
   it("opens booking from tomorrow through day 30", () => {
-    const now = new Date(2026, 6, 30, 16, 30);
+    // 2026-07-30 16:30 in Shanghai, independent of the test runner's host timezone.
+    const now = new Date("2026-07-30T08:30:00.000Z");
     const bounds = bookingDateBounds(now);
     expect(bounds.minString).toBe("2026-07-31");
     expect(bounds.maxString).toBe("2026-08-29");
