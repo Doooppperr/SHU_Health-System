@@ -25,7 +25,7 @@ test("访客导航在桌面真正居中并在小屏无横向溢出", async ({ pa
   });
   expect(alignment).toBeLessThanOrEqual(2);
 
-  for (const width of [2048, 1902, 1440, 1024, 390]) {
+  for (const width of [2048, 1902, 1440, 1360, 1281, 1280, 1200, 1024, 720, 390]) {
     await page.setViewportSize({ width, height: 844 });
     await expect(page.getByRole("navigation", { name: "公开页面导航" })).toBeVisible();
     const layout = await page.evaluate(() => {
@@ -37,6 +37,7 @@ test("访客导航在桌面真正居中并在小屏无横向溢出", async ({ pa
       const overlaps = (left, right) => left.right > right.left && left.bottom > right.top && left.top < right.bottom;
       return {
         overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        headerHeight: bounds(".public-site-header").height,
         brandNavOverlap: overlaps(brand, nav),
         navActionsOverlap: overlaps(nav, actions),
         visibleNavItems: [...navElement.querySelectorAll("a")].filter((link) => {
@@ -48,6 +49,7 @@ test("访客导航在桌面真正居中并在小屏无横向溢出", async ({ pa
     expect(layout.overflow).toBeLessThanOrEqual(0);
     expect(layout.brandNavOverlap).toBe(false);
     expect(layout.navActionsOverlap).toBe(false);
+    expect(layout.headerHeight).toBeLessThanOrEqual(width > 1280 ? 66 : width > 720 ? 100 : 126);
     expect(layout.visibleNavItems).toEqual([
       "机构与套餐",
       "核心能力",

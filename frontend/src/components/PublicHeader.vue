@@ -36,8 +36,8 @@ function enterWorkspace(){router.push(dashboardRouteForRole(auth.user?.role));}
 <style scoped>
 .public-site-header {
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-  column-gap: clamp(12px, 2vw, 32px);
-  padding-inline: clamp(24px, 2.5vw, 52px);
+  column-gap: clamp(14px, 1.5vw, 30px);
+  padding-inline: clamp(20px, 2.25vw, 46px);
 }
 
 .public-site-header > .portal-brand {
@@ -48,6 +48,7 @@ function enterWorkspace(){router.push(dashboardRouteForRole(auth.user?.role));}
 .public-site-header > .portal-nav {
   display: flex !important;
   justify-self: center;
+  gap: clamp(16px, 1.35vw, 26px);
 }
 
 .public-site-header > .portal-actions {
@@ -56,37 +57,75 @@ function enterWorkspace(){router.push(dashboardRouteForRole(auth.user?.role));}
   white-space: nowrap;
 }
 
-/* Keep every destination available. Once the three desktop columns no longer
-   fit comfortably, move the complete navigation to its own centered row. */
-@media (max-width: 1919px) {
+/* A regular desktop, including common browser zoom levels, stays on one calm
+   row. Only genuinely narrow viewports use the compact navigation rail. */
+@media (max-width: 1360px) {
+  .public-site-header {
+    column-gap: 12px;
+    padding-inline: 18px;
+  }
+
+  .public-site-header > .portal-brand {
+    gap: 8px;
+    font-size: 14px;
+  }
+
+  .public-site-header > .portal-nav {
+    gap: clamp(12px, 1.2vw, 18px);
+    font-size: 13px;
+  }
+
+  .public-site-header > .portal-actions {
+    gap: 4px;
+  }
+
+  .public-site-header > .portal-actions :deep(.appearance-controls) {
+    gap: 4px;
+  }
+
+  .public-site-header > .portal-actions :deep(.appearance-control),
+  .public-site-header > .portal-actions :deep(.el-button) {
+    padding-inline: 10px;
+  }
+}
+
+@media (max-width: 1280px) {
   .public-site-header {
     grid-template-columns: minmax(0, 1fr) auto;
     height: auto;
-    min-height: 64px;
-    padding-top: 8px;
-    padding-bottom: 8px;
+    min-height: 96px;
+    padding-top: 7px;
+    padding-bottom: 6px;
+    row-gap: 3px;
   }
 
   .public-site-header > .portal-nav {
     grid-column: 1 / -1;
     grid-row: 2;
-    width: 100%;
+    width: min(680px, 100%);
     justify-content: center;
-    gap: 30px;
+    gap: clamp(18px, 3.2vw, 34px);
+    padding-inline: 12px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--color-surface-muted) 55%, transparent);
   }
 
   .public-site-header > .portal-nav a {
-    padding: 8px 0;
+    padding: 7px 0 9px;
   }
 
   .public-site-header > .portal-nav a::after {
-    bottom: 2px;
+    bottom: 4px;
   }
 }
 
 @media (max-width: 720px) {
   .public-site-header {
     padding-inline: 12px;
+    min-height: 112px;
+    padding-top: 5px;
+    padding-bottom: 5px;
+    row-gap: 3px;
   }
 
   .public-site-header > .portal-brand strong {
@@ -104,12 +143,20 @@ function enterWorkspace(){router.push(dashboardRouteForRole(auth.user?.role));}
   .public-site-header > .portal-nav {
     display: grid !important;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 2px 8px;
+    width: 100%;
+    gap: 0 8px;
+    padding: 1px 6px;
+    border-radius: 14px;
   }
 
   .public-site-header > .portal-nav a {
     min-width: 0;
+    padding: 4px 2px 6px;
     text-align: center;
+  }
+
+  .public-site-header > .portal-nav a::after {
+    bottom: 3px;
   }
 }
 </style>
