@@ -34,5 +34,85 @@ function enterWorkspace(){router.push(dashboardRouteForRole(auth.user?.role));}
 </script>
 
 <style scoped>
-.public-site-header{grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)}.public-site-header>.portal-brand{justify-self:start}.public-site-header>.portal-nav{display:flex!important;justify-self:center}.public-site-header>.portal-actions{justify-self:end}@media(max-width:1180px){.public-site-header .secondary-nav{display:none}.public-site-header>.portal-nav{gap:24px}}@media(max-width:820px){.public-site-header{grid-template-columns:minmax(0,1fr) auto;height:auto;min-height:64px;padding-top:8px;padding-bottom:8px}.public-site-header>.portal-nav{grid-column:1/-1;grid-row:2;width:100%;justify-content:center;gap:30px}.public-site-header>.portal-nav a{padding:8px 0}.public-site-header>.portal-nav a::after{bottom:2px}}@media(max-width:620px){.public-site-header{padding-inline:12px}.public-site-header>.portal-brand strong{display:none}.public-site-header>.portal-actions{gap:3px}.public-site-header>.portal-actions :deep(.el-button){padding-inline:9px}}
+.public-site-header {
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  column-gap: clamp(12px, 2vw, 32px);
+  padding-inline: clamp(24px, 2.5vw, 52px);
+}
+
+.public-site-header > .portal-brand {
+  min-width: 0;
+  justify-self: start;
+}
+
+.public-site-header > .portal-nav {
+  display: flex !important;
+  justify-self: center;
+}
+
+.public-site-header > .portal-actions {
+  min-width: 0;
+  justify-self: end;
+  white-space: nowrap;
+}
+
+/* The full story navigation needs a genuinely wide header once appearance and
+   authentication controls are present. Medium desktops keep the primary links. */
+@media (max-width: 1919px) {
+  .public-site-header .secondary-nav {
+    display: none;
+  }
+
+  .public-site-header > .portal-nav {
+    gap: 24px;
+  }
+}
+
+:global(:root[data-care="on"] .public-site-header .secondary-nav) {
+  display: none;
+}
+
+@media (max-width: 1180px) {
+  .public-site-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+    height: auto;
+    min-height: 64px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+
+  .public-site-header > .portal-nav {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    width: 100%;
+    justify-content: center;
+    gap: 30px;
+  }
+
+  .public-site-header > .portal-nav a {
+    padding: 8px 0;
+  }
+
+  .public-site-header > .portal-nav a::after {
+    bottom: 2px;
+  }
+}
+
+@media (max-width: 720px) {
+  .public-site-header {
+    padding-inline: 12px;
+  }
+
+  .public-site-header > .portal-brand strong {
+    display: none;
+  }
+
+  .public-site-header > .portal-actions {
+    gap: 3px;
+  }
+
+  .public-site-header > .portal-actions :deep(.el-button) {
+    padding-inline: 9px;
+  }
+}
 </style>

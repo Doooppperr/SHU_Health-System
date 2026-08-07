@@ -43,7 +43,7 @@ function mountSearch(props = {}) {
 }
 
 describe("SmartInstitutionSearch", () => {
-  it("renders accessible explainable suggestions and emits a selection", async () => {
+  it("renders accessible result suggestions without exposing backend analysis", async () => {
     const wrapper = mountSearch();
     const input = wrapper.get("input");
     await wrapper.get(".smart-institution-search").trigger("focusin");
@@ -51,7 +51,9 @@ describe("SmartInstitutionSearch", () => {
     expect(wrapper.get(".smart-institution-search").attributes("role")).toBe("combobox");
     expect(wrapper.get(".smart-institution-search").attributes("aria-expanded")).toBe("true");
     expect(wrapper.findAll('[role="option"]')).toHaveLength(2);
-    expect(wrapper.text()).toContain("AI + 内容匹配");
+    expect(wrapper.text()).not.toContain("AI + 内容匹配");
+    expect(wrapper.text()).not.toContain("女性年度体检");
+    expect(wrapper.text()).not.toContain("已理解");
     expect(wrapper.text()).toContain("匹配套餐：女性年度基础关怀");
 
     await wrapper.findAll('[role="option"]')[1].trigger("click");
@@ -71,12 +73,13 @@ describe("SmartInstitutionSearch", () => {
     expect(wrapper.emitted("search").at(-1)).toEqual(["心血管"]);
   });
 
-  it("keeps content fallback useful when the model is unavailable", async () => {
+  it("keeps an outcome-only empty state when the model is unavailable", async () => {
     const wrapper = mountSearch({
       search: { mode: "content_fallback", intent_summary: "复杂需求", suggestions: [] },
     });
     await wrapper.get(".smart-institution-search").trigger("focusin");
-    expect(wrapper.text()).toContain("已使用内容匹配");
+    expect(wrapper.text()).not.toContain("已使用内容匹配");
+    expect(wrapper.text()).not.toContain("复杂需求");
     expect(wrapper.text()).toContain("暂无匹配推荐");
   });
 });

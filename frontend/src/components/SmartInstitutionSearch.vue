@@ -31,13 +31,7 @@
       aria-label="智能搜索推荐"
       @mousedown.prevent
     >
-      <header>
-        <strong>智能推荐</strong>
-        <span v-if="loading">正在理解需求…</span>
-        <span v-else-if="search.mode === 'hybrid'">AI + 内容匹配</span>
-        <span v-else-if="search.mode === 'content_fallback'">已使用内容匹配</span>
-        <span v-else>内容智能匹配</span>
-      </header>
+      <div v-if="loading && !suggestions.length" class="smart-search-loading">正在搜索…</div>
       <button
         v-for="(item, index) in suggestions"
         :id="`institution-suggestion-${index}`"
@@ -65,9 +59,6 @@
       <div v-if="!loading && !suggestions.length" class="smart-search-empty">
         暂无匹配推荐，可换一个人群、健康方向或地区试试
       </div>
-      <footer v-if="search.intent_summary">
-        已理解：{{ search.intent_summary }}
-      </footer>
     </div>
   </div>
 </template>
@@ -149,5 +140,5 @@ function highlighted(value) {
 </script>
 
 <style scoped>
-.smart-institution-search{position:relative;width:100%}.smart-search-icon{color:var(--workspace-accent);font-size:20px;font-weight:800}.smart-search-dropdown{position:absolute;z-index:80;top:calc(100% + 8px);left:0;right:0;overflow:hidden;border:1px solid var(--color-border);border-radius:14px;background:var(--color-surface);box-shadow:0 18px 50px rgba(16,41,37,.18)}.smart-search-dropdown>header,.smart-search-dropdown>footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;background:var(--color-soft);color:var(--color-muted);font-size:12px}.smart-search-dropdown>header strong{color:var(--workspace-accent);font-size:13px}.smart-search-dropdown>footer{justify-content:flex-start;border-top:1px solid var(--color-border);background:transparent}.smart-search-suggestion{display:flex;align-items:center;gap:12px;width:100%;padding:11px 14px;border:0;border-top:1px solid color-mix(in srgb,var(--color-border) 72%,transparent);background:transparent;color:inherit;text-align:left;cursor:pointer}.smart-search-suggestion:hover,.smart-search-suggestion.is-active{background:color-mix(in srgb,var(--color-soft) 82%,transparent)}.suggestion-kind{flex:none;padding:4px 7px;border-radius:7px;background:var(--workspace-accent);color:#fff;font-size:11px;font-weight:800}.suggestion-copy{display:grid;min-width:0;flex:1;gap:2px}.suggestion-copy strong,.suggestion-copy small,.suggestion-copy em{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.suggestion-copy strong{font-size:14px}.suggestion-copy small{color:var(--color-muted);font-size:12px}.suggestion-copy em{color:var(--workspace-accent);font-size:12px;font-style:normal}.suggestion-copy mark{padding:0;background:transparent;color:var(--workspace-accent);font-weight:900}.smart-search-suggestion>b{color:var(--color-muted)}.smart-search-empty{padding:24px 14px;color:var(--color-muted);text-align:center;font-size:13px}@media(max-width:640px){.smart-search-dropdown{max-height:min(60vh,480px);overflow:auto}.suggestion-copy em{white-space:normal}}
+.smart-institution-search{position:relative;width:100%}.smart-search-icon{color:var(--workspace-accent);font-size:20px;font-weight:800}.smart-search-dropdown{position:absolute;z-index:80;top:calc(100% + 8px);left:0;right:0;overflow:hidden;border:1px solid var(--color-border);border-radius:14px;background:var(--color-surface);box-shadow:0 18px 50px rgba(16,41,37,.18)}.smart-search-suggestion{display:flex;align-items:center;gap:12px;width:100%;padding:11px 14px;border:0;border-top:1px solid color-mix(in srgb,var(--color-border) 72%,transparent);background:transparent;color:inherit;text-align:left;cursor:pointer}.smart-search-suggestion:first-of-type{border-top:0}.smart-search-suggestion:hover,.smart-search-suggestion.is-active{background:color-mix(in srgb,var(--color-soft) 82%,transparent)}.suggestion-kind{flex:none;padding:4px 7px;border-radius:7px;background:var(--workspace-accent);color:#fff;font-size:11px;font-weight:800}.suggestion-copy{display:grid;min-width:0;flex:1;gap:2px}.suggestion-copy strong,.suggestion-copy small,.suggestion-copy em{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.suggestion-copy strong{font-size:14px}.suggestion-copy small{color:var(--color-muted);font-size:12px}.suggestion-copy em{color:var(--workspace-accent);font-size:12px;font-style:normal}.suggestion-copy mark{padding:0;background:transparent;color:var(--workspace-accent);font-weight:900}.smart-search-suggestion>b{color:var(--color-muted)}.smart-search-loading,.smart-search-empty{padding:24px 14px;color:var(--color-muted);text-align:center;font-size:13px}@media(max-width:640px){.smart-search-dropdown{max-height:min(60vh,480px);overflow:auto}.suggestion-copy em{white-space:normal}}
 </style>

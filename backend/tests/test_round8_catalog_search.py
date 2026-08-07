@@ -34,6 +34,15 @@ def test_public_smart_search_recommends_female_package_organization(client):
     assert "女性年度基础关怀" in matched_names
     assert all("notification_email" not in branch for item in payload["items"] for branch in item["branches"])
 
+    natural_language = client.get(
+        "/api/public/organizations",
+        query_string={"q": "我是女生", "search_mode": "content"},
+    )
+    assert natural_language.status_code == 200
+    natural_payload = natural_language.get_json()
+    assert natural_payload["items"][0]["name"] == "安沐女性与家庭健康中心"
+    assert natural_payload["search"]["suggestions"]
+
 
 def test_authenticated_smart_search_preserves_location_and_literal_safety(client):
     headers = _login(client)
