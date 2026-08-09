@@ -1,18 +1,25 @@
 <template>
   <div class="workspace-page">
     <section class="page-intro">
-      <div><p>公开服务信息</p><h2>机构资料维护</h2><span>这些信息会展示给普通用户，请保持准确、完整。</span></div>
+      <div><p>公开服务信息</p><h2>机构资料维护</h2><span>机构身份信息已锁定，其他公开服务信息请保持准确、完整。</span></div>
       <el-button type="primary" :loading="saving" @click="save">保存修改</el-button>
     </section>
 
     <el-alert v-if="errorMessage" :title="errorMessage" type="error" show-icon :closable="false" />
     <el-card shadow="never" class="form-card" v-loading="loading">
+      <el-alert
+        title="机构身份信息已锁定；分院名称、所在区域或详细地址如需更正，请联系平台管理员。"
+        type="success"
+        show-icon
+        :closable="false"
+        style="margin-bottom: 14px"
+      />
       <el-form :model="form" label-position="top" class="responsive-form-grid">
         <el-form-item label="所属机构主体"><el-input :model-value="organizationName" disabled /></el-form-item>
-        <el-form-item label="分院 / 门店名称" required><el-input v-model="form.branch_name" maxlength="120" /></el-form-item>
-        <el-form-item label="所在区域" required><el-input v-model="form.district" maxlength="80" placeholder="例如：浦东新区" /></el-form-item>
+        <el-form-item label="分院 / 门店名称"><el-input v-model="form.branch_name" maxlength="120" disabled /></el-form-item>
+        <el-form-item label="所在区域"><el-input v-model="form.district" maxlength="80" disabled /></el-form-item>
         <el-form-item label="咨询电话"><el-input v-model="form.consult_phone" maxlength="30" /></el-form-item>
-        <el-form-item label="详细地址" required class="form-grid-full"><el-input v-model="form.address" maxlength="255" /></el-form-item>
+        <el-form-item label="详细地址" class="form-grid-full"><el-input v-model="form.address" maxlength="255" disabled /></el-form-item>
         <el-form-item label="交通信息" class="form-grid-full"><el-input v-model="form.metro_info" maxlength="255" placeholder="地铁、公交及停车提示" /></el-form-item>
         <el-form-item label="分机号"><el-input v-model="form.ext" maxlength="20" /></el-form-item>
         <el-form-item label="轮休日"><el-input v-model="form.closed_day" maxlength="20" placeholder="例如：周日" /></el-form-item>
@@ -113,13 +120,13 @@ async function load() {
   }
 }
 async function save() {
-  if (!form.branch_name.trim() || !form.district.trim() || !form.address.trim()) {
-    ElMessage.error("请完整填写分院、区域和地址");
-    return;
-  }
   saving.value = true;
   try {
-    const { data } = await updateOrgInstitution(Object.fromEntries(Object.entries(form).map(([key, value]) => [key, value.trim() || null])));
+    const editableFields = ["metro_info", "consult_phone", "ext", "closed_day", "description"];
+    const payload = Object.fromEntries(
+      editableFields.map((key) => [key, form[key].trim() || null]),
+    );
+    const { data } = await updateOrgInstitution(payload);
     assign(data.item || data.institution);
     ElMessage.success("机构资料已保存");
   } catch (error) {

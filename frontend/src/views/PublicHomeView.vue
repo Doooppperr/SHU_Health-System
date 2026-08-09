@@ -122,7 +122,7 @@
 
     <footer class="portal-footer">
       <span>© 2026 康康健健 HealthDoc</span>
-      <span>健康数据管理 · 隐私优先 · {{ buildLabel() }}</span>
+      <span>健康数据管理 · 隐私优先 · <IcpFilingLink /> · {{ buildLabel() }}</span>
     </footer>
   </div>
 </template>
@@ -132,6 +132,7 @@ import { onMounted, reactive } from "vue";
 import { useRouter } from "vue-router";
 
 import { fetchPublicContact } from "../api/public";
+import IcpFilingLink from "../components/IcpFilingLink.vue";
 import PublicHeader from "../components/PublicHeader.vue";
 import { useAuthStore } from "../stores/auth";
 import { dashboardRouteForRole } from "../utils/roles";

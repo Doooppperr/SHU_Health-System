@@ -72,6 +72,7 @@
           <button type="button" class="workspace-logout" @click="logout">退出登录</button>
         </div>
         <button v-else type="button" class="workspace-logout" @click="logout">退出登录</button>
+        <IcpFilingLink class="workspace-filing" />
         <small class="workspace-build">{{ buildLabel() }}</small>
       </div>
     </aside>
@@ -133,6 +134,7 @@ import AiAssistantLauncher from "../components/AiAssistantLauncher.vue";
 import NotificationCenter from "../components/NotificationCenter.vue";
 import AppearanceQuickControls from "../components/AppearanceQuickControls.vue";
 import BasicProfileGate from "../components/BasicProfileGate.vue";
+import IcpFilingLink from "../components/IcpFilingLink.vue";
 import { fetchUnreadCommentReplyCount } from "../api/comments";
 import { fetchFriends } from "../api/friends";
 import { buildLabel } from "../utils/buildInfo";
@@ -356,6 +358,14 @@ onBeforeUnmount(() => {
   grid-template-columns: 1fr 1fr;
   gap: 8px;
   margin-top: 12px;
+}
+
+.workspace-filing {
+  display: block;
+  margin-top: 12px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  text-align: center;
 }
 
 .workspace-session-actions :deep(.el-dropdown) {

@@ -336,6 +336,25 @@ PROFILE_HEALTH_IDS = {
     "test6": "HID-3F7Q9R2N",
 }
 
+# Non-login acceptance subjects used only to make the institution audience
+# portrait statistically meaningful. They are inactive accounts, cannot sign
+# in, and contain no health history beyond the published demo report fixtures.
+AUDIENCE_SAMPLE_SCENARIOS = (
+    ("audience_sample_01", "画像样本01", "HID-AUD-0001", date(2002, 3, 12), "female"),
+    ("audience_sample_02", "画像样本02", "HID-AUD-0002", date(1999, 9, 21), "male"),
+    ("audience_sample_03", "画像样本03", "HID-AUD-0003", date(1994, 1, 8), "female"),
+    ("audience_sample_04", "画像样本04", "HID-AUD-0004", date(1990, 6, 17), "male"),
+    ("audience_sample_05", "画像样本05", "HID-AUD-0005", date(1985, 11, 4), "female"),
+    ("audience_sample_06", "画像样本06", "HID-AUD-0006", date(1980, 7, 26), "male"),
+    ("audience_sample_07", "画像样本07", "HID-AUD-0007", date(1975, 2, 15), "female"),
+    ("audience_sample_08", "画像样本08", "HID-AUD-0008", date(1970, 10, 9), "male"),
+    ("audience_sample_09", "画像样本09", "HID-AUD-0009", date(1965, 5, 28), "female"),
+    ("audience_sample_10", "画像样本10", "HID-AUD-0010", date(1960, 12, 2), "male"),
+    ("audience_sample_11", "画像样本11", "HID-AUD-0011", date(1955, 4, 19), "female"),
+    ("audience_sample_12", "画像样本12", "HID-AUD-0012", date(1950, 8, 31), "male"),
+)
+AUDIENCE_SAMPLE_USERNAMES = {row[0] for row in AUDIENCE_SAMPLE_SCENARIOS}
+
 
 ACCOUNT_IDENTITY_FIELDS = (
     "id", "username", "password_hash", "role", "email", "health_id",
@@ -1198,6 +1217,176 @@ def _create_imported_historical_report(
         created_by_user_id=staff.id,
     ))
     return report
+
+
+AUDIENCE_SAMPLE_MIN_INDICATORS = 5
+AUDIENCE_SHARED_ARCHIVE_MIN_INDICATORS = 12
+
+
+def ensure_demo_audience_samples(*, commit: bool = True) -> dict:
+    """Add idempotent, inactive demo subjects and one recent report per branch."""
+    today = date.today()
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    indicators = {item.code: item for item in IndicatorDict.query.all()}
+    domains = _domain_map()
+    users = {}
+    new_reports = []
+    created_users = 0
+    created_reports = 0
+
+    for username, name, health_id, birth_date, gender in AUDIENCE_SAMPLE_SCENARIOS:
+        user = User.query.filter_by(username=username).first()
+        if user is None:
+            user = User(
+                username=username,
+                role="user",
+                health_id=health_id,
+                real_name=name,
+                birth_date=birth_date,
+                gender=gender,
+                identity_completed_at=now,
+                allow_health_id_proxy_booking=False,
+                is_active=False,
+            )
+            user.set_password(DEMO_PASSWORD)
+            db.session.add(user)
+            created_users += 1
+        elif user.is_active or user.role != "user" or user.health_id != health_id:
+            raise DemoResetSafetyError(
+                f"audience sample identity collision: {username}"
+            )
+        else:
+            user.real_name = name
+            user.birth_date = birth_date
+            user.gender = gender
+            user.identity_completed_at = user.identity_completed_at or now
+            user.allow_health_id_proxy_booking = False
+        users[username] = user
+    db.session.flush()
+
+    branches = Institution.query.filter_by(is_active=True).order_by(Institution.id).all()
+    for branch_index, branch in enumerate(branches, start=1):
+        staff = User.query.filter_by(
+            role="institution_admin",
+            managed_institution_id=branch.id,
+            is_active=True,
+        ).first()
+        packages = [
+            item for item in sorted(branch.packages, key=lambda row: row.id)
+            if item.is_active and item.current_version_id is not None
+        ]
+        if staff is None or not packages:
+            raise DemoResetSafetyError(
+                f"active branch {branch.id} lacks staff or package fixtures"
+            )
+        minimum_indicators = (
+            AUDIENCE_SHARED_ARCHIVE_MIN_INDICATORS
+            if branch.organization
+            and branch.organization.name == "澄心健康管理中心"
+            else AUDIENCE_SAMPLE_MIN_INDICATORS
+        )
+
+        for sample_index, scenario in enumerate(AUDIENCE_SAMPLE_SCENARIOS):
+            user = users[scenario[0]]
+            exam_date = today - timedelta(
+                days=24 + sample_index * 16 + branch_index % 7
+            )
+            existing_samples = InstitutionReport.query.filter_by(
+                institution_id=branch.id,
+                matched_user_id=user.id,
+            ).all()
+            if any(
+                isinstance(item.ocr_diagnostics, dict)
+                and item.ocr_diagnostics.get("fixture") == "audience_sample_v1"
+                for item in existing_samples
+            ):
+                continue
+            compatible = []
+            for package in packages:
+                version = _package_version(package)
+                allowed_domain_codes = {
+                    link.domain.code
+                    for link in version.domains
+                    if link.domain is not None
+                }
+                definitions = []
+                for definition in sorted(indicators.values(), key=lambda row: row.id):
+                    if definition.value_type == "text":
+                        continue
+                    display_domain = next(
+                        (
+                            link.domain
+                            for link in sorted(
+                                definition.domain_links,
+                                key=lambda row: (not row.is_primary, row.sort_order, row.id),
+                            )
+                            if link.domain and link.domain.code in allowed_domain_codes
+                        ),
+                        None,
+                    )
+                    if display_domain is not None:
+                        definitions.append((definition, display_domain.code))
+                if len(definitions) >= minimum_indicators:
+                    compatible.append((package, definitions))
+            if not compatible:
+                raise DemoResetSafetyError(
+                    f"active branch {branch.id} has no package with enough sample indicators"
+                )
+            package, definitions = compatible[sample_index % len(compatible)]
+            values = []
+            for definition, domain_code in definitions[:minimum_indicators]:
+                value, _explicit_status = _demo_indicator_value(
+                    definition,
+                    sample_index + branch_index,
+                )
+                values.append((definition.code, value, domain_code, False))
+            report = _create_imported_historical_report(
+                user=user,
+                institution=branch,
+                package=package,
+                staff=staff,
+                exam_date=exam_date,
+                indicators=indicators,
+                domains=domains,
+                values=tuple(values),
+                title="经营画像验收样本",
+                body="用于验证机构端去标识化聚合画像；不代表真实用户或医疗结论。",
+            )
+            report.ocr_diagnostics = {
+                "fixture": "audience_sample_v1",
+                "sample_index": sample_index + 1,
+                "branch_index": branch_index,
+            }
+            new_reports.append(report)
+            created_reports += 1
+
+    if new_reports:
+        def text_result_factory(report, domain, title, body, order):
+            return ReportTextResult(
+                health_domain_id=domain.id,
+                title=title,
+                body=body,
+                source_snapshot="机构医生审核结论",
+                sort_order=order,
+                created_by_user_id=report.created_by_user_id,
+            )
+
+        normalize_report_records(
+            new_reports,
+            text_result_factory=text_result_factory,
+        )
+    if created_users or created_reports:
+        InstitutionAudienceInsightCache.query.delete(synchronize_session=False)
+    if commit:
+        db.session.commit()
+    else:
+        db.session.flush()
+    return {
+        "sample_users": len(AUDIENCE_SAMPLE_SCENARIOS),
+        "branches": len(branches),
+        "created_users": created_users,
+        "created_reports": created_reports,
+    }
 
 
 def _create_review_workflow_report(
@@ -2732,6 +2921,8 @@ def seed_v7_demo_experience(*, commit: bool = True) -> bool:
     _seed_v12_governance_workflows(users, now)
     _expand_v8_demo_data(users, institutions, packages, indicators, domains, today, now)
     _expand_v10_test1(users, institutions, packages, indicators, domains, today, now)
+    if not current_app.config.get("TESTING", False):
+        ensure_demo_audience_samples(commit=False)
     db.session.flush()
     _normalize_report_business_records()
     if commit:
@@ -2757,6 +2948,7 @@ def validate_reset_target() -> None:
     default_admin_username = os.getenv("DEFAULT_ADMIN_USERNAME", "admin").strip() or "admin"
     allowed_usernames = (
         REQUIRED_DEMO_USERNAMES
+        | AUDIENCE_SAMPLE_USERNAMES
         | LEGACY_EXTRA_STAFF_USERNAMES
         | {default_admin_username}
     )

@@ -34,6 +34,34 @@ def login(client, username, password=PASSWORD):
     return {"Authorization": f"Bearer {response.get_json()['access_token']}"}
 
 
+def test_institution_identity_fields_are_locked_for_branch_account(app, client):
+    headers = login(client, "institution1_staff1")
+    current = client.get("/api/org/institution", headers=headers)
+    assert current.status_code == 200
+    item = current.get_json()["item"]
+    assert item["identity_locked"] is True
+    assert set(item["identity_locked_fields"]) == {
+        "branch_name", "district", "address",
+    }
+
+    rejected = client.put(
+        "/api/org/institution",
+        headers=headers,
+        json={"branch_name": "不允许自行改名"},
+    )
+    assert rejected.status_code == 400
+    assert "机构身份信息已锁定" in rejected.get_json()["message"]
+
+    allowed = client.put(
+        "/api/org/institution",
+        headers=headers,
+        json={"consult_phone": "021-64030000", "description": "更新后的公开简介"},
+    )
+    assert allowed.status_code == 200
+    assert allowed.get_json()["item"]["consult_phone"] == "021-64030000"
+    assert allowed.get_json()["item"]["description"] == "更新后的公开简介"
+
+
 def _appointment(institution, package, user, appointment_date, status):
     return Appointment(
         user_id=user.id,

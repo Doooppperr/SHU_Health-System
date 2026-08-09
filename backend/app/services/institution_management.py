@@ -22,6 +22,7 @@ INSTITUTION_FIELDS = {
     "description",
 }
 REQUIRED_INSTITUTION_FIELDS = {"branch_name", "address", "district"}
+INSTITUTION_IDENTITY_FIELDS = {"branch_name", "address", "district"}
 PACKAGE_FIELDS = {"name", "focus_area", "gender_scope", "price", "description",
                   "package_type", "audience", "booking_notice"}
 VALID_GENDER_SCOPES = {"all", "male", "female"}
@@ -57,6 +58,7 @@ def apply_institution_payload(
     payload: dict,
     *,
     creating: bool = False,
+    allow_identity_update: bool = True,
 ) -> Institution:
     if not isinstance(payload, dict):
         raise ManagementValidationError("request body must be an object")
@@ -68,6 +70,26 @@ def apply_institution_payload(
             raise ManagementValidationError(
                 f"required institution fields: {', '.join(sorted(missing))}"
             )
+
+    locked_changes = []
+    if not creating and not allow_identity_update:
+        for field in sorted(INSTITUTION_IDENTITY_FIELDS):
+            if field not in payload:
+                continue
+            incoming = str(payload.get(field) or "").strip()
+            current = str(getattr(institution, field, None) or "").strip()
+            if incoming != current:
+                locked_changes.append(field)
+    if locked_changes:
+        labels = {
+            "branch_name": "分院 / 门店名称",
+            "district": "所在区域",
+            "address": "详细地址",
+        }
+        raise ManagementValidationError(
+            "机构身份信息已锁定，如需更正请联系平台管理员："
+            + "、".join(labels[field] for field in locked_changes)
+        )
 
     for field in INSTITUTION_FIELDS:
         if field not in payload:
@@ -139,9 +161,15 @@ def image_payload(image: InstitutionImage) -> dict:
 
 
 def institution_payload(
-    institution: Institution, *, include_administrator: bool = False
+    institution: Institution,
+    *,
+    include_administrator: bool = False,
+    include_identity_lock: bool = False,
 ) -> dict:
     payload = institution.to_dict()
+    if include_identity_lock:
+        payload["identity_locked"] = True
+        payload["identity_locked_fields"] = sorted(INSTITUTION_IDENTITY_FIELDS)
     payload["images"] = [image_payload(item) for item in institution.images]
     if include_administrator:
         payload["administrator"] = (

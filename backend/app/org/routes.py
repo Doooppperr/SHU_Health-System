@@ -585,7 +585,9 @@ def deactivate_own_account():
 @roles_required(ROLE_INSTITUTION_ADMIN)
 def get_institution():
     item, error = managed_institution()
-    return error if error else ({"item": institution_payload(item)}, 200)
+    return error if error else ({
+        "item": institution_payload(item, include_identity_lock=True),
+    }, 200)
 
 
 @org_bp.put("/institution")
@@ -595,12 +597,18 @@ def update_institution():
     if error:
         return error
     try:
-        apply_institution_payload(item, request.get_json(silent=True) or {})
+        apply_institution_payload(
+            item,
+            request.get_json(silent=True) or {},
+            allow_identity_update=False,
+        )
         db.session.commit()
     except ManagementValidationError as exc:
         db.session.rollback()
         return {"message": str(exc)}, 400
-    return {"item": institution_payload(item)}, 200
+    return {
+        "item": institution_payload(item, include_identity_lock=True),
+    }, 200
 
 
 @org_bp.get("/appointment-capacity")

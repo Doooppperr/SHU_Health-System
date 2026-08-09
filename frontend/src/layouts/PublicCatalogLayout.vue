@@ -4,7 +4,7 @@
     <main id="main-content" class="public-catalog-main" tabindex="-1"><router-view /></main>
     <footer class="public-catalog-footer">
       <span>{{ contact.address }} · {{ contact.phone }} · {{ contact.email }}</span>
-      <small>{{ buildLabel() }}</small>
+      <small><IcpFilingLink /> · {{ buildLabel() }}</small>
     </footer>
   </div>
 </template>
@@ -12,6 +12,7 @@
 <script setup>
 import { onMounted, reactive } from "vue";
 import { fetchPublicContact } from "../api/public";
+import IcpFilingLink from "../components/IcpFilingLink.vue";
 import PublicHeader from "../components/PublicHeader.vue";
 import { buildLabel } from "../utils/buildInfo";
 

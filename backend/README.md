@@ -1,6 +1,12 @@
 # 康康健健 HealthDoc 后端
 
-Flask 后端负责三角色授权、实名认证、付款托管、结算退款、受控关联账号会话、健康身份码多人预约、报告复核、投诉与退款、评论治理、站内/邮件通知及 HealthDoc Agent。本地使用 SQLite schema v13；服务器通过 `DATABASE_URL` 连接 GaussDB/openGauss，并使用 v13 保留式增量迁移。第八轮新增共享目录搜索服务，没有新增表或迁移。
+Flask 后端负责三角色授权、实名认证、付款托管、结算退款、受控关联账号会话、健康身份码多人预约、报告复核、投诉与退款、评论治理、站内/邮件通知及 HealthDoc Agent。本地使用 SQLite schema v13；服务器通过 `DATABASE_URL` 连接 GaussDB/openGauss，并使用 v13 保留式增量迁移。第八轮新增共享目录搜索服务；当前运营修复增加机构身份字段服务端锁定和幂等画像样本扩充脚本，仍无新表或迁移。
+
+## 机构身份锁定与画像样本
+
+- 机构账号调用 `PUT /api/org/institution` 时，`branch_name`、`district`、`address` 只允许提交与当前值相同的兼容载荷；实际变更返回 400。机构主体本就不接受该接口修改，平台管理员的治理接口继续承担纠错。
+- `metro_info`、`consult_phone`、`ext`、`closed_day`、`description` 仍可由机构维护。`GET /api/org/institution` 返回 `identity_locked` 与 `identity_locked_fields`。
+- `scripts/augment_audience_samples.py --apply --yes` 只增加带固定标记的 12 个不可登录演示受检者，并为每个启用分院补齐一组近期已发布报告；脚本幂等、不会改写真实用户、既有报告或 schema，并在新增时清除过期画像缓存。
 
 ## 第八轮混合目录搜索
 
