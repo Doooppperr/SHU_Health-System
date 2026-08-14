@@ -63,7 +63,7 @@ const routes = [
   { path: "/:pathMatch(.*)*", name: "not-found", component: () => import("../views/NotFoundView.vue"), meta: { title: "页面不存在" } },
 ];
 
-const router = createRouter({ history: createWebHistory(), routes, scrollBehavior: () => ({ top: 0 }) });
+const router = createRouter({ history: createWebHistory(import.meta.env.BASE_URL), routes, scrollBehavior: () => ({ top: 0 }) });
 router.beforeEach(async (to) => {
   const auth = useAuthStore(); auth.hydrate();
   if (to.meta.requiresAuth) {

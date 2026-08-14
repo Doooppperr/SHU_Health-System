@@ -1,9 +1,10 @@
 import http from "./http";
 import { useAuthStore } from "../stores/auth";
 import { normalizeApiMessage } from "../utils/apiMessages";
+import { appPath } from "../utils/appBase";
 
 
-const AI_API_PREFIX = "/api/ai";
+const AI_API_PREFIX = appPath("/api/ai");
 const DEFAULT_STREAM_TIMEOUTS = Object.freeze({
   connect: 10000,
   idle: 35000,

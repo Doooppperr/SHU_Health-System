@@ -1,8 +1,9 @@
 import http from "./http";
 import { useAuthStore } from "../stores/auth";
+import { appPath } from "../utils/appBase";
 
 
-const AGENT_API_PREFIX = "/api/agent";
+const AGENT_API_PREFIX = appPath("/api/agent");
 
 export function fetchAgentCapabilities() {
   return http.get("/agent/capabilities");

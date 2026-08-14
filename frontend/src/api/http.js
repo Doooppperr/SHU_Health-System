@@ -1,9 +1,10 @@
 import axios from "axios";
 import { useAuthStore } from "../stores/auth";
 import { normalizeApiMessage } from "../utils/apiMessages";
+import { appPath } from "../utils/appBase";
 
 const http = axios.create({
-  baseURL: "/api",
+  baseURL: appPath("/api"),
   timeout: 10000,
 });
 
