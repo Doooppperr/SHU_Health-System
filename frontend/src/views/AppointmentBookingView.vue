@@ -249,7 +249,18 @@
                     <strong>{{ appointment.user?.display_name || appointment.user?.name || appointment.display_name || appointment.subject_name_snapshot || "受检者" }}</strong>
                     <small>{{ participantTypeLabel(appointment.participant_type) }} · {{ appointmentMeta(appointment.status).label }}</small>
                   </div>
-                  <el-button v-if="appointment.can_cancel" size="small" link type="danger" @click="cancelGroupMember(appointment)">取消该成员</el-button>
+                  <div class="appointment-participant-card__actions">
+                    <el-button
+                      v-if="canComplainForGroup(record, appointment)"
+                      size="small"
+                      plain
+                      :type="complaintForAppointment(appointment.id) ? 'primary' : 'danger'"
+                      @click="handleComplaintAction(appointment, record)"
+                    >
+                      {{ complaintForAppointment(appointment.id) ? "查看投诉与退款" : "投诉与退款" }}
+                    </el-button>
+                    <el-button v-if="appointment.can_cancel" size="small" link type="danger" @click="cancelGroupMember(appointment)">取消该成员</el-button>
+                  </div>
                 </header>
                 <AppointmentProgress :appointment="{ ...appointment, appointment_date: record.appointment_date }" />
               </article>
@@ -1049,6 +1060,16 @@ function complaintForAppointment(appointmentId) {
   return allComplaints.value.find((item) => Number(item.appointment_id || item.appointment?.id) === Number(appointmentId));
 }
 
+function canComplainForGroup(group, appointment) {
+  if (Number(group.booked_by_user_id) !== Number(auth.user?.id)) return false;
+  const order = group.payment_order;
+  if (!order || ["pending", "expired", "refunded"].includes(order.status)) return false;
+  const paymentItem = (order.items || []).find(
+    (item) => Number(item.appointment_id) === Number(appointment.id),
+  );
+  return Boolean(paymentItem && !["pending", "refunded"].includes(paymentItem.fund_status));
+}
+
 function focusComplaint(item) {
   const index = allComplaints.value.findIndex((candidate) => candidate.id === item.id);
   if (index >= 0) {
@@ -1068,13 +1089,13 @@ function focusComplaintById(value) {
   if (requested) focusComplaint(requested);
 }
 
-function handleComplaintAction(appointment) {
+function handleComplaintAction(appointment, group = appointment) {
   const existing = complaintForAppointment(appointment.id);
   if (existing) {
     focusComplaint(existing);
     return;
   }
-  openComplaint(appointment, appointment);
+  openComplaint(appointment, group);
 }
 
 function complaintSenderLabel(role) {
@@ -1482,6 +1503,13 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.appointment-participant-card__actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
 }
 
 .appointment-participant-card > header > div,

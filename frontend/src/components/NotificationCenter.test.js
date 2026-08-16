@@ -80,6 +80,8 @@ describe("站内通知中心", () => {
     expect(mocks.fetchNotifications).toHaveBeenCalledWith({ page: 1, page_size: 15 });
 
     expect(wrapper.get(".notification-panel").attributes("role")).toBe("dialog");
+    expect(wrapper.get(".notification-list").attributes("aria-label")).toBe("通知列表");
+    expect(wrapper.get(".notification-list").attributes("tabindex")).toBe("0");
     await wrapper.get('[aria-label="关闭站内通知"]').trigger("click");
     expect(wrapper.find(".notification-panel").exists()).toBe(false);
   });

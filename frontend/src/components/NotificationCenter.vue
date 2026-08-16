@@ -37,7 +37,7 @@
               <p>{{ loadError }}</p>
               <el-button type="primary" plain @click="load">重新加载</el-button>
             </div>
-            <div v-else class="notification-list">
+            <div v-else class="notification-list" tabindex="0" aria-label="通知列表">
               <article v-for="item in items" :key="item.id" :class="{ unread: !item.is_read }">
                 <button type="button" @click="activate(item)">
                   <strong>{{ item.title }}</strong>
@@ -253,10 +253,26 @@ onMounted(refreshCount);
 .notification-list {
   display: grid;
   align-content: start;
+  grid-auto-flow: row;
+  grid-auto-rows: max-content;
   gap: 10px;
-  padding-right: 3px;
+  padding: 0 8px 12px 0;
+  overflow-y: scroll;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
+  scrollbar-color: var(--color-text-secondary, #b8b8bd) transparent;
+  scrollbar-width: thin;
+}
+
+.notification-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.notification-list::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--color-text-secondary, #b8b8bd);
+  background-clip: padding-box;
 }
 
 .notification-loading {
@@ -277,6 +293,7 @@ onMounted(refreshCount);
 }
 
 .notification-list article {
+  height: max-content;
   overflow: hidden;
   border: 1px solid var(--color-border, #3a3a3c);
   border-radius: 12px;
@@ -289,6 +306,8 @@ onMounted(refreshCount);
 }
 
 .notification-list button {
+  display: grid;
+  gap: 7px;
   width: 100%;
   padding: 14px;
   border: 0;
@@ -303,7 +322,7 @@ onMounted(refreshCount);
 }
 
 .notification-list p {
-  margin: 7px 0;
+  margin: 0;
   line-height: 1.65;
   overflow-wrap: anywhere;
 }

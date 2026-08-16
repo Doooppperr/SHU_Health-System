@@ -179,6 +179,45 @@ describe("预约记录抽屉", () => {
     expect(wrapper.text()).not.toContain("发起人视角");
   });
 
+  it("allows the payer to complain about each paid appointment in a booking group", async () => {
+    mocks.fetchBookingGroups.mockResolvedValueOnce({
+      data: {
+        items: [{
+          id: 7,
+          booked_by_user_id: 1,
+          appointment_date: "2026-07-26",
+          status_codes: ["fulfilled"],
+          package: { name: "综合体检" },
+          institution: { name: "澄心健康管理中心", branch_name: "徐汇综合院区" },
+          appointments: [{
+            id: 91,
+            appointment_id: 91,
+            display_name: "林晓晨",
+            participant_type: "self",
+            status: "fulfilled",
+            can_cancel: false,
+          }],
+          payment_order: {
+            status: "paid",
+            items: [{ appointment_id: 91, fund_status: "held" }],
+          },
+        }],
+        pagination: { page: 1, page_size: 50, total: 1, pages: 1 },
+      },
+    });
+    const wrapper = mountView(AppointmentBookingView);
+    await flushPromises();
+
+    expect(wrapper.vm.groups[0]).toEqual(expect.objectContaining({ id: 7, booked_by_user_id: 1 }));
+    expect(wrapper.vm.canComplainForGroup(wrapper.vm.groups[0], wrapper.vm.groups[0].appointments[0])).toBe(true);
+    wrapper.vm.handleComplaintAction(wrapper.vm.groups[0].appointments[0], wrapper.vm.groups[0]);
+    expect(wrapper.vm.complaintDialogVisible).toBe(true);
+    expect(wrapper.vm.complaintForm).toEqual(expect.objectContaining({
+      appointment_id: 91,
+      institution_name: "澄心健康管理中心",
+    }));
+  });
+
   it("机构选择每页显示六家并可翻页", async () => {
     mocks.fetchAppointmentAvailability.mockResolvedValue({
       data: {
